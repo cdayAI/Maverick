@@ -82,6 +82,17 @@ async def facts_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "facts.html", {"facts": facts})
 
 
+@app.get("/spend", response_class=HTMLResponse)
+async def spend_page(request: Request) -> HTMLResponse:
+    w = _world()
+    episodes = w.list_episodes(limit=50)
+    total = w.total_spend()
+    return templates.TemplateResponse(
+        request, "spend.html",
+        {"episodes": episodes, "total": total},
+    )
+
+
 @app.get("/healthz")
 async def healthz() -> dict:
     return {"status": "ok"}

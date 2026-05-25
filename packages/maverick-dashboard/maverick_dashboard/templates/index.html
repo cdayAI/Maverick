@@ -59,7 +59,11 @@
         <p><code>{{ s.name }}</code> <span class="muted">— {{ s.triggers|length }} trigger(s)</span></p>
       {% endfor %}
     {% else %}
-      <p class="muted">No skills yet. They accrue after successful runs, or install via <code>maverick skill install gh:...</code>.</p>
+      <p class="muted">No skills yet. Install one with <code>maverick skill install gh:...</code>.</p>
     {% endif %}
   </div>
+
+  <p class="muted" style="margin-top: 2rem;">
+    <a href="/spend" style="color: var(--muted); text-decoration: underline;">view spend →</a>
+  </p>
 {% endblock %}

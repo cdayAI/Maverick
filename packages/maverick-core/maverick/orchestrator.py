@@ -1,11 +1,7 @@
 """Run a top-level goal through the swarm.
 
-The orchestrator is just an Agent with role='orchestrator'. This module is
-a thin convenience wrapper that wires up SwarmContext, runs the root agent,
-verifies the result, and distills a skill on success.
-
-Shield is constructed from ~/.maverick/config.toml [safety] and injected into
-SwarmContext so every agent in the swarm sees the same scanner instance.
+v0.1.2: episodes now record cost/tokens/tool_calls at end so the
+dashboard can render spend history.
 """
 from __future__ import annotations
 
@@ -26,7 +22,6 @@ log = logging.getLogger(__name__)
 
 
 def _build_shield() -> Optional[Any]:
-    """Build Shield from config; return None if maverick-shield isn't installed."""
     try:
         from maverick_shield import Shield
         return Shield.from_config()
@@ -36,6 +31,27 @@ def _build_shield() -> Optional[Any]:
     except Exception as e:  # pragma: no cover
         log.error("Shield construction failed (fail-open): %s", e)
         return None
+
+
+def _end_episode_with_spend(
+    world: WorldModel,
+    episode_id: int,
+    summary: str,
+    outcome: str,
+    budget: Budget,
+) -> None:
+    """Helper to record final spend numbers in the episode row."""
+    try:
+        world.end_episode(
+            episode_id, summary, outcome,
+            cost_dollars=budget.dollars,
+            input_tokens=budget.input_tokens,
+            output_tokens=budget.output_tokens,
+            tool_calls=budget.tool_calls,
+        )
+    except TypeError:
+        # Older WorldModel without the spend kwargs -- fall back.
+        world.end_episode(episode_id, summary, outcome)
 
 
 async def run_goal(
@@ -57,14 +73,8 @@ async def run_goal(
     shield = _build_shield()
 
     ctx = SwarmContext(
-        llm=llm,
-        world=world,
-        budget=budget,
-        blackboard=blackboard,
-        sandbox=sandbox,
-        goal_id=goal_id,
-        max_depth=max_depth,
-        shield=shield,
+        llm=llm, world=world, budget=budget, blackboard=blackboard,
+        sandbox=sandbox, goal_id=goal_id, max_depth=max_depth, shield=shield,
     )
 
     facts = world.get_facts()
@@ -82,12 +92,14 @@ async def run_goal(
     try:
         result = await root.run()
     except BudgetExceeded as e:
-        world.end_episode(episode_id, f"budget: {e}", "failure")
+        _end_episode_with_spend(world, episode_id, f"budget: {e}", "failure", budget)
         world.set_goal_status(goal_id, "blocked", result=f"budget exceeded: {e}")
         return f"BUDGET EXCEEDED: {budget.summary()}"
 
     if result.blocked_on_user:
-        world.end_episode(episode_id, "blocked awaiting user", "interrupted")
+        _end_episode_with_spend(
+            world, episode_id, "blocked awaiting user", "interrupted", budget,
+        )
         world.set_goal_status(goal_id, "blocked")
         qs = world.open_questions(goal_id)
         return (
@@ -96,12 +108,12 @@ async def run_goal(
         )
 
     if result.error:
-        world.end_episode(episode_id, result.error, "failure")
+        _end_episode_with_spend(world, episode_id, result.error, "failure", budget)
         world.set_goal_status(goal_id, "blocked", result=result.error)
         return f"FAILED: {result.error}\n[{budget.summary()}]"
 
     summary = result.final or "(no answer)"
-    world.end_episode(episode_id, summary, "success")
+    _end_episode_with_spend(world, episode_id, summary, "success", budget)
     world.set_goal_status(goal_id, "done", result=summary)
 
     try:
@@ -116,5 +128,4 @@ async def run_goal(
 
 
 def run_goal_sync(*args, **kwargs) -> str:
-    """Sync wrapper for callers that aren't running an event loop."""
     return asyncio.run(run_goal(*args, **kwargs))

@@ -1,11 +1,7 @@
 """Persistent world model. SQLite with FTS5 for cheap recall.
 
-This is the consumer wedge: not chat history, but a typed model of the user
-and their ongoing work that survives restarts.
-
-v0.1.1: added schema_version table + migrations dispatch. When SCHEMA is
-changed in a future version, append the upgrade SQL to MIGRATIONS keyed by
-the new version number; existing user DBs will apply it on next open.
+v0.1.2: schema_version bumped to 2. Episodes now track ``cost_dollars``
+so the dashboard can show per-run spend and aggregate by day/week.
 """
 from __future__ import annotations
 
@@ -17,11 +13,7 @@ from typing import Optional
 
 
 DEFAULT_DB = Path.home() / ".maverick" / "world.db"
-
-# Bump when adding a migration to MIGRATIONS. New DBs are created at this
-# version; existing DBs are upgraded by applying every migration with
-# version > current_version.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 SCHEMA = """
@@ -34,7 +26,7 @@ CREATE TABLE IF NOT EXISTS goals (
     parent_id INTEGER REFERENCES goals(id),
     title TEXT NOT NULL,
     description TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',  -- pending | active | blocked | done | abandoned
+    status TEXT NOT NULL DEFAULT 'pending',
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     deadline REAL,
@@ -47,7 +39,11 @@ CREATE TABLE IF NOT EXISTS episodes (
     started_at REAL NOT NULL,
     ended_at REAL,
     summary TEXT,
-    outcome TEXT  -- success | failure | interrupted
+    outcome TEXT,
+    cost_dollars REAL DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    tool_calls INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS facts (
@@ -86,16 +82,16 @@ END;
 """
 
 
-# Future migrations: MIGRATIONS[N] is the list of SQL statements to bring a
-# DB from version N-1 to N. Example:
-#
-# MIGRATIONS = {
-#     2: [
-#         "ALTER TABLE goals ADD COLUMN priority INTEGER DEFAULT 0",
-#         "CREATE INDEX idx_goals_priority ON goals(priority)",
-#     ],
-# }
-MIGRATIONS: dict[int, list[str]] = {}
+# v1 -> v2: add cost / token / tool_call columns to episodes.
+# Idempotent guard: only ALTER if the column isn't already there.
+MIGRATIONS: dict[int, list[str]] = {
+    2: [
+        "ALTER TABLE episodes ADD COLUMN cost_dollars REAL DEFAULT 0",
+        "ALTER TABLE episodes ADD COLUMN input_tokens INTEGER DEFAULT 0",
+        "ALTER TABLE episodes ADD COLUMN output_tokens INTEGER DEFAULT 0",
+        "ALTER TABLE episodes ADD COLUMN tool_calls INTEGER DEFAULT 0",
+    ],
+}
 
 
 @dataclass
@@ -121,6 +117,20 @@ class Question:
     answered_at: Optional[float]
 
 
+@dataclass
+class EpisodeSpend:
+    """One row aggregating cost/tokens for an episode."""
+    id: int
+    goal_id: int
+    started_at: float
+    ended_at: Optional[float]
+    outcome: Optional[str]
+    cost_dollars: float
+    input_tokens: int
+    output_tokens: int
+    tool_calls: int
+
+
 class WorldModel:
     def __init__(self, path: Path = DEFAULT_DB):
         self.path = path
@@ -140,21 +150,19 @@ class WorldModel:
             )
 
     def _apply_migrations(self) -> None:
-        """Run any migrations whose version > current schema_version."""
         current = self.conn.execute(
             "SELECT version FROM schema_version LIMIT 1"
         ).fetchone()[0]
-        target = SCHEMA_VERSION
-        while current < target:
+        while current < SCHEMA_VERSION:
             next_version = current + 1
-            migration = MIGRATIONS.get(next_version)
-            if migration is None:
-                # No migration defined yet; just bump the recorded version
-                # so the gap closes (assumes idempotent CREATE TABLE IF NOT EXISTS
-                # in SCHEMA covers new objects).
-                break
-            for stmt in migration:
-                self.conn.execute(stmt)
+            for stmt in MIGRATIONS.get(next_version, []):
+                try:
+                    self.conn.execute(stmt)
+                except sqlite3.OperationalError as e:
+                    # "duplicate column" is fine -- means we partially applied
+                    # before. Anything else is a real error.
+                    if "duplicate column" not in str(e).lower():
+                        raise
             self.conn.execute("UPDATE schema_version SET version = ?", (next_version,))
             current = next_version
 
@@ -206,12 +214,50 @@ class WorldModel:
         self.conn.commit()
         return cur.lastrowid
 
-    def end_episode(self, episode_id: int, summary: str, outcome: str) -> None:
+    def end_episode(
+        self,
+        episode_id: int,
+        summary: str,
+        outcome: str,
+        cost_dollars: float = 0.0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        tool_calls: int = 0,
+    ) -> None:
         self.conn.execute(
-            "UPDATE episodes SET ended_at = ?, summary = ?, outcome = ? WHERE id = ?",
-            (time.time(), summary, outcome, episode_id),
+            "UPDATE episodes SET ended_at = ?, summary = ?, outcome = ?, "
+            "cost_dollars = ?, input_tokens = ?, output_tokens = ?, tool_calls = ? "
+            "WHERE id = ?",
+            (time.time(), summary, outcome, cost_dollars,
+             input_tokens, output_tokens, tool_calls, episode_id),
         )
         self.conn.commit()
+
+    def list_episodes(self, limit: int = 50) -> list[EpisodeSpend]:
+        rows = self.conn.execute(
+            "SELECT id, goal_id, started_at, ended_at, outcome, "
+            "COALESCE(cost_dollars, 0) AS cost_dollars, "
+            "COALESCE(input_tokens, 0) AS input_tokens, "
+            "COALESCE(output_tokens, 0) AS output_tokens, "
+            "COALESCE(tool_calls, 0) AS tool_calls "
+            "FROM episodes ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [EpisodeSpend(**dict(r)) for r in rows]
+
+    def total_spend(self) -> dict[str, float]:
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(cost_dollars), 0) AS dollars, "
+            "COALESCE(SUM(input_tokens), 0) AS in_tok, "
+            "COALESCE(SUM(output_tokens), 0) AS out_tok, "
+            "COUNT(*) AS runs FROM episodes WHERE ended_at IS NOT NULL"
+        ).fetchone()
+        return {
+            "dollars": row["dollars"],
+            "input_tokens": row["in_tok"],
+            "output_tokens": row["out_tok"],
+            "runs": row["runs"],
+        }
 
     # ----- facts -----
     def upsert_fact(self, key: str, value: str, episode_id: Optional[int] = None) -> None:

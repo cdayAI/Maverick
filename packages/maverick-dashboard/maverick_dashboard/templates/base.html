@@ -4,17 +4,11 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}Maverick{% endblock %}</title>
-  <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
   <style>
     :root {
-      --bg: #0d1117;
-      --panel: #161b22;
-      --border: #30363d;
-      --text: #e6edf3;
-      --muted: #8b949e;
-      --accent: #2ea043;
-      --warn: #d29922;
-      --danger: #f85149;
+      --bg: #0d1117; --panel: #161b22; --border: #30363d;
+      --text: #e6edf3; --muted: #8b949e; --accent: #2ea043;
+      --warn: #d29922; --danger: #f85149;
     }
     * { box-sizing: border-box; }
     body { margin: 0; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg); color: var(--text); }
@@ -39,6 +33,8 @@
     .badge.done    { background: rgba(110,118,129,0.2); color: var(--muted); }
     .badge.blocked { background: rgba(210,153,34,0.2); color: var(--warn); }
     .badge.pending { background: rgba(139,148,158,0.15); color: var(--muted); }
+    .badge.success { background: rgba(46,160,67,0.2); color: var(--accent); }
+    .badge.failure { background: rgba(248,81,73,0.2); color: var(--danger); }
     code { background: var(--panel); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.85rem; }
     .muted { color: var(--muted); }
     footer { text-align: center; color: var(--muted); padding: 2rem; font-size: 0.8rem; }
@@ -52,6 +48,7 @@
       <a href="/goals">goals</a>
       <a href="/skills">skills</a>
       <a href="/facts">facts</a>
+      <a href="/spend">spend</a>
     </nav>
   </header>
   <main>
