@@ -33,13 +33,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install packages
         run: |
+          set -x
           pip install -e ./packages/maverick-core
           pip install -e ./packages/maverick-shield
           pip install -e ./packages/maverick-channels
           pip install -e ./apps/installer-cli
           pip install pytest pytest-asyncio
+      - name: Show installed packages
+        run: pip list
       - name: Test
-        run: pytest -q
+        run: pytest -vvs --tb=long
 
   docker:
     runs-on: ubuntu-latest

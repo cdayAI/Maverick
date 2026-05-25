@@ -11,7 +11,11 @@ Each user gets their own goal/episode in the world model so context is
 preserved across messages. Budget caps still apply per-message.
 
 Safety: input and output are run through Agent Shield if installed.
-Fails open with a warning if shield isn't available.
+Tool-call scans happen inside the agent loop (see agent.py). All scans
+fail open with a warning if shield isn't available.
+
+Resilience: each channel runs in its own asyncio task. A single channel
+crashing logs an error but doesn't take the others down.
 """
 from __future__ import annotations
 
@@ -32,12 +36,6 @@ log = logging.getLogger(__name__)
 
 
 class Server:
-    """Long-running channel server.
-
-    Each incoming message becomes a goal in the world model and is run
-    through the swarm. Responses are routed back via the same channel.
-    """
-
     def __init__(
         self,
         world: WorldModel,
@@ -50,6 +48,7 @@ class Server:
         self.workdir = workdir or Path.cwd()
         self.max_depth = max_depth
         self._channels: list = []
+        self._tasks: list[asyncio.Task] = []
         self._shield = None
         try:
             from maverick_shield import Shield
@@ -60,7 +59,6 @@ class Server:
             log.warning("maverick-shield not installed; running without safety scans")
 
     async def _handle_message(self, msg) -> str:
-        """Handler invoked by every channel for each incoming message."""
         if self._shield is not None:
             verdict = self._shield.scan_input(msg.text)
             if not verdict.allowed:
@@ -74,16 +72,17 @@ class Server:
 
         try:
             result = await run_goal(
-                self.llm,
-                self.world,
-                budget,
-                goal_id,
-                sandbox=sandbox,
-                max_depth=self.max_depth,
+                self.llm, self.world, budget, goal_id,
+                sandbox=sandbox, max_depth=self.max_depth,
             )
-        except Exception as e:  # pragma: no cover
-            log.exception("goal run failed")
-            return f"⚠ Error: {e}"
+        except Exception:
+            log.exception("goal #%s run failed", goal_id)
+            try:
+                self.world.set_goal_status(goal_id, "blocked", result="internal error")
+            except Exception:  # pragma: no cover
+                pass
+            # Don't leak internal error details to untrusted channel users.
+            return "⚠ An internal error occurred. Try again or check the logs."
 
         if self._shield is not None:
             verdict = self._shield.scan_output(result)
@@ -96,15 +95,29 @@ class Server:
         self._channels.append(channel)
 
     async def run(self) -> None:
+        """Run all channels concurrently. One channel crashing logs but doesn't kill others."""
         if not self._channels:
             raise ValueError("no channels registered")
-        log.info("starting %d channel(s): %s", len(self._channels),
-                 ", ".join(c.name for c in self._channels))
-        await asyncio.gather(*(c.start() for c in self._channels))
+        log.info(
+            "starting %d channel(s): %s",
+            len(self._channels),
+            ", ".join(c.name for c in self._channels),
+        )
+        self._tasks = [
+            asyncio.create_task(c.start(), name=f"channel-{c.name}")
+            for c in self._channels
+        ]
+        results = await asyncio.gather(*self._tasks, return_exceptions=True)
+        for c, result in zip(self._channels, results):
+            if isinstance(result, Exception):
+                log.error("channel %s crashed: %s", c.name, result)
 
     async def stop(self) -> None:
+        for t in self._tasks:
+            if not t.done():
+                t.cancel()
         await asyncio.gather(
-            *(c.stop() for c in self._channels), return_exceptions=True
+            *(c.stop() for c in self._channels), return_exceptions=True,
         )
 
 
@@ -210,12 +223,7 @@ _WIRES = {
 
 
 def build_from_config() -> Server:
-    """Construct a Server with channels enabled in ~/.maverick/config.toml.
-
-    Raises if no channels are enabled or required env vars are missing.
-    """
     cfg = load_config()
-
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise RuntimeError(
             "ANTHROPIC_API_KEY not set. Add it to ~/.maverick/.env or export it."

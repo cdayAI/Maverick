@@ -3,11 +3,19 @@
 Every node in the swarm is an `Agent`. Agents:
   - run an async tool-use loop against the LLM
   - may spawn sub-agents (single or parallel swarm) via tools
-  - share blackboard, world model, budget, and sandbox via SwarmContext
+  - share blackboard, world model, budget, sandbox, and shield via SwarmContext
   - have a depth (root=0) and a parent reference
 
 The orchestrator is just an Agent with role='orchestrator' and a planning-
 oriented system prompt. It uses spawn_swarm to fan out parallel workers.
+
+Shield chokepoints (per ARCHITECTURE.md):
+  - tool-call scan: every tool_use is run through ctx.shield.scan_tool_call()
+    before execution. Blocked calls return a synthetic tool_result rather
+    than running the tool.
+  - input/output scans: handled at the channel boundary in server.py so the
+    whole agent run is bracketed (input before goal creation, output before
+    reply send).
 """
 from __future__ import annotations
 
@@ -115,7 +123,7 @@ class Agent:
                 skills = relevant_skills(self.brief, load_skills())
                 if skills:
                     base = base + "\n\n" + render_for_prompt(skills)
-            except Exception:
+            except (ImportError, FileNotFoundError, ValueError):
                 pass
 
         return base
@@ -125,6 +133,23 @@ class Agent:
         if self.role in ("orchestrator", "revisor"):
             return 8000
         return None
+
+    async def _run_tool(self, name: str, args: dict) -> str:
+        """Run a tool with Shield gating (if configured)."""
+        shield = self.ctx.shield
+        if shield is not None:
+            verdict = shield.scan_tool_call(name, args)
+            if not verdict.allowed:
+                self.ctx.blackboard.post(
+                    self.name,
+                    "error",
+                    f"tool={name} BLOCKED by Shield: {'; '.join(verdict.reasons)}",
+                )
+                return (
+                    f"⚠ BLOCKED by Shield ({verdict.severity}): "
+                    f"{'; '.join(verdict.reasons)}. The tool was not executed."
+                )
+        return await self.tools.run(name, args)
 
     async def run(self) -> AgentResult:
         bb = self.ctx.blackboard
@@ -159,7 +184,6 @@ class Agent:
             # Record the assistant turn for proper conversation continuity.
             assistant_content: list[dict] = []
             if resp.thinking:
-                # Note: thinking blocks must be preserved in subsequent turns.
                 assistant_content.append({"type": "thinking", "thinking": resp.thinking})
             if resp.text:
                 assistant_content.append({"type": "text", "text": resp.text})
@@ -190,7 +214,7 @@ class Agent:
             blocked = False
             for tc in resp.tool_calls:
                 self.ctx.budget.record_tool_call()
-                output = await self.tools.run(tc.name, tc.input)
+                output = await self._run_tool(tc.name, tc.input)
                 if tc.name == "ask_user":
                     blocked = True
                 bb.post(

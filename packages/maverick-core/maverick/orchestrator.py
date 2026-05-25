@@ -3,11 +3,15 @@
 The orchestrator is just an Agent with role='orchestrator'. This module is
 a thin convenience wrapper that wires up SwarmContext, runs the root agent,
 verifies the result, and distills a skill on success.
+
+Shield is constructed from ~/.maverick/config.toml [safety] and injected into
+SwarmContext so every agent in the swarm sees the same scanner instance.
 """
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+import logging
+from typing import Any, Optional
 
 from .agent import Agent
 from .blackboard import Blackboard
@@ -18,13 +22,28 @@ from .skills import distill
 from .swarm import SwarmContext
 from .world_model import WorldModel
 
+log = logging.getLogger(__name__)
+
+
+def _build_shield() -> Optional[Any]:
+    """Build Shield from config; return None if maverick-shield isn't installed."""
+    try:
+        from maverick_shield import Shield
+        return Shield.from_config()
+    except ImportError:
+        log.warning("maverick-shield not installed; tool-call scans disabled")
+        return None
+    except Exception as e:  # pragma: no cover
+        log.error("Shield construction failed (fail-open): %s", e)
+        return None
+
 
 async def run_goal(
     llm: LLM,
     world: WorldModel,
     budget: Budget,
     goal_id: int,
-    sandbox: Optional[LocalBackend] = None,
+    sandbox: Optional[Any] = None,
     max_depth: int = 3,
 ) -> str:
     goal = world.get_goal(goal_id)
@@ -35,6 +54,7 @@ async def run_goal(
     episode_id = world.start_episode(goal_id)
     blackboard = Blackboard()
     sandbox = sandbox or LocalBackend()
+    shield = _build_shield()
 
     ctx = SwarmContext(
         llm=llm,
@@ -44,6 +64,7 @@ async def run_goal(
         sandbox=sandbox,
         goal_id=goal_id,
         max_depth=max_depth,
+        shield=shield,
     )
 
     facts = world.get_facts()
@@ -83,7 +104,6 @@ async def run_goal(
     world.end_episode(episode_id, summary, "success")
     world.set_goal_status(goal_id, "done", result=summary)
 
-    # Closed loop: distill the trajectory into a reusable skill.
     try:
         skill = distill(goal.title, summary, blackboard, llm, budget=budget)
         skill_note = f"\n\n[distilled skill: {skill.name}]" if skill else ""
