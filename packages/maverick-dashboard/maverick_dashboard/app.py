@@ -1,10 +1,6 @@
 """FastAPI dashboard for Maverick.
 
-v0.1.3 additions:
-  - /chat with background-task goal runs + live event polling
-  - /api/goal/{id}/events streams blackboard entries via long-poll
-  - Optional bearer-token auth for VPS deployments via
-    MAVERICK_DASHBOARD_TOKEN env var
+v0.1.4 mounts the REST API at /api/v1 (with OpenAPI docs at /docs).
 """
 from __future__ import annotations
 
@@ -22,20 +18,23 @@ log = logging.getLogger(__name__)
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-app = FastAPI(title="Maverick Dashboard", docs_url=None, redoc_url=None)
+app = FastAPI(
+    title="Maverick Dashboard + REST API",
+    description=(
+        "Local browser UI plus a REST API for programmatic access. "
+        "Read-only browser views; full agent control via /api/v1."
+    ),
+    version="0.1.0",
+)
+
+# Mount REST API and ensure OpenAPI schema is enabled even though the
+# top-level FastAPI was constructed with default doc URLs.
+from .api import router as api_router
+app.include_router(api_router)
 
 
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):
-    """Optional bearer-token gate for VPS / non-localhost deployments.
-
-    If ``MAVERICK_DASHBOARD_TOKEN`` is set, every request must carry
-    ``Authorization: Bearer <token>`` OR ``?token=<token>`` query
-    parameter (so phone browsers can be bookmarked once with the
-    token in the URL).
-
-    /healthz is always reachable so reverse proxies can probe it.
-    """
     expected = os.environ.get("MAVERICK_DASHBOARD_TOKEN")
     if not expected or request.url.path == "/healthz":
         return await call_next(request)
@@ -128,10 +127,7 @@ async def chat_send(
     title: str = Form(...),
 ) -> RedirectResponse:
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise HTTPException(
-            status_code=400,
-            detail="ANTHROPIC_API_KEY not set. Run `maverick init` first.",
-        )
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY not set.")
     w = _world()
     goal_id = w.create_goal(title.strip()[:200], title.strip())
     bg.add_task(_run_goal_in_thread, goal_id)
@@ -147,7 +143,8 @@ async def chat_goal(request: Request, goal_id: int) -> HTMLResponse:
 
 
 @app.get("/api/goal/{goal_id}")
-async def api_goal(goal_id: int) -> dict:
+async def api_goal_legacy(goal_id: int) -> dict:
+    """Pre-v1 endpoint; kept for chat_goal.html legacy poller compat."""
     g = _world().get_goal(goal_id)
     if g is None:
         raise HTTPException(status_code=404, detail="no such goal")
@@ -155,13 +152,8 @@ async def api_goal(goal_id: int) -> dict:
 
 
 @app.get("/api/goal/{goal_id}/events")
-async def api_goal_events(goal_id: int, since: int = 0, limit: int = 200) -> dict:
-    """Live stream of blackboard entries for a goal.
-
-    Long-poll style: pass `since=<last_id>` to get only new entries.
-    Returned ``next_id`` is the highest id seen; pass it back as
-    `since` on the next request.
-    """
+async def api_goal_events_legacy(goal_id: int, since: int = 0, limit: int = 200) -> dict:
+    """Pre-v1 events endpoint; kept for chat_goal.html legacy poller compat."""
     w = _world()
     g = w.get_goal(goal_id)
     if g is None:
