@@ -1,25 +1,24 @@
-"""Anthropic adapter — state of the art.
+"""Multi-provider LLM facade.
 
-Features:
-- Prompt caching on system prompt + tool definitions (ephemeral cache control)
-- Extended thinking on demand (orchestrator planning / verification)
-- Streaming with progress callbacks
-- Per-role model routing (Opus for hard reasoning, Sonnet for workers, Haiku for cheap)
-- Vision-ready content blocks (pass image dicts through unchanged)
-- Async-friendly: `complete_async` for parallel worker dispatch
-- Per-role model choice driven by ``~/.maverick/config.toml`` (see ``maverick.config``)
+Dispatches to provider-specific clients based on the ``provider:model-id``
+spec. Bare model ids (no colon) default to anthropic for backward
+compatibility with the original kernel.
 
-The ``model_for_role`` function consults user config first and falls back to
-``ROLE_MODELS`` defaults below. Future commits add provider dispatch
-(OpenAI / OpenRouter / Ollama) by parsing ``provider:model-id`` specs.
+Provider clients (in ``maverick.providers``):
+  - anthropic   (claude-*) full impl with caching/thinking/streaming
+  - openai      (gpt-*, o1) OpenAI Chat Completions, translates Anthropic format
+  - openrouter  (any/model) OpenAI-compatible via openrouter.ai
+  - ollama      (llama*, qwen*, phi*, ...) OpenAI-compatible via localhost:11434
+
+The agent kernel only sees the ``LLM`` class; it doesn't know or care
+which provider runs a given call. A run can route the orchestrator to
+Anthropic Opus, workers to local Ollama, and the summarizer to OpenAI
+gpt-4o-mini — all in the same swarm.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
-
-import anthropic
+from typing import Any, Optional
 
 from .budget import Budget
 
@@ -32,21 +31,20 @@ MODEL_HAIKU = "claude-haiku-4-5"
 DEFAULT_MODEL = MODEL_SONNET
 
 
-# Per-role default model picks. Tuned for quality/$ on long-horizon work.
-# Users can override any of these via ``[models]`` in their config.toml.
+# Per-role default model picks (bare = anthropic). Users override via config.toml.
 ROLE_MODELS: dict[str, str] = {
-    "orchestrator": MODEL_OPUS,    # planning + verify need depth
-    "researcher":   MODEL_SONNET,
-    "coder":        MODEL_SONNET,
-    "writer":       MODEL_SONNET,
-    "analyst":      MODEL_SONNET,
-    "revisor":      MODEL_OPUS,    # second pass after verify failure
-    "summarizer":   MODEL_HAIKU,   # cheap distillation
+    "orchestrator":    MODEL_OPUS,
+    "researcher":      MODEL_SONNET,
+    "coder":           MODEL_SONNET,
+    "writer":          MODEL_SONNET,
+    "analyst":         MODEL_SONNET,
+    "revisor":         MODEL_OPUS,
+    "summarizer":      MODEL_HAIKU,
     "skill_distiller": MODEL_SONNET,
 }
 
 
-# Anthropic pricing per million tokens (2026 list prices, no caching discount).
+# Anthropic pricing per million tokens (2026 list, no cache discount).
 MODEL_PRICES: dict[str, tuple[float, float]] = {
     MODEL_OPUS:   (15.0, 75.0),
     MODEL_SONNET: (3.0, 15.0),
@@ -73,103 +71,51 @@ class LLMResponse:
 
 
 def model_for_role(role: str) -> str:
-    """Return the model id for a role.
+    """Return the model spec for a role (may be 'provider:id' or bare id).
 
     Resolution order:
-      1. User config (``~/.maverick/config.toml`` -> ``[models]``).
-         Spec format is ``provider:model-id``; the model-id portion is returned.
-      2. ``ROLE_MODELS`` defaults above.
-      3. ``DEFAULT_MODEL``.
+      1. ``~/.maverick/config.toml`` -> ``[models]`` -> role
+      2. ``ROLE_MODELS`` defaults
+      3. ``DEFAULT_MODEL``
     """
     try:
         from .config import get_role_model
         spec = get_role_model(role)
         if spec:
-            return spec.split(":", 1)[-1]
+            return spec
     except Exception:
         pass
     return ROLE_MODELS.get(role, DEFAULT_MODEL)
 
 
-def _ephemeral(obj: dict) -> dict:
-    return {**obj, "cache_control": {"type": "ephemeral"}}
-
-
-def _cached_system(text: str) -> list[dict]:
-    """Static system prompts are cached. Place dynamic context in messages."""
-    return [_ephemeral({"type": "text", "text": text})]
-
-
-def _cached_tools(tools: list[dict]) -> list[dict]:
-    """Cache the tool catalog. The last tool carries the cache breakpoint."""
-    if not tools:
-        return tools
-    out = [dict(t) for t in tools]
-    out[-1] = _ephemeral(out[-1])
-    return out
+def _parse_spec(spec: str) -> tuple[str, str]:
+    """Parse ``provider:model-id`` or bare ``model-id`` (= anthropic)."""
+    if ":" in spec:
+        provider, model_id = spec.split(":", 1)
+        return provider, model_id
+    return "anthropic", spec
 
 
 class LLM:
-    """Sync + async client with caching, thinking, and streaming."""
+    """Multi-provider LLM dispatcher.
+
+    Holds a cache of provider-specific client instances. Each call routes
+    to the right one based on the model spec (defaults to ``self.model``).
+
+    Drop-in replacement for the previous anthropic-only LLM class.
+    """
 
     def __init__(self, model: str = DEFAULT_MODEL, api_key: Optional[str] = None):
         self.model = model
-        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        self.client = anthropic.Anthropic(api_key=key)
-        self.aclient = anthropic.AsyncAnthropic(api_key=key)
+        self._anthropic_api_key = api_key  # legacy back-compat
+        self._clients: dict[str, Any] = {}
 
-    def _build_request(
-        self,
-        system: str,
-        messages: list[dict],
-        tools: Optional[list[dict]],
-        max_tokens: int,
-        thinking_budget: Optional[int],
-        model: Optional[str],
-    ) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {
-            "model": model or self.model,
-            "system": _cached_system(system),
-            "messages": messages,
-            "max_tokens": max_tokens,
-        }
-        if tools:
-            kwargs["tools"] = _cached_tools(tools)
-        if thinking_budget and thinking_budget > 0:
-            # max_tokens must exceed thinking budget.
-            kwargs["max_tokens"] = max(max_tokens, thinking_budget + 1024)
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
-        return kwargs
-
-    def _parse_response(self, resp: Any, budget: Optional[Budget]) -> LLMResponse:
-        text_parts: list[str] = []
-        thinking_parts: list[str] = []
-        tool_calls: list[ToolCall] = []
-        for block in resp.content:
-            t = getattr(block, "type", None)
-            if t == "text":
-                text_parts.append(block.text)
-            elif t == "thinking":
-                thinking_parts.append(getattr(block, "thinking", ""))
-            elif t == "tool_use":
-                tool_calls.append(ToolCall(id=block.id, name=block.name, input=dict(block.input)))
-
-        usage = resp.usage
-        cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
-        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-
-        if budget is not None:
-            budget.record_tokens(usage.input_tokens, usage.output_tokens)
-
-        return LLMResponse(
-            text="\n".join(text_parts).strip(),
-            thinking="\n".join(thinking_parts).strip() or None,
-            tool_calls=tool_calls,
-            stop_reason=resp.stop_reason,
-            cache_creation_tokens=cache_creation,
-            cache_read_tokens=cache_read,
-            raw=resp,
-        )
+    def _get_client(self, provider: str):
+        if provider not in self._clients:
+            from .providers import get_provider_client
+            key = self._anthropic_api_key if provider == "anthropic" else None
+            self._clients[provider] = get_provider_client(provider, api_key=key)
+        return self._clients[provider]
 
     def complete(
         self,
@@ -180,20 +126,17 @@ class LLM:
         max_tokens: int = 4096,
         thinking_budget: Optional[int] = None,
         model: Optional[str] = None,
-        on_delta: Optional[Callable[[str], None]] = None,
+        on_delta=None,
     ) -> LLMResponse:
-        kwargs = self._build_request(system, messages, tools, max_tokens, thinking_budget, model)
-
-        if on_delta is None:
-            resp = self.client.messages.create(**kwargs)
-            return self._parse_response(resp, budget)
-
-        # Streaming path.
-        with self.client.messages.stream(**kwargs) as stream:
-            for event in stream.text_stream:
-                on_delta(event)
-            final = stream.get_final_message()
-        return self._parse_response(final, budget)
+        provider, model_id = _parse_spec(model or self.model)
+        client = self._get_client(provider)
+        kwargs: dict[str, Any] = dict(
+            system=system, messages=messages, tools=tools, budget=budget,
+            max_tokens=max_tokens, thinking_budget=thinking_budget, model=model_id,
+        )
+        if on_delta is not None and provider == "anthropic":
+            kwargs["on_delta"] = on_delta
+        return client.complete(**kwargs)
 
     async def complete_async(
         self,
@@ -205,6 +148,9 @@ class LLM:
         thinking_budget: Optional[int] = None,
         model: Optional[str] = None,
     ) -> LLMResponse:
-        kwargs = self._build_request(system, messages, tools, max_tokens, thinking_budget, model)
-        resp = await self.aclient.messages.create(**kwargs)
-        return self._parse_response(resp, budget)
+        provider, model_id = _parse_spec(model or self.model)
+        client = self._get_client(provider)
+        return await client.complete_async(
+            system=system, messages=messages, tools=tools, budget=budget,
+            max_tokens=max_tokens, thinking_budget=thinking_budget, model=model_id,
+        )

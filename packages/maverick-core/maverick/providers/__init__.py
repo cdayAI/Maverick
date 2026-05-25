@@ -1,43 +1,43 @@
-"""Provider abstraction for multi-LLM routing.
+"""Provider registry. Multi-provider LLM dispatch.
 
-v0.1: only ``AnthropicProvider`` is fully wired up in the agent loop
-(via ``maverick.llm``). Other providers exist as stubs — the installer
-wizard can offer them, config files can reference them, but the agent
-falls back to a clear error if the user tries to actually route a role
-to a stub.
+Each provider client implements the same interface as ``AnthropicClient``:
 
-A future commit refactors ``maverick.llm.LLM`` to dispatch through the
-provider registry based on the ``provider:model-id`` spec from config.
-For now, ``llm.model_for_role`` strips the provider prefix and the
-Anthropic adapter is used unconditionally.
+    complete(system, messages, tools=None, budget=None, ...) -> LLMResponse
+    complete_async(system, messages, tools=None, budget=None, ...) -> LLMResponse
+
+Accepting Anthropic-format messages/tools and returning a
+``maverick.llm.LLMResponse``. OpenAI/OpenRouter/Ollama clients translate
+the format on the fly.
 """
-from .base import Provider, ProviderResponse
-from .anthropic_provider import AnthropicProvider
-from .openai_provider import OpenAIProvider
-from .openrouter_provider import OpenRouterProvider
-from .ollama_provider import OllamaProvider
+from __future__ import annotations
 
-PROVIDERS: dict[str, type[Provider]] = {
-    "anthropic": AnthropicProvider,
-    "openai": OpenAIProvider,
-    "openrouter": OpenRouterProvider,
-    "ollama": OllamaProvider,
-}
+from typing import Any, Optional
 
 
-def get_provider(name: str) -> type[Provider]:
-    if name not in PROVIDERS:
-        raise ValueError(f"unknown provider {name!r}. Available: {list(PROVIDERS)}")
-    return PROVIDERS[name]
+def get_provider_client(name: str, api_key: Optional[str] = None) -> Any:
+    """Lazy-import and instantiate the named provider client.
+
+    Lazy so users don't need the openai SDK installed unless they actually
+    route a role to openai/openrouter/ollama.
+    """
+    if name == "anthropic":
+        from .anthropic_provider import AnthropicClient
+        return AnthropicClient(api_key=api_key)
+    if name == "openai":
+        from .openai_provider import OpenAIClient
+        return OpenAIClient(api_key=api_key)
+    if name == "openrouter":
+        from .openrouter_provider import OpenRouterClient
+        return OpenRouterClient(api_key=api_key)
+    if name == "ollama":
+        from .ollama_provider import OllamaClient
+        return OllamaClient()
+    raise ValueError(
+        f"unknown provider {name!r}. Available: anthropic, openai, openrouter, ollama"
+    )
 
 
-__all__ = [
-    "Provider",
-    "ProviderResponse",
-    "AnthropicProvider",
-    "OpenAIProvider",
-    "OpenRouterProvider",
-    "OllamaProvider",
-    "PROVIDERS",
-    "get_provider",
-]
+KNOWN_PROVIDERS = ("anthropic", "openai", "openrouter", "ollama")
+
+
+__all__ = ["get_provider_client", "KNOWN_PROVIDERS"]

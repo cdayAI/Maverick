@@ -3,8 +3,9 @@
 Updated whenever providers ship new models. Each entry has an id, a
 notes string the wizard shows, and a status marker.
 
-The wizard surfaces every entry but warns clearly when a provider is
-not yet wired up in the agent loop (status='planned').
+All four providers are now wired up (anthropic, openai, openrouter,
+ollama). Picking any of them in the wizard generates a config that the
+agent kernel actually dispatches to via the multi-provider LLM facade.
 """
 
 ROLES: list[tuple[str, str]] = [
@@ -19,7 +20,6 @@ ROLES: list[tuple[str, str]] = [
 ]
 
 
-# status: "ready" (works today) | "planned" (config accepted, agent will fall back)
 PROVIDERS: dict[str, dict] = {
     "anthropic": {
         "status": "ready",
@@ -32,7 +32,7 @@ PROVIDERS: dict[str, dict] = {
         ],
     },
     "openai": {
-        "status": "planned",
+        "status": "ready",
         "label": "OpenAI",
         "env": "OPENAI_API_KEY",
         "models": [
@@ -42,16 +42,18 @@ PROVIDERS: dict[str, dict] = {
         ],
     },
     "openrouter": {
-        "status": "planned",
+        "status": "ready",
         "label": "OpenRouter (200+ models via one API)",
         "env": "OPENROUTER_API_KEY",
         "models": [
             {"id": "auto",                       "notes": "OpenRouter picks for you."},
             {"id": "meta-llama/llama-3.3-70b",  "notes": "Open weight, strong general."},
+            {"id": "google/gemini-pro-1.5",     "notes": "Long context."},
+            {"id": "deepseek/deepseek-r1",      "notes": "Strong reasoning, cheap."},
         ],
     },
     "ollama": {
-        "status": "planned",
+        "status": "ready",
         "label": "Ollama (local, free, private)",
         "env": None,
         "models": [
@@ -64,7 +66,6 @@ PROVIDERS: dict[str, dict] = {
 
 
 def default_for_role(role: str) -> str:
-    """Return the recommended (provider, model-id) default for a role."""
     return {
         "orchestrator":    "anthropic:claude-opus-4-7",
         "researcher":      "anthropic:claude-sonnet-4-6",

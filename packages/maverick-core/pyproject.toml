@@ -17,8 +17,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-shield = ["maverick-shield"]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
+# Provider extras: install the SDK only if you actually pick that provider.
+openai     = ["openai>=1.30"]
+openrouter = ["openai>=1.30"]
+ollama     = ["openai>=1.30"]
+shield     = ["maverick-shield"]
+installer  = ["maverick-installer"]
+channels   = ["maverick-channels"]
+dev        = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
+all        = [
+    "openai>=1.30",
+    "maverick-shield",
+    "maverick-installer",
+    "maverick-channels",
+]
 
 [project.scripts]
 maverick = "maverick.cli:main"
