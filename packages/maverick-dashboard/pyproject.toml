@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maverick-dashboard"
+version = "0.1.0"
+description = "Local web dashboard for Maverick (goals, skills, facts, spend)"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "texasreaper62" }]
+readme = "README.md"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "jinja2>=3.1",
+]
+
+[project.scripts]
+maverick-dashboard = "maverick_dashboard.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["maverick_dashboard*"]
+
+[tool.setuptools.package-data]
+maverick_dashboard = ["templates/*.html", "static/*"]
