@@ -1,11 +1,5 @@
-"""MCP server smoke tests.
-
-No subprocess / no stdio plumbing -- just unit tests on the dispatch
-and protocol shapes.
-"""
+"""MCP server smoke tests."""
 from __future__ import annotations
-
-import pytest
 
 from maverick_mcp.server import PROTOCOL_VERSION, TOOLS, MCPServer
 
@@ -20,7 +14,6 @@ class TestTools:
 
     def test_known_tool_names(self):
         names = {t["name"] for t in TOOLS}
-        # Smoke check the core verbs are exposed.
         for expected in (
             "maverick_start",
             "maverick_status",
@@ -51,6 +44,5 @@ class TestProtocol:
 
     def test_missing_required_arg_returns_error(self):
         s = MCPServer()
-        # maverick_answer requires question_id and answer
         out = s.handle_tools_call({"name": "maverick_answer", "arguments": {}})
         assert out["isError"] is True

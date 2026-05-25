@@ -8,7 +8,6 @@ on:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    # Informational while we triage rule conflicts on the ported codebase.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -34,18 +33,17 @@ jobs:
       - name: Install packages
         run: |
           set -x
-          # Install maverick-core first so its 'maverick' dist satisfies the
-          # cross-package 'maverick>=0.1' constraints. Use --no-deps on the
-          # downstream packages so pip doesn't try to satisfy that constraint
-          # by fetching 'maverick' from PyPI (where it doesn't exist / could
-          # be an unrelated package). Then install the downstream packages'
-          # actual runtime deps explicitly.
+          # Install maverick-core first; downstream packages use --no-deps to
+          # avoid pip trying to resolve 'maverick>=0.1' from PyPI.
           pip install -e ./packages/maverick-core
           pip install --no-deps -e ./packages/maverick-shield
           pip install --no-deps -e ./packages/maverick-channels
+          pip install --no-deps -e ./packages/maverick-dashboard
+          pip install --no-deps -e ./packages/maverick-mcp
           pip install --no-deps -e ./apps/installer-cli
-          # Runtime deps that --no-deps skipped:
+          # Runtime deps for the --no-deps installs (deps are otherwise dropped).
           pip install 'questionary>=2.0' 'rich>=13.7'
+          pip install 'fastapi>=0.110' 'uvicorn>=0.27' 'jinja2>=3.1' 'httpx>=0.27'
           # Test deps:
           pip install pytest pytest-asyncio
       - name: Show installed packages

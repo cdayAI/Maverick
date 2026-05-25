@@ -18,7 +18,6 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 import click
 
@@ -76,7 +75,7 @@ def _check_anthropic() -> None:
 def _check_openai() -> None:
     key = os.environ.get("OPENAI_API_KEY", "")
     if not key:
-        return  # only show if configured
+        return
     try:
         from openai import AuthenticationError, OpenAI
     except ImportError:
@@ -122,7 +121,6 @@ CHANNEL_DEPS = {
     "matrix":   ("nio", "matrix-nio"),
     "whatsapp": ("twilio", "twilio + fastapi"),
     "sms":      ("twilio", "twilio + fastapi"),
-    # email + signal + imessage: stdlib + system tool only.
 }
 
 
@@ -133,7 +131,6 @@ def _check_channels(cfg: dict) -> None:
     for name, ch_cfg in channels.items():
         if not ch_cfg.get("enabled"):
             continue
-        # Optional Python dep check
         dep = CHANNEL_DEPS.get(name)
         if dep:
             mod, friendly = dep

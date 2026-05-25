@@ -10,7 +10,6 @@ mcp_client.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from .mcp_client import MCPClient
 from .tools import Tool

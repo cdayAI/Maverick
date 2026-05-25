@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from maverick_dashboard.app import app
@@ -18,7 +16,6 @@ class TestBearerAuth:
         os.environ.pop("MAVERICK_DASHBOARD_TOKEN", None)
 
     def test_no_token_allows_access(self):
-        # MAVERICK_DASHBOARD_TOKEN unset → all routes open (default for localhost).
         resp = client.get("/healthz")
         assert resp.status_code == 200
 

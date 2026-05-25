@@ -1,6 +1,10 @@
 """FastAPI dashboard for Maverick.
 
-v0.1.4 mounts the REST API at /api/v1 (with OpenAPI docs at /docs).
+Local browser UI + REST API. /chat lets the user start a goal from the
+browser; the agent runs in a FastAPI BackgroundTask and the page polls
+/api/goal/{id}/events for live progress.
+
+v0.1.4: mounts /api/v1 (full REST + OpenAPI docs at /docs).
 """
 from __future__ import annotations
 
@@ -12,6 +16,8 @@ from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+
+from .api import router as api_router
 
 log = logging.getLogger(__name__)
 
@@ -26,10 +32,6 @@ app = FastAPI(
     ),
     version="0.1.0",
 )
-
-# Mount REST API and ensure OpenAPI schema is enabled even though the
-# top-level FastAPI was constructed with default doc URLs.
-from .api import router as api_router
 app.include_router(api_router)
 
 
@@ -144,7 +146,6 @@ async def chat_goal(request: Request, goal_id: int) -> HTMLResponse:
 
 @app.get("/api/goal/{goal_id}")
 async def api_goal_legacy(goal_id: int) -> dict:
-    """Pre-v1 endpoint; kept for chat_goal.html legacy poller compat."""
     g = _world().get_goal(goal_id)
     if g is None:
         raise HTTPException(status_code=404, detail="no such goal")
@@ -153,7 +154,6 @@ async def api_goal_legacy(goal_id: int) -> dict:
 
 @app.get("/api/goal/{goal_id}/events")
 async def api_goal_events_legacy(goal_id: int, since: int = 0, limit: int = 200) -> dict:
-    """Pre-v1 events endpoint; kept for chat_goal.html legacy poller compat."""
     w = _world()
     g = w.get_goal(goal_id)
     if g is None:

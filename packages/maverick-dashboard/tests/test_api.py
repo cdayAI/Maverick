@@ -1,8 +1,6 @@
 """REST API endpoint tests."""
 from __future__ import annotations
 
-import os
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -28,7 +26,6 @@ class TestGoals:
 
     def test_create_returns_pending(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
-        # Replace the runner so we don't actually call Anthropic.
         import maverick_dashboard.api as api_mod
         called = []
         monkeypatch.setattr(api_mod, "_run_goal_in_thread", lambda g: called.append(g))
@@ -103,7 +100,6 @@ class TestOpenAPI:
         resp = client.get("/openapi.json")
         assert resp.status_code == 200
         spec = resp.json()
-        # Sanity: every v1 endpoint shows up in the spec.
         paths = spec.get("paths", {})
         for required in (
             "/api/v1/goals", "/api/v1/goals/{goal_id}", "/api/v1/facts",

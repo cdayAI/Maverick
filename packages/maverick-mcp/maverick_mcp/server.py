@@ -1,4 +1,4 @@
-"""MCP (Model Context Protocol) server for Maverick.
+"""MCP server for Maverick.
 
 Minimal JSON-RPC 2.0 over stdio implementation matching the
 MCP 2024-11-05 spec. Exposes Maverick's CLI verbs as tools so any
@@ -10,13 +10,10 @@ Methods implemented:
   - tools/list
   - tools/call
   - notifications/initialized (no-op)
+  - ping
 
 Transport: stdio line-delimited JSON. Clients spawn this process and
 communicate via stdin/stdout.
-
-No external dependencies -- intentionally hand-rolled to keep the
-dependency footprint tiny. Future polish: switch to the official
-`mcp` Python SDK once it stabilizes.
 """
 from __future__ import annotations
 
@@ -28,7 +25,6 @@ from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
-# Log to stderr so we don't corrupt the JSON-RPC stream on stdout.
 logging.basicConfig(
     level=logging.INFO,
     stream=sys.stderr,
@@ -119,16 +115,8 @@ TOOLS: list[dict[str, Any]] = [
 
 
 class MCPServer:
-    """JSON-RPC 2.0 stdio server.
-
-    Synchronous; tools that are themselves async (like maverick_start)
-    use ``asyncio.run`` internally so the protocol layer stays simple.
-    """
-
     def __init__(self):
         self._initialized = False
-
-    # ---- protocol methods ----
 
     def handle_initialize(self, params: dict) -> dict:
         self._initialized = True
@@ -156,8 +144,6 @@ class MCPServer:
             "content": [{"type": "text", "text": result}],
         }
 
-    # ---- tool dispatch ----
-
     def _dispatch_tool(self, name: Optional[str], args: dict) -> str:
         if name == "maverick_start":
             return self._tool_start(args)
@@ -178,8 +164,6 @@ class MCPServer:
         raise ValueError(f"unknown tool {name!r}")
 
     def _tool_start(self, args: dict) -> str:
-        from pathlib import Path
-
         from maverick.budget import Budget
         from maverick.llm import LLM
         from maverick.orchestrator import run_goal_sync
@@ -260,8 +244,6 @@ class MCPServer:
             return "no facts known"
         return "\n".join(f"{k}: {v}" for k, v in facts.items())
 
-    # ---- transport loop ----
-
     def _send(self, message: dict) -> None:
         sys.stdout.write(json.dumps(message) + "\n")
         sys.stdout.flush()
@@ -291,8 +273,6 @@ class MCPServer:
             method = msg.get("method")
             request_id = msg.get("id")
             params = msg.get("params", {}) or {}
-
-            # Notifications have no id; don't reply to them.
             is_notification = request_id is None
 
             try:
@@ -303,7 +283,7 @@ class MCPServer:
                 elif method == "tools/call":
                     self._send_result(request_id, self.handle_tools_call(params))
                 elif method == "notifications/initialized":
-                    pass  # no-op
+                    pass
                 elif method == "ping":
                     self._send_result(request_id, {})
                 else:
