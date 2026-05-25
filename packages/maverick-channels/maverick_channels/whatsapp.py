@@ -1,13 +1,17 @@
 """WhatsApp channel via Twilio Business API.
 
-Scaffold. WhatsApp requires:
-  - A public HTTPS endpoint (Twilio sends webhooks to your URL)
-  - A Twilio account with WhatsApp Sandbox or approved sender
+Requires:
+  - Public HTTPS endpoint (Twilio sends webhooks to your URL)
+  - Twilio account with WhatsApp Sandbox or approved sender
   - DNS / TLS termination (Caddy or similar)
 
 This class provides the runtime; you must expose the FastAPI app at a
-public URL and configure it in Twilio. For VPS deployments, the
-included Caddyfile already proxies localhost:8765.
+public URL and configure it in Twilio. The included Caddyfile in
+deploy/vps/ shows the reverse-proxy pattern.
+
+v0.1.1 fix: webhook now validates Twilio's X-Twilio-Signature so
+random internet POSTs can't trigger agent runs (which would cost the
+user real money for outbound Twilio replies).
 
 Config::
 
@@ -33,12 +37,14 @@ from .base import Channel, IncomingMessage
 log = logging.getLogger(__name__)
 
 try:
-    from fastapi import FastAPI, Form, Response
+    from fastapi import FastAPI, Form, HTTPException, Request, Response
+    from twilio.request_validator import RequestValidator
     from twilio.rest import Client as TwilioClient
     _HAVE_DEPS = True
 except ImportError:
     _HAVE_DEPS = False
-    FastAPI = Form = Response = TwilioClient = None  # type: ignore
+    FastAPI = Form = HTTPException = Request = Response = None  # type: ignore
+    RequestValidator = TwilioClient = None  # type: ignore
 
 
 class WhatsAppChannel(Channel):
@@ -68,10 +74,26 @@ class WhatsAppChannel(Channel):
             )
         self.port = port
         self._twilio = TwilioClient(self.account_sid, self.auth_token)
+        self._validator = RequestValidator(self.auth_token)
         self._app = FastAPI()
         self._app.post("/webhook/whatsapp")(self._handle_webhook)
+        self._uvicorn_server = None
 
-    async def _handle_webhook(self, From: str = Form(...), Body: str = Form(...)):  # noqa: N803
+    async def _handle_webhook(
+        self,
+        request: "Request",
+        From: str = Form(...),  # noqa: N803
+        Body: str = Form(...),  # noqa: N803
+    ):
+        # Validate Twilio signature so random POSTs can't spoof inbound.
+        signature = request.headers.get("X-Twilio-Signature", "")
+        url = str(request.url)
+        form = await request.form()
+        form_dict = {k: str(v) for k, v in form.items()}
+        if not self._validator.validate(url, form_dict, signature):
+            log.warning("WhatsApp webhook signature invalid; ignoring")
+            raise HTTPException(status_code=403, detail="signature invalid")
+
         msg = IncomingMessage(user_id=From, text=Body, channel="whatsapp")
         try:
             reply = await self.handler(msg)
@@ -87,8 +109,8 @@ class WhatsAppChannel(Channel):
         config = uvicorn.Config(
             self._app, host="0.0.0.0", port=self.port, log_level="info"  # noqa: S104
         )
-        server = uvicorn.Server(config)
-        await server.serve()
+        self._uvicorn_server = uvicorn.Server(config)
+        await self._uvicorn_server.serve()
 
     async def send(self, user_id: str, text: str) -> None:
         import asyncio
@@ -100,4 +122,5 @@ class WhatsAppChannel(Channel):
         )
 
     async def stop(self) -> None:
-        pass
+        if self._uvicorn_server is not None:
+            self._uvicorn_server.should_exit = True

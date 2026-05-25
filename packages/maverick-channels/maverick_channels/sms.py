@@ -3,6 +3,8 @@
 Same transport pattern as WhatsApp: Twilio webhook -> FastAPI receiver.
 Difference is the message format (no `whatsapp:` prefix on numbers).
 
+v0.1.1 fix: now validates X-Twilio-Signature on incoming webhooks.
+
 Config::
 
     [channels.sms]
@@ -27,12 +29,14 @@ from .base import Channel, IncomingMessage
 log = logging.getLogger(__name__)
 
 try:
-    from fastapi import FastAPI, Form, Response
+    from fastapi import FastAPI, Form, HTTPException, Request, Response
+    from twilio.request_validator import RequestValidator
     from twilio.rest import Client as TwilioClient
     _HAVE_DEPS = True
 except ImportError:
     _HAVE_DEPS = False
-    FastAPI = Form = Response = TwilioClient = None  # type: ignore
+    FastAPI = Form = HTTPException = Request = Response = None  # type: ignore
+    RequestValidator = TwilioClient = None  # type: ignore
 
 
 class SMSChannel(Channel):
@@ -58,10 +62,25 @@ class SMSChannel(Channel):
             raise ValueError("Twilio credentials missing for SMS")
         self.port = port
         self._twilio = TwilioClient(self.account_sid, self.auth_token)
+        self._validator = RequestValidator(self.auth_token)
         self._app = FastAPI()
         self._app.post("/webhook/sms")(self._handle_webhook)
+        self._uvicorn_server = None
 
-    async def _handle_webhook(self, From: str = Form(...), Body: str = Form(...)):  # noqa: N803
+    async def _handle_webhook(
+        self,
+        request: "Request",
+        From: str = Form(...),  # noqa: N803
+        Body: str = Form(...),  # noqa: N803
+    ):
+        signature = request.headers.get("X-Twilio-Signature", "")
+        url = str(request.url)
+        form = await request.form()
+        form_dict = {k: str(v) for k, v in form.items()}
+        if not self._validator.validate(url, form_dict, signature):
+            log.warning("SMS webhook signature invalid; ignoring")
+            raise HTTPException(status_code=403, detail="signature invalid")
+
         msg = IncomingMessage(user_id=From, text=Body, channel="sms")
         try:
             reply = await self.handler(msg)
@@ -77,8 +96,8 @@ class SMSChannel(Channel):
         config = uvicorn.Config(
             self._app, host="0.0.0.0", port=self.port, log_level="info"  # noqa: S104
         )
-        server = uvicorn.Server(config)
-        await server.serve()
+        self._uvicorn_server = uvicorn.Server(config)
+        await self._uvicorn_server.serve()
 
     async def send(self, user_id: str, text: str) -> None:
         import asyncio
@@ -90,4 +109,5 @@ class SMSChannel(Channel):
         )
 
     async def stop(self) -> None:
-        pass
+        if self._uvicorn_server is not None:
+            self._uvicorn_server.should_exit = True

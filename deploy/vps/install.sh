@@ -7,10 +7,11 @@
 #
 # What it does:
 #   1. Installs Python 3.12, pipx, git
-#   2. Installs the maverick CLI + installer + shield
-#   3. Runs `maverick init` interactively (you pick everything)
-#   4. Drops a systemd unit so maverick runs at boot
-#   5. Optionally configures Caddy for HTTPS access (if you provide a domain)
+#   2. Installs maverick (core + shield + channels + installer) into one pipx venv
+#   3. Runs `maverick init` interactively so you pick deployment / providers /
+#      models / channels / safety / sandbox / budget
+#   4. Drops a systemd unit so maverick serve runs at boot
+#   5. Optionally configures Caddy for HTTPS (see Caddyfile next to this script)
 
 set -euo pipefail
 
@@ -35,14 +36,17 @@ install_system_deps() {
 
 install_maverick() {
   log "Installing maverick..."
-  # Until packages are on PyPI, install from the repo.
+  # Until packages are on PyPI, install from source.
   if [[ ! -d /opt/maverick ]]; then
     git clone https://github.com/texasreaper62/maverick /opt/maverick
   else
     git -C /opt/maverick pull --ff-only
   fi
+  # Install the core package into a fresh pipx venv, then inject the rest
+  # so they all share one environment.
   pipx install /opt/maverick/packages/maverick-core --force
   pipx inject maverick /opt/maverick/packages/maverick-shield
+  pipx inject maverick /opt/maverick/packages/maverick-channels
   pipx inject maverick /opt/maverick/apps/installer-cli
 }
 

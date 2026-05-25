@@ -1,5 +1,9 @@
 """Email channel: IMAP poll for incoming, SMTP for outgoing.
 
+v0.1.1 fix: both IMAP and SMTP calls now have a 30-second connect
+timeout. A wedged Gmail connection no longer pins the channel thread
+forever.
+
 Set up:
   1. Use an account with an app password (Gmail / Fastmail / etc.)
   2. Set in config:
@@ -24,11 +28,13 @@ import imaplib
 import logging
 import smtplib
 from email.message import EmailMessage
-from typing import Optional
 
 from .base import Channel, IncomingMessage
 
 log = logging.getLogger(__name__)
+
+IMAP_TIMEOUT = 30.0
+SMTP_TIMEOUT = 30.0
 
 
 class EmailChannel(Channel):
@@ -61,7 +67,13 @@ class EmailChannel(Channel):
         log.info("Email channel polling %s every %ds", self.imap_host, self.poll_interval)
         while not self._stop:
             try:
-                messages = await asyncio.to_thread(self._fetch_unseen)
+                messages = await asyncio.wait_for(
+                    asyncio.to_thread(self._fetch_unseen),
+                    timeout=IMAP_TIMEOUT * 2,
+                )
+            except asyncio.TimeoutError:
+                log.warning("IMAP poll timed out; continuing")
+                messages = []
             except Exception:  # pragma: no cover
                 log.exception("email poll failed")
                 messages = []
@@ -81,7 +93,7 @@ class EmailChannel(Channel):
 
     def _fetch_unseen(self) -> list[tuple[str, str, str]]:
         out: list[tuple[str, str, str]] = []
-        with imaplib.IMAP4_SSL(self.imap_host) as mail:
+        with imaplib.IMAP4_SSL(self.imap_host, timeout=IMAP_TIMEOUT) as mail:
             mail.login(self.imap_user, self.imap_password)
             mail.select("INBOX")
             _, data = mail.search(None, "UNSEEN")
@@ -122,7 +134,7 @@ class EmailChannel(Channel):
         msg["To"] = to_addr
         msg["Subject"] = subject
         msg.set_content(text)
-        with smtplib.SMTP_SSL(self.smtp_host, self.smtp_port) as smtp:
+        with smtplib.SMTP_SSL(self.smtp_host, self.smtp_port, timeout=SMTP_TIMEOUT) as smtp:
             smtp.login(self.smtp_user, self.smtp_password)
             smtp.send_message(msg)
 

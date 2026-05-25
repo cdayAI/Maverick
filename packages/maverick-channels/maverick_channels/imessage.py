@@ -11,6 +11,14 @@ Config::
     [channels.imessage]
     enabled = true
     poll_interval = 5
+
+v0.1.1 fix: send() previously did `osascript -e 'send "%s" to buddy "%s"'`
+with naive escaping (only replaced `"` -> `\\"`), so LLM-controlled
+message text containing `;`, `\\n`, or `$` could break out of the
+string literal and execute arbitrary AppleScript / shell. The send
+path now passes the script via stdin and the user-supplied text +
+handle as positional argv to a parameterized `on run argv` script.
+AppleScript treats argv items as literal strings -- no interpolation.
 """
 from __future__ import annotations
 
@@ -27,6 +35,18 @@ from .base import Channel, IncomingMessage
 log = logging.getLogger(__name__)
 
 CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"
+
+
+_SEND_SCRIPT = (
+    'on run argv\n'
+    '    set theText to item 1 of argv\n'
+    '    set theHandle to item 2 of argv\n'
+    '    tell application "Messages"\n'
+    '        send theText to buddy theHandle of '
+    '(service 1 whose service type is iMessage)\n'
+    '    end tell\n'
+    'end run\n'
+)
 
 
 class iMessageChannel(Channel):  # noqa: N801 - product spelling
@@ -50,7 +70,6 @@ class iMessageChannel(Channel):  # noqa: N801 - product spelling
 
     async def start(self) -> None:
         log.info("iMessage channel polling chat.db every %ds", self.poll_interval)
-        # Initialize cursor to current latest so we only handle NEW messages.
         self._last_rowid = await asyncio.to_thread(self._latest_rowid)
         while not self._stop:
             try:
@@ -97,15 +116,19 @@ class iMessageChannel(Channel):  # noqa: N801 - product spelling
         return out
 
     async def send(self, user_id: str, text: str) -> None:
-        escaped = text.replace('"', '\\"')
-        script = (
-            f'tell application "Messages"\n'
-            f'  send "{escaped}" to buddy "{user_id}" '
-            f'of (service 1 whose service type is iMessage)\n'
-            f'end tell'
-        )
+        """Send via parameterized AppleScript (no shell-style interpolation).
+
+        argv items are treated as literal strings by AppleScript, so even
+        adversarial LLM output (quotes, semicolons, newlines, `$`) cannot
+        escape into command execution.
+        """
         await asyncio.to_thread(
-            subprocess.run, ["osascript", "-e", script], check=False,
+            subprocess.run,
+            ["osascript", "-", text, user_id],
+            input=_SEND_SCRIPT,
+            text=True,
+            check=False,
+            timeout=10,
         )
 
     async def stop(self) -> None:
