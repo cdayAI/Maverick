@@ -23,6 +23,6 @@ select = ["E", "F", "W"]
 ignore = ["E501"]  # line length
 
 [tool.pytest.ini_options]
-testpaths = ["packages", "apps"]
+testpaths = ["packages", "apps", "benchmarks"]
 python_files = "test_*.py"
 addopts = "--import-mode=importlib"
