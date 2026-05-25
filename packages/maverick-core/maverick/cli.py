@@ -552,5 +552,130 @@ def skill_info(name: str) -> None:
     sys.exit(2)
 
 
+@main.command()
+@click.option("--channel", required=True, help="Channel name (e.g. telegram, sms).")
+@click.option("--user", required=True, help="The channel user_id to erase.")
+@click.option("--yes", is_flag=True, help="Skip confirmation.")
+@click.pass_context
+def erase(ctx, channel: str, user: str, yes: bool) -> None:
+    """GDPR Art. 17 right-to-erasure: delete everything Maverick knows
+    about a given (channel, user_id) — conversations, turns, attachments
+    on disk, and the conversation row itself."""
+    world = WorldModel(ctx.obj["db"])
+    convs = [
+        c for c in world.list_conversations(channel)
+        if c.user_id == user
+    ]
+    if not convs:
+        click.echo(f"no conversation found for {channel}:{user}")
+        return
+    if not yes:
+        click.echo(f"This will erase {len(convs)} conversation(s) for {channel}:{user}.")
+        click.confirm("Proceed?", abort=True)
+
+    removed_turns = 0
+    removed_attachments = 0
+    for c in convs:
+        # Find goals attached to this conversation's turns and remove
+        # their attachments from disk.
+        turns = world.recent_turns(c.id, limit=10_000)
+        goal_ids = {t.goal_id for t in turns if t.goal_id is not None}
+        for gid in goal_ids:
+            for a in world.list_attachments(gid):
+                try:
+                    Path(a.path).unlink(missing_ok=True)
+                    removed_attachments += 1
+                except OSError:
+                    pass
+        # Delete turns + the conversation row.
+        cur = world.conn.execute(
+            "DELETE FROM turns WHERE conversation_id = ?", (c.id,),
+        )
+        removed_turns += cur.rowcount
+        world.conn.execute("DELETE FROM conversations WHERE id = ?", (c.id,))
+    world.conn.commit()
+    click.echo(
+        f"erased {len(convs)} conversation(s), {removed_turns} turn(s), "
+        f"{removed_attachments} attachment file(s)"
+    )
+
+
+@main.command()
+@click.option("--channel", required=True, help="Channel name.")
+@click.option("--user", required=True, help="The channel user_id to export.")
+@click.option("--output", "-o", type=click.Path(), default=None,
+              help="Write JSON to file (default stdout).")
+@click.pass_context
+def export(ctx, channel: str, user: str, output) -> None:
+    """GDPR Art. 15 right-of-access: dump everything Maverick knows about
+    a given (channel, user_id) as JSON."""
+    import json
+    world = WorldModel(ctx.obj["db"])
+    convs = [
+        c for c in world.list_conversations(channel)
+        if c.user_id == user
+    ]
+    data = {
+        "channel": channel,
+        "user_id": user,
+        "conversations": [],
+    }
+    for c in convs:
+        turns = world.recent_turns(c.id, limit=10_000)
+        conv_data = {
+            "id": c.id,
+            "created_at": c.created_at,
+            "last_seen": c.last_seen,
+            "turns": [
+                {"role": t.role, "content": t.content, "ts": t.ts,
+                 "goal_id": t.goal_id}
+                for t in turns
+            ],
+            "attachments": [],
+        }
+        for t in turns:
+            if t.goal_id is None:
+                continue
+            for a in world.list_attachments(t.goal_id):
+                conv_data["attachments"].append({
+                    "filename": a.filename, "mime": a.mime,
+                    "size_bytes": a.size_bytes, "sha256": a.sha256,
+                    "goal_id": a.goal_id,
+                })
+        data["conversations"].append(conv_data)
+
+    payload = json.dumps(data, indent=2, default=str)
+    if output:
+        Path(output).write_text(payload)
+        click.echo(f"exported to {output}")
+    else:
+        click.echo(payload)
+
+
+@main.command()
+@click.option("--days", default=90, type=int,
+              help="Delete conversations idle longer than N days.")
+@click.option("--events-days", default=30, type=int,
+              help="Delete goal_events older than N days.")
+@click.option("--yes", is_flag=True)
+@click.pass_context
+def gc(ctx, days: int, events_days: int, yes: bool) -> None:
+    """Garbage-collect old conversations and goal_events.
+
+    Tier 1 council finding: retention was "forever" by default; this
+    command (plus the systemd timer in deploy/vps/) enforces a policy.
+    """
+    world = WorldModel(ctx.obj["db"])
+    if not yes:
+        click.echo(
+            f"This will prune conversations idle > {days}d and "
+            f"goal_events older than {events_days}d."
+        )
+        click.confirm("Proceed?", abort=True)
+    convs = world.prune_conversations(idle_for_seconds=days * 24 * 3600)
+    events = world.prune_goal_events(older_than_seconds=events_days * 24 * 3600)
+    click.echo(f"pruned {convs} conversation(s), {events} goal_event row(s)")
+
+
 if __name__ == "__main__":
     main()

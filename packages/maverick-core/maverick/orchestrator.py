@@ -62,6 +62,14 @@ async def run_goal(
     if not goal:
         return f"no such goal: {goal_id}"
 
+    # Bind trace context so every log line emitted in this task is
+    # automatically tagged with goal_id (+ conversation_id when set).
+    try:
+        from .logging_config import set_goal_context
+        set_goal_context(goal_id=goal_id, conversation_id=conversation_id)
+    except Exception:  # pragma: no cover
+        pass
+
     world.set_goal_status(goal_id, "active")
     episode_id = world.start_episode(goal_id)
     blackboard = Blackboard()

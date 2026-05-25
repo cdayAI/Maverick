@@ -13,10 +13,21 @@ from maverick_dashboard.app import app
 client = TestClient(app)
 
 
-def test_healthz():
-    resp = client.get("/healthz")
+def test_livez():
+    """Cheap liveness probe always 200s."""
+    resp = client.get("/livez")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
+
+
+def test_healthz_returns_check_breakdown(monkeypatch):
+    """Deep healthz returns a per-check map, may be 200 or 503."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+    resp = client.get("/healthz")
+    assert resp.status_code in (200, 503)
+    body = resp.json()
+    assert body["status"] in ("ok", "degraded")
+    assert "checks" in body
 
 
 def test_index_renders(tmp_path, monkeypatch):

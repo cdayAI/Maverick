@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from .api import router as api_router
@@ -47,7 +47,10 @@ async def _reclaim_orphans() -> None:
     except Exception:
         log.exception("orphan reclaim failed on startup")
 
-_AUTH_EXEMPT = {"/healthz", "/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"}
+_AUTH_EXEMPT = {
+    "/healthz", "/livez", "/readyz",
+    "/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect",
+}
 _query_token_warned = False
 
 
@@ -187,9 +190,84 @@ async def api_goal_events_legacy(goal_id: int, since: int = 0, limit: int = 200)
     }
 
 
-@app.get("/healthz")
-async def healthz() -> dict:
+@app.get("/livez")
+async def livez() -> dict:
+    """Process is alive (TCP-accept liveness only)."""
     return {"status": "ok"}
+
+
+@app.get("/healthz")
+async def healthz() -> JSONResponse:
+    """Deep health: DB writable, LLM provider key present, runner alive."""
+    from maverick.runner import _run_semaphore, MAX_CONCURRENT_GOALS
+    checks: dict[str, str] = {}
+    overall_ok = True
+
+    try:
+        from maverick.world_model import DEFAULT_DB, WorldModel
+        wm = WorldModel(DEFAULT_DB)
+        wm.conn.execute("SELECT 1").fetchone()
+        checks["db"] = "ok"
+    except Exception as e:
+        checks["db"] = f"fail: {type(e).__name__}: {e}"
+        overall_ok = False
+
+    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY"):
+        checks["llm_key"] = "ok"
+    else:
+        checks["llm_key"] = "missing"
+        overall_ok = False
+
+    in_flight = MAX_CONCURRENT_GOALS - _run_semaphore._value  # type: ignore[attr-defined]
+    checks["runner"] = f"in_flight={in_flight}/{MAX_CONCURRENT_GOALS}"
+
+    payload = {"status": "ok" if overall_ok else "degraded", "checks": checks}
+    return JSONResponse(payload, status_code=200 if overall_ok else 503)
+
+
+@app.get("/readyz")
+async def readyz() -> JSONResponse:
+    """Ready to serve traffic (alias for healthz today)."""
+    return await healthz()
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+async def metrics() -> PlainTextResponse:
+    """Prometheus text format. Gated by the same bearer as /api/v1."""
+    from maverick.runner import _run_semaphore, MAX_CONCURRENT_GOALS
+    try:
+        from maverick.world_model import DEFAULT_DB, WorldModel
+        wm = WorldModel(DEFAULT_DB)
+        rows = wm.conn.execute(
+            "SELECT status, COUNT(*) FROM goals GROUP BY status"
+        ).fetchall()
+        spend = wm.total_spend()
+    except Exception:
+        rows = []
+        spend = {"dollars": 0, "input_tokens": 0, "output_tokens": 0, "runs": 0}
+
+    lines = [
+        "# HELP maverick_goals_total Total goals by status",
+        "# TYPE maverick_goals_total counter",
+    ]
+    for status, count in rows:
+        lines.append(f'maverick_goals_total{{status="{status}"}} {count}')
+    lines += [
+        "# HELP maverick_cost_dollars_total Total LLM spend",
+        "# TYPE maverick_cost_dollars_total counter",
+        f"maverick_cost_dollars_total {spend['dollars']:.4f}",
+        "# HELP maverick_tokens_total Total input/output tokens",
+        "# TYPE maverick_tokens_total counter",
+        f'maverick_tokens_total{{direction="input"}} {spend["input_tokens"]}',
+        f'maverick_tokens_total{{direction="output"}} {spend["output_tokens"]}',
+        "# HELP maverick_concurrent_goals Goals running right now",
+        "# TYPE maverick_concurrent_goals gauge",
+        f"maverick_concurrent_goals {MAX_CONCURRENT_GOALS - _run_semaphore._value}",
+        "# HELP maverick_max_concurrent_goals Concurrency cap",
+        "# TYPE maverick_max_concurrent_goals gauge",
+        f"maverick_max_concurrent_goals {MAX_CONCURRENT_GOALS}",
+    ]
+    return PlainTextResponse("\n".join(lines) + "\n")
 
 
 def main() -> None:

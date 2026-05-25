@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 from ..budget import Budget
 from ..llm import LLMResponse, ToolCall
+from ..retry import async_retry, sync_retry
 
 log = logging.getLogger(__name__)
 
@@ -233,7 +234,7 @@ class OpenAIClient:
         if thinking_budget:
             log.debug("OpenAI provider ignores thinking_budget=%s", thinking_budget)
         kwargs = self._build_kwargs(system, messages, tools, max_tokens, model)
-        resp = self._sync.chat.completions.create(**kwargs)
+        resp = sync_retry(lambda: self._sync.chat.completions.create(**kwargs))
         return self._from_response(resp, budget, model=kwargs.get("model"))
 
     async def complete_async(
@@ -249,5 +250,5 @@ class OpenAIClient:
         if thinking_budget:
             log.debug("OpenAI provider ignores thinking_budget=%s", thinking_budget)
         kwargs = self._build_kwargs(system, messages, tools, max_tokens, model)
-        resp = await self._async.chat.completions.create(**kwargs)
+        resp = await async_retry(lambda: self._async.chat.completions.create(**kwargs))
         return self._from_response(resp, budget, model=kwargs.get("model"))

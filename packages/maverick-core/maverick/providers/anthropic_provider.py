@@ -16,6 +16,7 @@ import anthropic
 
 from ..budget import Budget
 from ..llm import LLMResponse, ToolCall
+from ..retry import async_retry, sync_retry
 
 
 def _ephemeral(obj: dict) -> dict:
@@ -119,12 +120,15 @@ class AnthropicClient:
     ) -> LLMResponse:
         kwargs = self._build_request(system, messages, tools, max_tokens, thinking_budget, model)
         if on_delta is None:
-            resp = self.client.messages.create(**kwargs)
+            resp = sync_retry(lambda: self.client.messages.create(**kwargs))
             return self._parse_response(resp, budget, model=kwargs.get("model"))
-        with self.client.messages.stream(**kwargs) as stream:
-            for event in stream.text_stream:
-                on_delta(event)
-            final = stream.get_final_message()
+
+        def _stream():
+            with self.client.messages.stream(**kwargs) as stream:
+                for event in stream.text_stream:
+                    on_delta(event)
+                return stream.get_final_message()
+        final = sync_retry(_stream)
         return self._parse_response(final, budget, model=kwargs.get("model"))
 
     async def complete_async(
@@ -138,5 +142,5 @@ class AnthropicClient:
         model: Optional[str] = None,
     ) -> LLMResponse:
         kwargs = self._build_request(system, messages, tools, max_tokens, thinking_budget, model)
-        resp = await self.aclient.messages.create(**kwargs)
+        resp = await async_retry(lambda: self.aclient.messages.create(**kwargs))
         return self._parse_response(resp, budget, model=kwargs.get("model"))
