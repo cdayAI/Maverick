@@ -154,16 +154,31 @@ class Agent:
         bb = self.ctx.blackboard
         bb.post(self.name, "plan", f"role={self.role} depth={self.depth} brief={self.brief}")
 
-        messages: list[dict] = [
-            {
-                "role": "user",
-                "content": (
-                    f"Sub-goal: {self.brief}\n\n"
-                    f"Recent swarm activity:\n{bb.render(40) or '(empty)'}\n\n"
-                    "Plan briefly, then act. End with FINAL: <answer> when done."
-                ),
-            }
-        ]
+        # If the goal has image attachments, embed them as vision content
+        # blocks on the first user message so the agent can see them.
+        # Text/PDF attachments are reachable via `list_attachments` +
+        # `read_file` (opt-in so we don't blow token budget on huge PDFs).
+        image_blocks: list[dict] = []
+        if self.depth == 0 and self.ctx.goal_id is not None:
+            try:
+                from .attachments import content_blocks_for_goal
+                image_blocks = content_blocks_for_goal(
+                    self.ctx.world, self.ctx.goal_id,
+                )
+            except Exception:
+                image_blocks = []
+
+        brief_text = (
+            f"Sub-goal: {self.brief}\n\n"
+            f"Recent swarm activity:\n{bb.render(40) or '(empty)'}\n\n"
+            "Plan briefly, then act. End with FINAL: <answer> when done."
+        )
+        first_content: list[dict] | str
+        if image_blocks:
+            first_content = image_blocks + [{"type": "text", "text": brief_text}]
+        else:
+            first_content = brief_text
+        messages: list[dict] = [{"role": "user", "content": first_content}]
 
         for step in range(self.max_steps):
             try:

@@ -1,0 +1,147 @@
+"""Reproducible benchmark harness.
+
+Runs a benchmark .md file as a Maverick goal, captures wall-clock /
+cost / token / tool-call metrics from the world model, and writes a row
+into RESULTS.md.
+
+Usage:
+
+    python benchmarks/harness.py longhorizon/research-report.md \\
+        --max-dollars 2.0 \\
+        --tag v0.2.0
+
+The harness is intentionally light: it shells out to `maverick start` so
+it exercises the same code path as a real user; it then reads the world
+model to pull metrics for the just-finished goal.
+
+Comparative numbers vs. other agents (OpenClaw, Hermes) require those
+systems to be installed; harness writes Maverick's row unconditionally
+and leaves placeholders for hand-filled comparator rows.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Optional
+
+
+def run_one(
+    benchmark_path: Path,
+    max_dollars: float,
+    max_wall_seconds: float,
+    tag: str,
+    db_path: Optional[Path] = None,
+) -> dict:
+    """Run a single benchmark. Returns a metrics dict."""
+    spec = benchmark_path.read_text()
+
+    # We don't actually invoke the LLM in CI; export a flag so the
+    # harness can be smoke-tested. Real runs require ANTHROPIC_API_KEY.
+    dry_run = os.environ.get("MAVERICK_BENCH_DRY_RUN") == "1"
+
+    start = time.monotonic()
+    if dry_run:
+        # Synthesize a fake successful run -- useful for CI smoke tests.
+        wall_seconds = 0.1
+        outcome = "dry-run"
+        cost = 0.0
+        in_tokens = 0
+        out_tokens = 0
+        tool_calls = 0
+    else:
+        env = os.environ.copy()
+        cmd = [
+            "maverick", "start", "--no-wait", "--max-dollars", str(max_dollars),
+            spec,
+        ]
+        if db_path is not None:
+            env["MAVERICK_DB"] = str(db_path)
+        proc = subprocess.run(
+            cmd, env=env, capture_output=True, text=True,
+            timeout=max_wall_seconds,
+        )
+        wall_seconds = time.monotonic() - start
+        outcome = "ok" if proc.returncode == 0 else f"exit-{proc.returncode}"
+
+        # Read the most recent episode from the world model.
+        from maverick.world_model import DEFAULT_DB, WorldModel
+        wm = WorldModel(db_path or DEFAULT_DB)
+        eps = wm.list_episodes(limit=1)
+        if eps:
+            cost = eps[0].cost_dollars
+            in_tokens = eps[0].input_tokens
+            out_tokens = eps[0].output_tokens
+            tool_calls = eps[0].tool_calls
+            outcome = eps[0].outcome or outcome
+        else:
+            cost = in_tokens = out_tokens = tool_calls = 0
+
+    return {
+        "benchmark": str(benchmark_path),
+        "tag": tag,
+        "agent": "maverick",
+        "wall_seconds": round(wall_seconds, 2),
+        "cost_dollars": round(cost, 4),
+        "input_tokens": in_tokens,
+        "output_tokens": out_tokens,
+        "tool_calls": tool_calls,
+        "outcome": outcome,
+    }
+
+
+def append_results(row: dict, results_path: Path) -> None:
+    """Append a row to RESULTS.md as a markdown table line.
+
+    Creates the file with header if missing. We use markdown rather than
+    JSON because RESULTS.md is the human-readable artifact.
+    """
+    cols = [
+        "benchmark", "tag", "agent", "wall_seconds", "cost_dollars",
+        "input_tokens", "output_tokens", "tool_calls", "outcome",
+    ]
+    if not results_path.exists():
+        header = "| " + " | ".join(cols) + " |\n"
+        divider = "|" + "|".join(["---"] * len(cols)) + "|\n"
+        results_path.write_text(
+            "# Maverick benchmark results\n\n"
+            "Auto-appended by `benchmarks/harness.py`. Each row is one run.\n\n"
+            + header + divider
+        )
+    line = "| " + " | ".join(str(row.get(c, "")) for c in cols) + " |\n"
+    with results_path.open("a") as f:
+        f.write(line)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("benchmark", type=Path)
+    ap.add_argument("--max-dollars", type=float, default=2.0)
+    ap.add_argument("--max-wall-seconds", type=float, default=1800)
+    ap.add_argument("--tag", default="local")
+    ap.add_argument(
+        "--results", type=Path,
+        default=Path(__file__).parent / "RESULTS.md",
+    )
+    ap.add_argument("--db", type=Path, default=None)
+    args = ap.parse_args()
+
+    if not args.benchmark.exists():
+        print(f"no such benchmark: {args.benchmark}", file=sys.stderr)
+        return 2
+
+    row = run_one(
+        args.benchmark, args.max_dollars, args.max_wall_seconds,
+        args.tag, db_path=args.db,
+    )
+    append_results(row, args.results)
+    print(json.dumps(row, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -19,7 +19,7 @@ from typing import Optional
 
 
 DEFAULT_DB = Path.home() / ".maverick" / "world.db"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 
 SCHEMA = """
@@ -92,6 +92,47 @@ CREATE TABLE IF NOT EXISTS goal_events (
 
 CREATE INDEX IF NOT EXISTS idx_goal_events_goal_id_id ON goal_events(goal_id, id);
 
+-- v0.2 multi-turn: per-channel-user conversation threads.
+-- (channel, user_id) is the natural key so the same iMessage user
+-- across separate Maverick goals lands in a single conversation.
+CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    last_seen REAL NOT NULL,
+    UNIQUE(channel, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_last_seen ON conversations(last_seen);
+
+CREATE TABLE IF NOT EXISTS turns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+    goal_id INTEGER REFERENCES goals(id),
+    role TEXT NOT NULL,     -- 'user' | 'assistant'
+    content TEXT NOT NULL,
+    ts REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_turns_conv_id ON turns(conversation_id, id);
+
+-- v0.2 attachments: files/images uploaded with a goal.
+-- The actual bytes live on disk under ~/.maverick/attachments/<goal>/<sha>;
+-- this row records the metadata and lets the agent enumerate them.
+CREATE TABLE IF NOT EXISTS attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id INTEGER NOT NULL REFERENCES goals(id),
+    filename TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    path TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_goal_id ON attachments(goal_id);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content, content='messages', content_rowid='id'
 );
@@ -110,6 +151,8 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE episodes ADD COLUMN tool_calls INTEGER DEFAULT 0",
     ],
     3: [],  # goal_events table is in SCHEMA (idempotent CREATE)
+    4: [],  # conversations/turns tables are in SCHEMA (idempotent CREATE)
+    5: [],  # attachments table is in SCHEMA (idempotent CREATE)
 }
 
 
@@ -157,6 +200,37 @@ class GoalEvent:
     kind: str
     content: str
     ts: float
+
+
+@dataclass
+class Conversation:
+    id: int
+    channel: str
+    user_id: str
+    created_at: float
+    last_seen: float
+
+
+@dataclass
+class Turn:
+    id: int
+    conversation_id: int
+    goal_id: Optional[int]
+    role: str
+    content: str
+    ts: float
+
+
+@dataclass
+class Attachment:
+    id: int
+    goal_id: int
+    filename: str
+    mime: str
+    size_bytes: int
+    sha256: str
+    path: str
+    created_at: float
 
 
 class WorldModel:
@@ -379,3 +453,102 @@ class WorldModel:
             (query, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ----- conversations (multi-turn per channel user) -----
+    def get_or_create_conversation(self, channel: str, user_id: str) -> Conversation:
+        """Idempotent: same (channel, user_id) always returns the same row.
+        last_seen is bumped on every call so prune_conversations can
+        retire ones the user has stopped talking to."""
+        now = time.time()
+        self.conn.execute(
+            "INSERT INTO conversations(channel, user_id, created_at, last_seen) "
+            "VALUES(?, ?, ?, ?) "
+            "ON CONFLICT(channel, user_id) DO UPDATE SET last_seen = excluded.last_seen",
+            (channel, user_id, now, now),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT * FROM conversations WHERE channel = ? AND user_id = ?",
+            (channel, user_id),
+        ).fetchone()
+        return Conversation(**dict(row))
+
+    def append_turn(
+        self,
+        conversation_id: int,
+        role: str,
+        content: str,
+        goal_id: Optional[int] = None,
+    ) -> int:
+        if role not in ("user", "assistant"):
+            raise ValueError(f"role must be 'user' or 'assistant', got {role!r}")
+        cur = self.conn.execute(
+            "INSERT INTO turns(conversation_id, goal_id, role, content, ts) "
+            "VALUES(?, ?, ?, ?, ?)",
+            (conversation_id, goal_id, role, content, time.time()),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def recent_turns(self, conversation_id: int, limit: int = 20) -> list[Turn]:
+        """Return the most recent N turns in chronological (ascending) order
+        so they can be fed straight into a chat-format prompt."""
+        rows = self.conn.execute(
+            "SELECT id, conversation_id, goal_id, role, content, ts FROM turns "
+            "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+            (conversation_id, limit),
+        ).fetchall()
+        return list(reversed([Turn(**dict(r)) for r in rows]))
+
+    def list_conversations(self, channel: Optional[str] = None) -> list[Conversation]:
+        if channel:
+            rows = self.conn.execute(
+                "SELECT * FROM conversations WHERE channel = ? ORDER BY last_seen DESC",
+                (channel,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM conversations ORDER BY last_seen DESC"
+            ).fetchall()
+        return [Conversation(**dict(r)) for r in rows]
+
+    # ----- attachments -----
+    def add_attachment(
+        self,
+        goal_id: int,
+        filename: str,
+        mime: str,
+        size_bytes: int,
+        sha256: str,
+        path: str,
+    ) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO attachments(goal_id, filename, mime, size_bytes, sha256, path, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (goal_id, filename, mime, size_bytes, sha256, path, time.time()),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_attachments(self, goal_id: int) -> list[Attachment]:
+        rows = self.conn.execute(
+            "SELECT id, goal_id, filename, mime, size_bytes, sha256, path, created_at "
+            "FROM attachments WHERE goal_id = ? ORDER BY id",
+            (goal_id,),
+        ).fetchall()
+        return [Attachment(**dict(r)) for r in rows]
+
+    def prune_conversations(self, idle_for_seconds: float = 90 * 24 * 3600) -> int:
+        """Delete conversations idle for N seconds and their turns. Rows removed."""
+        cutoff = time.time() - idle_for_seconds
+        # Delete turns first so we don't orphan them (no ON DELETE CASCADE).
+        self.conn.execute(
+            "DELETE FROM turns WHERE conversation_id IN "
+            "(SELECT id FROM conversations WHERE last_seen < ?)",
+            (cutoff,),
+        )
+        cur = self.conn.execute(
+            "DELETE FROM conversations WHERE last_seen < ?", (cutoff,)
+        )
+        self.conn.commit()
+        return cur.rowcount

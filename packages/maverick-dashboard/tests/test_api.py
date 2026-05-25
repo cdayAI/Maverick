@@ -98,6 +98,58 @@ class TestAnswer:
         assert resp.status_code == 422
 
 
+class TestAttachments:
+    def test_upload_text_then_list(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MAVERICK_ATTACH_MAX_FILE_BYTES", "1000000")
+        # Attachment bytes land on disk; route to tmp_path so tests don't
+        # litter ~/.maverick.
+        import maverick.attachments as att_mod
+        monkeypatch.setattr(att_mod, "DEFAULT_ROOT", tmp_path / "att")
+
+        from maverick.world_model import DEFAULT_DB, WorldModel
+        wm = WorldModel(DEFAULT_DB)
+        gid = wm.create_goal("attach", "")
+
+        resp = client.post(
+            f"/api/v1/goals/{gid}/attachments",
+            files={"file": ("hello.txt", b"hello world", "text/plain")},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["filename"] == "hello.txt"
+        assert data["mime"] == "text/plain"
+        assert data["size_bytes"] == len(b"hello world")
+
+        # List endpoint returns the same record.
+        resp = client.get(f"/api/v1/goals/{gid}/attachments")
+        assert resp.status_code == 200
+        items = resp.json()
+        assert len(items) == 1
+        assert items[0]["filename"] == "hello.txt"
+
+    def test_upload_rejects_disallowed_mime(self, tmp_path, monkeypatch):
+        import maverick.attachments as att_mod
+        monkeypatch.setattr(att_mod, "DEFAULT_ROOT", tmp_path / "att")
+        from maverick.world_model import DEFAULT_DB, WorldModel
+        wm = WorldModel(DEFAULT_DB)
+        gid = wm.create_goal("attach", "")
+
+        resp = client.post(
+            f"/api/v1/goals/{gid}/attachments",
+            files={"file": ("bad.exe", b"MZ\x00\x00",
+                            "application/x-msdownload")},
+        )
+        assert resp.status_code == 400
+        assert "mime type not allowed" in resp.json()["detail"]
+
+    def test_upload_to_unknown_goal_404(self):
+        resp = client.post(
+            "/api/v1/goals/99999/attachments",
+            files={"file": ("x.txt", b"x", "text/plain")},
+        )
+        assert resp.status_code == 404
+
+
 class TestFacts:
     def test_get_empty_initially(self):
         resp = client.get("/api/v1/facts")

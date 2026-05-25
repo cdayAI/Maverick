@@ -8,7 +8,7 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
@@ -162,6 +162,78 @@ async def answer_question(goal_id: int, payload: AnswerIn) -> None:
     if not any(q.id == payload.question_id for q in qs):
         raise HTTPException(status_code=404, detail="no such open question for this goal")
     w.answer(payload.question_id, payload.answer)
+
+
+class AttachmentOut(BaseModel):
+    id: int
+    filename: str
+    mime: str
+    size_bytes: int
+    sha256: str
+
+
+@router.post(
+    "/goals/{goal_id}/attachments",
+    response_model=AttachmentOut,
+    status_code=201,
+)
+async def upload_attachment(goal_id: int, file: UploadFile = File(...)) -> AttachmentOut:
+    """Upload a file (text, image, or PDF) and attach it to a goal.
+
+    Size and mime-type validation are enforced server-side; the agent's
+    `list_attachments` tool exposes the uploaded set, and image
+    attachments are auto-embedded as vision blocks on the first message.
+    """
+    w = _world()
+    if w.get_goal(goal_id) is None:
+        raise HTTPException(status_code=404, detail="no such goal")
+
+    data = await file.read()
+    mime = file.content_type or "application/octet-stream"
+    filename = file.filename or "upload"
+
+    existing = sum(a.size_bytes for a in w.list_attachments(goal_id))
+    from maverick.attachments import AttachmentRejected, store
+    try:
+        stored = store(
+            goal_id,
+            filename=filename,
+            mime=mime,
+            data=data,
+            existing_total=existing,
+        )
+    except AttachmentRejected as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    aid = w.add_attachment(
+        goal_id=goal_id,
+        filename=stored.filename,
+        mime=stored.mime,
+        size_bytes=stored.size_bytes,
+        sha256=stored.sha256,
+        path=str(stored.path),
+    )
+    return AttachmentOut(
+        id=aid,
+        filename=stored.filename,
+        mime=stored.mime,
+        size_bytes=stored.size_bytes,
+        sha256=stored.sha256,
+    )
+
+
+@router.get("/goals/{goal_id}/attachments", response_model=list[AttachmentOut])
+async def list_goal_attachments(goal_id: int) -> list[AttachmentOut]:
+    w = _world()
+    if w.get_goal(goal_id) is None:
+        raise HTTPException(status_code=404, detail="no such goal")
+    return [
+        AttachmentOut(
+            id=a.id, filename=a.filename, mime=a.mime,
+            size_bytes=a.size_bytes, sha256=a.sha256,
+        )
+        for a in w.list_attachments(goal_id)
+    ]
 
 
 @router.get("/facts", response_model=dict[str, str])

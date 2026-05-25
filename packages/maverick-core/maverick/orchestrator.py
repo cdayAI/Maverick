@@ -56,6 +56,7 @@ async def run_goal(
     goal_id: int,
     sandbox: Optional[Any] = None,
     max_depth: int = 3,
+    conversation_id: Optional[int] = None,
 ) -> str:
     goal = world.get_goal(goal_id)
     if not goal:
@@ -80,9 +81,27 @@ async def run_goal(
 
         facts = world.get_facts()
         facts_block = "\n".join(f"  {k}: {v}" for k, v in facts.items()) or "  (none)"
+
+        # Multi-turn: if this goal belongs to an ongoing conversation,
+        # prepend the recent turn history so the orchestrator has context
+        # for follow-up messages on the same channel.
+        history_block = ""
+        if conversation_id is not None:
+            turns = world.recent_turns(conversation_id, limit=10)
+            if turns:
+                history_lines = [
+                    f"  {t.role}: {t.content[:300]}" for t in turns
+                ]
+                history_block = (
+                    "\nPrior conversation (most recent last):\n"
+                    + "\n".join(history_lines)
+                    + "\n"
+                )
+
         brief = (
             f"Top-level goal: {goal.title}\n"
-            f"Description: {goal.description or '(none)'}\n\n"
+            f"Description: {goal.description or '(none)'}\n"
+            f"{history_block}\n"
             f"Known facts about the user:\n{facts_block}\n\n"
             "Decompose into sub-tasks, spawn workers (parallel where possible), "
             "synthesize their findings, verify, and respond with FINAL:."
@@ -116,6 +135,12 @@ async def run_goal(
         summary = result.final or "(no answer)"
         _end_episode_with_spend(world, episode_id, summary, "success", budget)
         world.set_goal_status(goal_id, "done", result=summary)
+
+        if conversation_id is not None:
+            try:
+                world.append_turn(conversation_id, "assistant", summary, goal_id=goal_id)
+            except Exception as e:  # pragma: no cover -- never block on history
+                log.warning("conversation turn write failed: %s", e)
 
         try:
             skill = distill(goal.title, summary, blackboard, llm, budget=budget)
