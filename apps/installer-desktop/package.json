@@ -1,10 +1,27 @@
 {
   "name": "@maverick/installer-desktop",
-  "version": "0.1.0-pre",
+  "version": "0.1.0",
   "private": true,
-  "description": "Tauri-based GUI installer for Maverick (planned)",
+  "description": "Tauri-based GUI installer for Maverick",
+  "type": "module",
   "scripts": {
-    "dev": "echo 'not yet implemented — see README.md'",
-    "build": "echo 'not yet implemented — see README.md'"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "svelte": "^4.2.0"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^3.0.0",
+    "@tauri-apps/cli": "^2.0.0",
+    "@tsconfig/svelte": "^5.0.0",
+    "svelte-check": "^3.6.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.0.0"
   }
 }

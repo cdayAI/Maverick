@@ -1,40 +1,68 @@
-# maverick-installer-desktop (planned)
+# maverick-installer-desktop
 
-Native GUI installer for users who never open a terminal. The wizard's
-logic lives in the Python core; this app is a Tauri shell that calls
-into it via a small IPC bridge and renders a friendly UI.
+Native Tauri GUI installer for users who never open a terminal.
+Wraps the same `maverick_installer.wizard` logic the CLI uses, behind a
+friendly Svelte UI.
 
-## Why Tauri
+## Status: scaffold
 
-- Single Rust binary; no Electron-sized bundles (~5 MB vs ~150 MB)
-- Cross-platform: macOS (notarized DMG), Windows (signed MSIX), Linux (AppImage)
-- The Maverick core already ships a Rust hot-path via `agent-shield`'s
-  `rust-core/`, so Rust is in the toolchain regardless.
-- Web frontend (Svelte/Solid) for the wizard UI — cheap to iterate.
+The Tauri shell, Cargo manifest, Svelte frontend skeleton, and the
+Python sidecar IPC are in place. To produce installable bundles you
+need Rust + pnpm + the platform SDKs (Xcode on macOS, MSVC on Windows).
+CI binaries land once the GitHub Actions matrix runner is set up
+(planned alongside the next release tag).
 
-## Status
+## Local development
 
-Stub. Code lands next session. The plan:
-
-```
-apps/installer-desktop/
-  src-tauri/         Tauri Rust shell (window, IPC)
-  src/               Svelte frontend (the wizard UI)
-  bridge.py          Python sidecar process that the shell calls
-  package.json       pnpm workspace member
-  tauri.conf.json    bundle config (icons, signing, updater)
+```bash
+cd apps/installer-desktop
+pnpm install
+pnpm tauri dev
 ```
 
-The `bridge.py` is a thin wrapper around
-`maverick_installer.wizard` that exposes the same steps as JSON-RPC
-over stdio, so the GUI and CLI stay in lockstep.
+This starts the Tauri dev shell with hot-reload on the Svelte frontend
+and the Python sidecar (`bridge.py`) reachable from the UI via Tauri's
+invoke API.
 
-## Distribution
+## Producing native bundles
 
-| Platform | Format | Auto-update |
+```bash
+pnpm tauri build
+```
+
+Outputs (per platform):
+- macOS: `.app` + `.dmg` (sign + notarize for distribution)
+- Windows: `.exe` MSI installer + standalone executable
+- Linux: `.AppImage` + `.deb`
+
+## Why Tauri vs Electron
+
+| | Tauri | Electron |
 |---|---|---|
-| macOS | Notarized DMG, signed | Sparkle via Tauri updater |
-| Windows | Signed MSIX | Tauri updater |
-| Linux | AppImage + .deb + .rpm | AppImageUpdate |
+| Bundle size | ~5 MB | ~150 MB |
+| Memory at idle | ~50 MB | ~250 MB |
+| Native webview | system (WebKit / WebView2 / WebKitGTK) | bundled Chromium |
+| Rust shell | yes (security, smaller attack surface) | no |
 
-Releases ship from GitHub Actions on every tag.
+Maverick already needs Rust in the toolchain for the agent-shield
+performance core, so adding Tauri is essentially free.
+
+## Architecture
+
+```
+  +------------------+      Tauri invoke      +-------------------+
+  | Svelte UI (TS)   | <--------------------> | Rust shell (main) |
+  +------------------+                        +---------+---------+
+                                                        |
+                                                        | stdin/stdout JSON-RPC
+                                                        v
+                                              +-------------------+
+                                              | bridge.py (sidecar) |
+                                              | imports maverick    |
+                                              | + maverick_installer|
+                                              +-------------------+
+```
+
+The Rust shell only does window + IPC; everything else (wizard
+questions, config writes, API key validation) goes through the same
+Python code the CLI uses. Single source of truth.

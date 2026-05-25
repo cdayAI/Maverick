@@ -10,7 +10,7 @@ from pathlib import Path
 import click
 
 from .budget import Budget
-from .llm import LLM, DEFAULT_MODEL
+from .llm import DEFAULT_MODEL, LLM
 from .orchestrator import run_goal_sync
 from .sandbox import build_sandbox
 from .skills import (
@@ -19,7 +19,7 @@ from .skills import (
     load_skills,
     remove_skill,
 )
-from .world_model import WorldModel, DEFAULT_DB
+from .world_model import DEFAULT_DB, WorldModel
 
 
 @click.group()
@@ -50,6 +50,42 @@ def init() -> None:
 
 
 @main.command()
+def doctor() -> None:
+    """Diagnose your Maverick installation.
+
+    Checks config, API keys, sandbox availability, channel readiness, and
+    world.db integrity. Prints a green checkmark or a yellow/red status
+    per item so you can see at a glance what's healthy and what isn't.
+    """
+    try:
+        from .health import diagnose
+    except ImportError as e:
+        click.echo(f"ERROR: {e}", err=True)
+        sys.exit(2)
+    diagnose()
+
+
+@main.command()
+@click.argument("action", type=click.Choice(["show", "path", "edit"]), default="show")
+def config(action: str) -> None:
+    """Show, locate, or edit ~/.maverick/config.toml."""
+    from .config import config_path
+    p = config_path()
+    if action == "path":
+        click.echo(str(p))
+        return
+    if action == "edit":
+        editor = os.environ.get("EDITOR", "nano")
+        os.execvp(editor, [editor, str(p)])
+        return  # not reached
+    # show
+    if not p.exists():
+        click.echo(f"No config at {p}. Run:  maverick init", err=True)
+        sys.exit(1)
+    click.echo(p.read_text())
+
+
+@main.command()
 @click.argument("title")
 @click.option("--description", default="", help="Longer description of the goal.")
 @click.option("--max-dollars", default=5.0, type=float)
@@ -72,7 +108,7 @@ def start(
 ) -> None:
     """Start a new goal and run the swarm."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        click.echo("ERROR: ANTHROPIC_API_KEY not set.", err=True)
+        click.echo("ERROR: ANTHROPIC_API_KEY not set. Run: maverick doctor", err=True)
         sys.exit(2)
 
     world = WorldModel(ctx.obj["db"])
@@ -97,19 +133,16 @@ def serve(max_depth: int, verbose: bool) -> None:
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-
     try:
         from .server import build_from_config
     except ImportError as e:
         click.echo(f"ERROR: {e}", err=True)
         sys.exit(2)
-
     try:
         server = build_from_config()
     except RuntimeError as e:
         click.echo(f"ERROR: {e}", err=True)
         sys.exit(2)
-
     server.max_depth = max_depth
     click.echo("Maverick serve running. Ctrl-C to stop.")
     try:
@@ -158,7 +191,6 @@ def resume(ctx, goal_id, max_depth: int) -> None:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         click.echo("ERROR: ANTHROPIC_API_KEY not set.", err=True)
         sys.exit(2)
-
     world = WorldModel(ctx.obj["db"])
     if goal_id is None:
         g = world.active_goal()
@@ -166,14 +198,12 @@ def resume(ctx, goal_id, max_depth: int) -> None:
             click.echo("no active or blocked goal to resume.")
             return
         goal_id = g.id
-
     open_qs = world.open_questions(goal_id)
     if open_qs:
         click.echo(f"cannot resume goal #{goal_id}: {len(open_qs)} open question(s).")
         for q in open_qs:
             click.echo(f"  #{q.id}: {q.question}")
         return
-
     llm = LLM(model=ctx.obj["model"])
     budget = Budget()
     result = run_goal_sync(llm, world, budget, goal_id, max_depth=max_depth)
@@ -222,15 +252,7 @@ def skill() -> None:
 @skill.command("install")
 @click.argument("source")
 def skill_install(source: str) -> None:
-    """Install a SKILL.md from a URL, gh:org/repo[:path], or local file.
-
-    Examples:
-
-      maverick skill install gh:texasreaper62/awesome-maverick-skills
-      maverick skill install gh:texasreaper62/skills:research/web-search.md
-      maverick skill install https://example.com/my-skill.md
-      maverick skill install ./local-skill.md
-    """
+    """Install a SKILL.md from a URL, gh:org/repo[:path], or local file."""
     try:
         s = install_skill(source)
     except ValueError as e:
