@@ -1,16 +1,11 @@
-"""MCP server for Maverick.
-
-v0.1.6: maverick_start now uses the shared `maverick.runner.run_goal_in_thread`
-so it inherits the same concurrency semaphore + budget defaults as the
-dashboard's /chat/send and the REST API's POST /goals.
-"""
+"""MCP server for Maverick."""
 from __future__ import annotations
 
 import json
 import logging
 import sys
 import traceback
-from typing import Any, Optional
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +21,13 @@ SERVER_VERSION = "0.1.0"
 
 
 class _ProtocolError(Exception):
+    """Raised for JSON-RPC protocol-level errors (unknown method/tool, bad params).
+
+    The `run()` loop catches this and emits a structured JSON-RPC error
+    response (per MCP 2024-11-05 spec). Surface in tests via
+    pytest.raises -- it deliberately does NOT collapse into an isError
+    envelope because Claude Desktop / Cursor treat those differently.
+    """
     def __init__(self, code: int, message: str):
         super().__init__(message)
         self.code = code
@@ -169,9 +171,6 @@ class MCPServer:
         raise _ProtocolError(-32602, f"unknown tool {name!r}")
 
     def _tool_start(self, args: dict) -> str:
-        # Run via the shared runner -- inherits concurrency cap, default
-        # budgets, error logging. Goal is created here so the MCP client
-        # gets a synchronous result string with the final answer.
         from maverick.budget import Budget
         from maverick.llm import LLM
         from maverick.orchestrator import run_goal_sync

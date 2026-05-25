@@ -1,10 +1,6 @@
 """REST API for Maverick (mounted at /api/v1).
 
-v0.1.6: BackgroundTask runner moved to maverick.runner. This module's
-`_run_goal_in_thread` helper is gone; we use `runner.run_goal_in_thread`
-directly so the concurrency semaphore, budget defaults, and error logging
-are the same as the dashboard's `/chat/send` and the MCP server's
-`maverick_start` tool.
+v0.1.6: BackgroundTask runner moved to maverick.runner.
 """
 from __future__ import annotations
 

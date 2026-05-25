@@ -14,6 +14,17 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "texasreaper62" }]
 readme = "README.md"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "anthropic>=0.40.0",
     "click>=8.1",
@@ -50,9 +61,6 @@ Repository    = "https://github.com/texasreaper62/maverick"
 Issues        = "https://github.com/texasreaper62/maverick/issues"
 Changelog     = "https://github.com/texasreaper62/maverick/blob/main/CHANGELOG.md"
 Documentation = "https://github.com/texasreaper62/maverick/tree/main/docs"
-
-[project.classifiers]
-# Note: classifiers belongs at [project] level. Keeping for reference.
 
 [tool.setuptools.packages.find]
 where = ["."]
