@@ -1,16 +1,8 @@
-"""`maverick doctor`: end-to-end health check.
+"""`maverick doctor`: end-to-end health check with remediation.
 
-Diagnoses the most common reasons agents fail to run, before they fail to
-run. Outputs a status table with green/yellow/red markers so the user can
-see at a glance what's healthy.
-
-Checks performed:
-  1. Config readable
-  2. API keys present + valid (Anthropic / OpenAI if configured)
-  3. Sandbox backend reachable (docker daemon if backend=docker)
-  4. Each enabled channel's optional deps present + secrets configured
-  5. World model database opens cleanly + schema_version is current
-  6. maverick-shield available, and which backend it's using
+v0.1.6: every red/yellow row now ends with an actionable verb so users
+aren't told "something's wrong" without knowing what to do (council UX
+review).
 """
 from __future__ import annotations
 
@@ -21,55 +13,63 @@ import sys
 
 import click
 
-
 GREEN = click.style("✓", fg="green")
 YELLOW = click.style("!", fg="yellow")
 RED = click.style("✗", fg="red")
 
 
-def _row(marker: str, label: str, detail: str = "") -> None:
+def _row(marker: str, label: str, detail: str = "", fix: str = "") -> None:
     line = f"  {marker} {label}"
     if detail:
         line += click.style(f"  ({detail})", fg="bright_black")
     click.echo(line)
+    if fix:
+        click.echo(click.style(f"      → {fix}", fg="cyan"))
 
 
 def _check_config() -> dict:
     from .config import config_path, load_config
     p = config_path()
     if not p.exists():
-        _row(RED, "config", f"{p} not found -- run `maverick init`")
+        _row(RED, "config", f"{p} not found",
+             fix="run  maverick init")
         return {}
     try:
         cfg = load_config(p)
         _row(GREEN, "config", str(p))
         return cfg
     except Exception as e:
-        _row(RED, "config", f"parse error: {e}")
+        _row(RED, "config", f"parse error: {e}",
+             fix=f"edit {p} -- check TOML syntax, or back it up + re-run `maverick init`")
         return {}
 
 
 def _check_anthropic() -> None:
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
-        _row(RED, "anthropic", "ANTHROPIC_API_KEY not set")
+        _row(RED, "anthropic", "ANTHROPIC_API_KEY not set",
+             fix="add to ~/.maverick/.env or `export ANTHROPIC_API_KEY=sk-ant-...`")
         return
     if not key.startswith("sk-ant-"):
-        _row(YELLOW, "anthropic", "key doesn't start with sk-ant- (typo?)")
+        _row(YELLOW, "anthropic", "key doesn't start with sk-ant-",
+             fix="re-check the key at https://console.anthropic.com/settings/keys")
         return
     try:
         import anthropic
     except ImportError:
-        _row(YELLOW, "anthropic", "SDK not installed -- pip install anthropic")
+        _row(YELLOW, "anthropic", "SDK not installed",
+             fix="pip install anthropic")
         return
     try:
         client = anthropic.Anthropic(api_key=key)
         list(client.models.list(limit=1))
         _row(GREEN, "anthropic", "key validated")
     except anthropic.AuthenticationError:
-        _row(RED, "anthropic", "API rejected the key")
+        _row(RED, "anthropic", "API rejected the key",
+             fix="generate a new key at https://console.anthropic.com/settings/keys, then `maverick init` to update .env")
     except Exception as e:
-        _row(YELLOW, "anthropic", f"validation skipped: {type(e).__name__}")
+        _row(YELLOW, "anthropic", f"validation skipped: {type(e).__name__}",
+             fix="check network / proxy; key format looks right")
 
 
 def _check_openai() -> None:
@@ -79,14 +79,16 @@ def _check_openai() -> None:
     try:
         from openai import AuthenticationError, OpenAI
     except ImportError:
-        _row(YELLOW, "openai", "SDK not installed -- pip install 'maverick[openai]'")
+        _row(YELLOW, "openai", "SDK not installed",
+             fix="pip install 'maverick-agent[openai]'")
         return
     try:
         client = OpenAI(api_key=key)
         list(client.models.list().data[:1])
         _row(GREEN, "openai", "key validated")
     except AuthenticationError:
-        _row(RED, "openai", "API rejected the key")
+        _row(RED, "openai", "API rejected the key",
+             fix="regenerate at https://platform.openai.com/api-keys, then `maverick init`")
     except Exception as e:
         _row(YELLOW, "openai", f"validation skipped: {type(e).__name__}")
 
@@ -98,7 +100,8 @@ def _check_sandbox(cfg: dict) -> None:
         return
     if backend == "docker":
         if not shutil.which("docker"):
-            _row(RED, "sandbox", "docker not on PATH but [sandbox] backend=docker")
+            _row(RED, "sandbox", "docker not on PATH",
+                 fix="install Docker Desktop (https://docker.com/products/docker-desktop) or change [sandbox] backend to 'local' in ~/.maverick/config.toml")
             return
         try:
             subprocess.run(
@@ -107,11 +110,22 @@ def _check_sandbox(cfg: dict) -> None:
             )
             _row(GREEN, "sandbox", "docker daemon responding")
         except subprocess.CalledProcessError:
-            _row(RED, "sandbox", "docker daemon not running")
+            _row(RED, "sandbox", "docker daemon not running",
+                 fix="start Docker Desktop, or `sudo systemctl start docker` on Linux")
         except subprocess.TimeoutExpired:
-            _row(RED, "sandbox", "docker version timed out")
+            _row(RED, "sandbox", "docker version timed out",
+                 fix="docker is installed but unresponsive -- restart Docker Desktop")
         return
-    _row(YELLOW, "sandbox", f"backend={backend} (not v0.1 supported)")
+    if backend == "ssh":
+        host = cfg.get("sandbox", {}).get("host", "")
+        if not host:
+            _row(RED, "sandbox", "backend=ssh but no [sandbox] host=",
+                 fix='edit ~/.maverick/config.toml and add: host = "user@example.com"')
+            return
+        _row(YELLOW, "sandbox", f"ssh -> {host} (live check not performed)")
+        return
+    _row(YELLOW, "sandbox", f"backend={backend}",
+         fix="supported in v0.1: local, docker, ssh")
 
 
 CHANNEL_DEPS = {
@@ -138,18 +152,19 @@ def _check_channels(cfg: dict) -> None:
                 __import__(mod)
                 _row(GREEN, f"channel:{name}", f"{friendly} installed")
             except ImportError:
-                _row(YELLOW, f"channel:{name}",
-                     f"{friendly} not installed -- pip install 'maverick-channels[{name}]'")
+                _row(YELLOW, f"channel:{name}", f"{friendly} not installed",
+                     fix=f"pip install 'maverick-channels[{name}]'")
                 continue
         elif name == "signal":
             if not shutil.which("signal-cli"):
-                _row(YELLOW, "channel:signal",
-                     "signal-cli not on PATH -- see https://github.com/AsamK/signal-cli")
+                _row(YELLOW, "channel:signal", "signal-cli not on PATH",
+                     fix="install signal-cli per https://github.com/AsamK/signal-cli, then register your number")
                 continue
             _row(GREEN, "channel:signal", "signal-cli present")
         elif name == "imessage":
             if sys.platform != "darwin":
-                _row(RED, "channel:imessage", f"requires macOS (you're on {sys.platform})")
+                _row(RED, "channel:imessage", f"requires macOS (you're on {sys.platform})",
+                     fix="disable in config or run Maverick from a Mac")
                 continue
             _row(GREEN, "channel:imessage", "macOS")
         elif name == "email":
@@ -162,14 +177,16 @@ def _check_world_db() -> None:
         w = WorldModel(DEFAULT_DB)
         _row(GREEN, "world-db", f"{DEFAULT_DB} (schema v{w.schema_version})")
     except Exception as e:
-        _row(RED, "world-db", f"open failed: {e}")
+        _row(RED, "world-db", f"open failed: {e}",
+             fix=f"check permissions on {DEFAULT_DB.parent}, or delete world.db to start fresh")
 
 
 def _check_shield() -> None:
     try:
         from maverick_shield import Shield
     except ImportError:
-        _row(YELLOW, "shield", "maverick-shield not installed -- safety disabled")
+        _row(YELLOW, "shield", "maverick-shield not installed",
+             fix="pip install maverick-shield  (built-in fallback rules will activate)")
         return
     s = Shield.from_config()
     backend_label = {
@@ -177,14 +194,17 @@ def _check_shield() -> None:
         "builtin": "builtin rules (~20 high-impact patterns)",
         "none": "DISABLED -- [safety] profile=off in config",
     }.get(s.backend, s.backend)
-    marker = GREEN if s.backend == "agent-shield" else YELLOW
-    if s.backend == "none":
-        marker = RED
-    _row(marker, "shield", backend_label)
+    if s.backend == "agent-shield":
+        _row(GREEN, "shield", backend_label)
+    elif s.backend == "builtin":
+        _row(YELLOW, "shield", backend_label,
+             fix="pip install agent-shield  (when published) for full coverage")
+    else:
+        _row(RED, "shield", backend_label,
+             fix="set [safety] profile = \"balanced\" in ~/.maverick/config.toml to re-enable")
 
 
 def diagnose() -> None:
-    """Run every check and print a status row for each."""
     click.echo(click.style("Maverick health check\n", bold=True))
     cfg = _check_config()
     _check_anthropic()

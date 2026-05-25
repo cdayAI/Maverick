@@ -1,13 +1,8 @@
 """FastAPI dashboard for Maverick.
 
-v0.1.6 security hardening (council review):
-  - Bearer token now compared with hmac.compare_digest (constant-time).
-  - ?token= still accepted but emits a one-time deprecation warning per
-    process; cookies handoff is recommended for production.
-  - /openapi.json, /docs, /redoc are EXEMPT from auth so OpenAPI tooling
-    can fetch the schema.
-  - REST API mounted at /api/v1 is auth-gated like every other path
-    (previously only browser pages were tested -- silent bypass risk).
+v0.1.6: BackgroundTask runner moved to maverick.runner; this file just
+imports it. Eliminates the duplicate that lived in app.py + api.py +
+mcp/server.py.
 """
 from __future__ import annotations
 
@@ -35,10 +30,7 @@ app = FastAPI(
 )
 app.include_router(api_router)
 
-# Paths that bypass bearer auth so external tooling (OpenAPI generators,
-# health probes) and the docs UIs work without credentials.
 _AUTH_EXEMPT = {"/healthz", "/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"}
-
 _query_token_warned = False
 
 
@@ -48,7 +40,6 @@ async def bearer_auth(request: Request, call_next):
     expected = os.environ.get("MAVERICK_DASHBOARD_TOKEN")
     if not expected or request.url.path in _AUTH_EXEMPT:
         return await call_next(request)
-    # Constant-time comparisons (resists timing oracles).
     auth = request.headers.get("authorization", "")
     header_token = auth[7:] if auth.startswith("Bearer ") else ""
     query_token = request.query_params.get("token", "")
@@ -59,8 +50,8 @@ async def bearer_auth(request: Request, call_next):
     if ok_query:
         if not _query_token_warned:
             log.warning(
-                "Bearer token accepted via ?token= -- this leaks via Referer / "
-                "proxy logs / browser history. Prefer Authorization: Bearer."
+                "Bearer token accepted via ?token= -- leaks via Referer/logs. "
+                "Prefer Authorization: Bearer."
             )
             _query_token_warned = True
         return await call_next(request)
@@ -127,26 +118,6 @@ async def chat_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "chat.html", {"recent": recent})
 
 
-def _run_goal_in_thread(goal_id: int, max_dollars: float = 2.0,
-                       max_wall_seconds: float = 1800.0, max_depth: int = 3) -> None:
-    try:
-        from maverick.budget import Budget
-        from maverick.llm import LLM
-        from maverick.orchestrator import run_goal_sync
-        from maverick.sandbox import build_sandbox
-        from maverick.world_model import DEFAULT_DB, WorldModel
-        world = WorldModel(DEFAULT_DB)
-        llm = LLM()
-        sandbox = build_sandbox()
-        run_goal_sync(
-            llm, world,
-            Budget(max_dollars=max_dollars, max_wall_seconds=max_wall_seconds),
-            goal_id, sandbox=sandbox, max_depth=max_depth,
-        )
-    except Exception:
-        log.exception("dashboard background goal run failed (goal_id=%s)", goal_id)
-
-
 @app.post("/chat/send")
 async def chat_send(
     request: Request,
@@ -157,7 +128,10 @@ async def chat_send(
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY not set.")
     w = _world()
     goal_id = w.create_goal(title.strip()[:200], title.strip())
-    bg.add_task(_run_goal_in_thread, goal_id)
+    # Use the shared runner so this path gets the same concurrency cap,
+    # budget defaults, and error handling as the REST API and MCP server.
+    from maverick.runner import run_goal_in_thread
+    bg.add_task(run_goal_in_thread, goal_id)
     return RedirectResponse(f"/chat/goal/{goal_id}", status_code=303)
 
 

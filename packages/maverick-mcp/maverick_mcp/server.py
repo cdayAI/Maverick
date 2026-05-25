@@ -1,11 +1,8 @@
 """MCP server for Maverick.
 
-v0.1.6: unknown tool / missing required arg now produces JSON-RPC error
-``-32601`` / ``-32602`` rather than ``{isError: true, content: [...]}``.
-``isError`` is for tool *execution* failures; "this tool doesn't exist"
-is a protocol error and Claude Desktop / Cursor mishandle the wrong form.
-
-Also: ``ping`` notifications (no id) no longer get a response.
+v0.1.6: maverick_start now uses the shared `maverick.runner.run_goal_in_thread`
+so it inherits the same concurrency semaphore + budget defaults as the
+dashboard's /chat/send and the REST API's POST /goals.
 """
 from __future__ import annotations
 
@@ -29,7 +26,6 @@ SERVER_VERSION = "0.1.0"
 
 
 class _ProtocolError(Exception):
-    """Raised for JSON-RPC level errors (unknown method/tool, bad params)."""
     def __init__(self, code: int, message: str):
         super().__init__(message)
         self.code = code
@@ -134,25 +130,16 @@ class MCPServer:
     def handle_tools_call(self, params: dict) -> dict:
         name = params.get("name")
         if name not in _TOOL_NAMES:
-            # Per MCP spec, unknown tool -> protocol error (-32602 invalid
-            # params on tools/call) NOT isError. Claude Desktop/Cursor
-            # surface this correctly only when it comes back as JSON-RPC
-            # error. Raise so run() handles the envelope.
             raise _ProtocolError(-32602, f"unknown tool: {name!r}")
         arguments = params.get("arguments", {}) or {}
-        # Validate required args declared in the schema.
         tool_spec = next(t for t in TOOLS if t["name"] == name)
         required = tool_spec.get("inputSchema", {}).get("required", []) or []
         missing = [r for r in required if r not in arguments]
         if missing:
-            raise _ProtocolError(
-                -32602,
-                f"missing required argument(s) for {name}: {missing}",
-            )
+            raise _ProtocolError(-32602, f"missing required argument(s) for {name}: {missing}")
         try:
             result = self._dispatch_tool(name, arguments)
         except Exception as e:
-            # Tool *execution* failure -> isError envelope is correct here.
             return {
                 "isError": True,
                 "content": [{"type": "text", "text": f"{type(e).__name__}: {e}"}],
@@ -179,9 +166,12 @@ class MCPServer:
             return self._tool_fact_set(args)
         if name == "maverick_facts_get":
             return self._tool_facts_get()
-        raise _ProtocolError(-32602, f"unknown tool {name!r}")  # defense in depth
+        raise _ProtocolError(-32602, f"unknown tool {name!r}")
 
     def _tool_start(self, args: dict) -> str:
+        # Run via the shared runner -- inherits concurrency cap, default
+        # budgets, error logging. Goal is created here so the MCP client
+        # gets a synchronous result string with the final answer.
         from maverick.budget import Budget
         from maverick.llm import LLM
         from maverick.orchestrator import run_goal_sync
@@ -235,7 +225,6 @@ class MCPServer:
 
     def _tool_skill_install(self, args: dict) -> str:
         from maverick.skills import install_skill
-        # CLI / MCP callers are local & trusted (the user typed it).
         s = install_skill(args["source"], trusted_local=True)
         return f"installed: {s.name} -> {s.path}"
 
@@ -244,9 +233,7 @@ class MCPServer:
         items = load_skills()
         if not items:
             return "no skills installed"
-        return "\n".join(
-            f"{s.name}: {', '.join(s.triggers[:3])}" for s in items
-        )
+        return "\n".join(f"{s.name}: {', '.join(s.triggers[:3])}" for s in items)
 
     def _tool_fact_set(self, args: dict) -> str:
         from maverick.world_model import WorldModel

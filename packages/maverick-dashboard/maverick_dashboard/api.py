@@ -1,23 +1,15 @@
-"""REST API for Maverick.
+"""REST API for Maverick (mounted at /api/v1).
 
-v0.1.6 security + correctness fixes (council review):
-  - POST /goals now honors `max_dollars` / `max_wall_seconds` / `max_depth`
-    from the payload (was silently using hardcoded $2 + 1hr + depth=3).
-  - POST /skills no longer accepts bare local paths -- attackers can't
-    POST {"source": "/etc/passwd"} to read host files.
-  - POST /goals/{id}/answer now takes a Pydantic body (`AnswerIn`),
-    not query strings -- OpenAPI clients sending JSON now work.
-  - Concurrent-run cap: a process-wide semaphore limits how many
-    BackgroundTask goals can be in flight simultaneously (DEFAULTS
-    below; override via env).
-  - Goal `result` field consistent: returns None when unset, not "".
+v0.1.6: BackgroundTask runner moved to maverick.runner. This module's
+`_run_goal_in_thread` helper is gone; we use `runner.run_goal_in_thread`
+directly so the concurrency semaphore, budget defaults, and error logging
+are the same as the dashboard's `/chat/send` and the MCP server's
+`maverick_start` tool.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-import threading
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -26,12 +18,6 @@ from pydantic import BaseModel, Field
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["v1"])
-
-# Cap concurrent in-flight goal runs from the REST API. Prevents an attacker
-# (or buggy client) from firing 100 POST /goals in 30s and burning unbounded
-# Anthropic spend. Override with MAVERICK_MAX_CONCURRENT_GOALS env.
-MAX_CONCURRENT = int(os.environ.get("MAVERICK_MAX_CONCURRENT_GOALS", "3"))
-_run_semaphore = threading.BoundedSemaphore(MAX_CONCURRENT)
 
 
 class GoalIn(BaseModel):
@@ -73,7 +59,6 @@ class FactIn(BaseModel):
 
 
 class AnswerIn(BaseModel):
-    """Body shape for POST /goals/{id}/answer."""
     question_id: int
     answer: str
 
@@ -93,42 +78,10 @@ def _world():
     return WorldModel(DEFAULT_DB)
 
 
-def _run_goal_in_thread(
-    goal_id: int,
-    max_dollars: float,
-    max_wall_seconds: float,
-    max_depth: int,
-) -> None:
-    """Run a goal synchronously under the concurrency semaphore."""
-    acquired = _run_semaphore.acquire(blocking=False)
-    if not acquired:
-        log.warning("REST API: concurrency cap (%d) hit; goal %s queued in thread",
-                    MAX_CONCURRENT, goal_id)
-        _run_semaphore.acquire()  # block until a slot opens
-    try:
-        from maverick.budget import Budget
-        from maverick.llm import LLM
-        from maverick.orchestrator import run_goal_sync
-        from maverick.sandbox import build_sandbox
-        from maverick.world_model import DEFAULT_DB, WorldModel
-        world = WorldModel(DEFAULT_DB)
-        llm = LLM()
-        sandbox = build_sandbox()
-        run_goal_sync(
-            llm, world,
-            Budget(max_dollars=max_dollars, max_wall_seconds=max_wall_seconds),
-            goal_id, sandbox=sandbox, max_depth=max_depth,
-        )
-    except Exception:
-        log.exception("REST API background goal run failed (goal_id=%s)", goal_id)
-    finally:
-        _run_semaphore.release()
-
-
 def _to_goal_out(g) -> GoalOut:
     return GoalOut(
         id=g.id, status=g.status, title=g.title,
-        description=g.description, result=g.result,  # None stays None (no `or ""`)
+        description=g.description, result=g.result,
     )
 
 
@@ -153,8 +106,9 @@ async def create_goal(payload: GoalIn, bg: BackgroundTasks) -> GoalOut:
             raise HTTPException(status_code=400, detail=str(e))
     w = _world()
     goal_id = w.create_goal(title[:200], description)
+    from maverick.runner import run_goal_in_thread
     bg.add_task(
-        _run_goal_in_thread, goal_id,
+        run_goal_in_thread, goal_id,
         payload.max_dollars, payload.max_wall_seconds, payload.max_depth,
     )
     g = w.get_goal(goal_id)
@@ -237,7 +191,6 @@ async def list_installed_skills() -> list[SkillOut]:
 async def install_skill_endpoint(payload: SkillInstallIn) -> SkillOut:
     from maverick.skills import install_skill
     try:
-        # REST callers are remote/untrusted -- block bare local paths.
         s = install_skill(payload.source, trusted_local=False)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
