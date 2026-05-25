@@ -58,6 +58,8 @@ class Budget:
 
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     dollars: float = 0.0
     tool_calls: int = 0
     started_at: float = field(default_factory=time.time)
@@ -80,8 +82,15 @@ class Budget:
         ``in_tok`` is the number of input tokens billed at full rate
         (i.e. excludes the cache_read_tok and cache_write_tok counts).
         ``cache_read_tok`` is billed at 0.1x, ``cache_write_tok`` at 1.25x.
+
+        Council finding: cache reads/writes accumulate in separate
+        counters so ``max_input_tokens`` reflects the BILLABLE input
+        budget (non-cached only). Caching is a discount, so heavy
+        caching should let you DO more work within the same input cap.
         """
-        self.input_tokens += in_tok + cache_read_tok + cache_write_tok
+        self.input_tokens += in_tok
+        self.cache_read_tokens += cache_read_tok
+        self.cache_write_tokens += cache_write_tok
         self.output_tokens += out_tok
 
         in_rate, out_rate = _lookup_price(model)

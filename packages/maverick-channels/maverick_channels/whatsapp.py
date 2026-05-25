@@ -95,16 +95,19 @@ class WhatsAppChannel(Channel):
             log.warning("WhatsApp webhook signature invalid; ignoring")
             raise HTTPException(status_code=403, detail="signature invalid")
 
-        # Twilio retries; dedup on MessageSid before triggering the swarm.
+        # Twilio retries; lookup-then-mark so a handler crash doesn't
+        # permanently lose the message (Twilio retry re-processes it).
+        wm = None
         if MessageSid:
             try:
                 from maverick.world_model import DEFAULT_DB, WorldModel
                 wm = WorldModel(DEFAULT_DB)
-                if not wm.mark_message_processed("whatsapp", MessageSid):
+                if wm.is_processed_message("whatsapp", MessageSid):
                     log.info("WhatsApp MessageSid %s already processed; skipping", MessageSid)
                     return Response(content="", media_type="text/xml")
             except Exception:  # pragma: no cover
                 log.warning("WhatsApp dedup check failed; processing anyway")
+                wm = None
 
         msg = IncomingMessage(user_id=From, text=Body, channel="whatsapp")
         try:
@@ -112,7 +115,14 @@ class WhatsAppChannel(Channel):
         except Exception as e:  # pragma: no cover
             log.exception("handler error")
             reply = f"⚠ error: {e}"
+            await self.send(From, reply)
+            return Response(content="", media_type="text/xml")
         await self.send(From, reply)
+        if wm is not None and MessageSid:
+            try:
+                wm.mark_message_processed("whatsapp", MessageSid)
+            except Exception:  # pragma: no cover
+                log.warning("WhatsApp dedup mark failed (message processed OK)")
         return Response(content="", media_type="text/xml")
 
     async def start(self) -> None:

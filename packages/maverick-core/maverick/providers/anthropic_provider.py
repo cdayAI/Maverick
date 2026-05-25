@@ -123,12 +123,16 @@ class AnthropicClient:
             resp = sync_retry(lambda: self.client.messages.create(**kwargs))
             return self._parse_response(resp, budget, model=kwargs.get("model"))
 
-        def _stream():
-            with self.client.messages.stream(**kwargs) as stream:
-                for event in stream.text_stream:
-                    on_delta(event)
-                return stream.get_final_message()
-        final = sync_retry(_stream)
+        # Council finding: wrapping the streaming path in sync_retry
+        # would replay every on_delta callback after a mid-stream
+        # failure, so consumers see duplicate prefixes. Streaming is
+        # called from interactive paths (CLI --stream, dashboard chat);
+        # surface the error directly and let the caller retry the
+        # higher-level request without partial output.
+        with self.client.messages.stream(**kwargs) as stream:
+            for event in stream.text_stream:
+                on_delta(event)
+            final = stream.get_final_message()
         return self._parse_response(final, budget, model=kwargs.get("model"))
 
     async def complete_async(

@@ -195,6 +195,15 @@ async def run_goal(
     finally:
         if mcp_clients:
             await stop_mcp_clients(mcp_clients)
+        # Clear trace context so the next goal on this thread/task
+        # doesn't inherit goal_id / conversation_id from this one
+        # (FastAPI threadpool workers + the CLI chat REPL both reuse
+        # the same execution context across goals).
+        try:
+            from .logging_config import clear_goal_context
+            clear_goal_context()
+        except Exception:  # pragma: no cover
+            pass
 
 
 def run_goal_sync(*args, **kwargs) -> str:

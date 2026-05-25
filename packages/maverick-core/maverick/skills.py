@@ -223,15 +223,30 @@ def install_skill(
     # the common jailbreak patterns; fail-open with a warning otherwise.
     try:
         from maverick_shield import Shield  # type: ignore
-        shield = Shield.from_config()
-        verdict = shield.scan_input(parsed.body or "")
-        if not verdict.allowed:
-            raise ValueError(
-                f"skill body rejected by Shield ({verdict.severity}): "
-                f"{'; '.join(verdict.reasons)}"
-            )
     except ImportError:
         pass
+    else:
+        try:
+            shield = Shield.from_config()
+            verdict = shield.scan_input(parsed.body or "")
+        except ValueError:
+            # ValueError from Shield.scan_input → re-raise as our own
+            # rejection (test fixtures rely on this). Anything else
+            # (Shield.from_config bad-config, runtime error inside the
+            # shield) falls into the fail-open branch below.
+            raise
+        except Exception as exc:  # pragma: no cover
+            import logging
+            logging.getLogger(__name__).warning(
+                "Shield raised %s during skill install; failing open",
+                type(exc).__name__,
+            )
+        else:
+            if not verdict.allowed:
+                raise ValueError(
+                    f"skill body rejected by Shield ({verdict.severity}): "
+                    f"{'; '.join(verdict.reasons)}"
+                )
 
     name = _safe_name(parsed.name) if parsed.name else "imported-skill"
     target = skills_dir / f"{name}.md"

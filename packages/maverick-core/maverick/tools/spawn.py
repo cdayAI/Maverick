@@ -14,16 +14,16 @@ blackboard.
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import TYPE_CHECKING
 
+from .._envparse import env_int
 from . import Tool
 
 if TYPE_CHECKING:
     from ..agent import Agent
 
 
-MAX_SWARM_FANOUT = int(os.environ.get("MAVERICK_MAX_SWARM_FANOUT", "8"))
+MAX_SWARM_FANOUT = env_int("MAVERICK_MAX_SWARM_FANOUT", 8)
 
 
 def spawn_subagent_tool(parent: "Agent") -> Tool:

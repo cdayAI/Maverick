@@ -52,11 +52,40 @@ def _try_shield():
         return None
 
 
+def _collect_schema_strings(node, out: list[str]) -> None:
+    """Walk a JSON Schema dict and collect every string leaf.
+
+    A hostile MCP server can put attack text in description / title /
+    enum / examples inside nested properties; the agent sees those
+    verbatim. Shield must inspect the full string-leaf set, not just
+    the top-level description field.
+    """
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(v, str) and k in (
+                "description", "title", "default", "pattern", "format",
+            ):
+                out.append(v)
+            elif isinstance(v, (dict, list)):
+                _collect_schema_strings(v, out)
+    elif isinstance(node, list):
+        for item in node:
+            if isinstance(item, str):
+                out.append(item)
+            else:
+                _collect_schema_strings(item, out)
+
+
 def _spec_passes_shield(name: str, spec: dict, shield) -> bool:
     if shield is None:
         return True
     description = spec.get("description", "") or ""
-    payload = f"tool: {name}\ndescription: {description}"
+    parts: list[str] = [f"tool: {name}", f"description: {description}"]
+    schema = spec.get("inputSchema") or {}
+    leaves: list[str] = []
+    _collect_schema_strings(schema, leaves)
+    parts.extend(f"schema_text: {leaf}" for leaf in leaves)
+    payload = "\n".join(parts)
     try:
         v = shield.scan_input(payload)
         return bool(v.allowed)

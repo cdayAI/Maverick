@@ -180,9 +180,15 @@ async def test_tool_output_wrapped_when_allowed(tmp_path):
     agent.tools = reg
 
     result = await agent._run_tool("benign", {})
-    assert "<tool_output" in result
+    # Wave 4: wrapper now includes a random nonce so the close tag is
+    # unforgeable. We can't assert on the exact close-tag string but
+    # we CAN verify the open + nonce + matched close pattern.
+    import re
+    m = re.search(r"<tool_output tool='benign' id=([a-f0-9]+)>", result)
+    assert m is not None, f"open tag missing in {result!r}"
+    nonce = m.group(1)
     assert "harmless output" in result
-    assert "</tool_output>" in result
+    assert f"</tool_output {nonce}>" in result
 
 
 # ---------- channel idempotency ----------
@@ -207,7 +213,12 @@ def test_processed_messages_idempotent(tmp_path):
 # ---------- orphan reclaim ----------
 
 def test_reclaim_orphan_goals(tmp_path):
-    """Goals in 'active'/'pending' get reset to 'blocked' on startup."""
+    """Goals in 'active'/'pending' get reset to 'blocked' on startup.
+
+    Wave 4 default is max_age_seconds=60 so live goals in a sibling
+    process aren't yanked out from under it. The test simulates a real
+    crashed run by passing max_age_seconds=0 explicitly.
+    """
     from maverick.world_model import WorldModel
     wm = WorldModel(tmp_path / "w.db")
     a = wm.create_goal("a", "")
@@ -217,12 +228,26 @@ def test_reclaim_orphan_goals(tmp_path):
     wm.set_goal_status(b, "done", result="ok")
     # c stays 'pending' (default)
 
-    reclaimed = wm.reclaim_orphan_goals()
+    reclaimed = wm.reclaim_orphan_goals(max_age_seconds=0)
     assert reclaimed == 2  # a (active) + c (pending)
 
     assert wm.get_goal(a).status == "blocked"
     assert wm.get_goal(b).status == "done"  # untouched
     assert wm.get_goal(c).status == "blocked"
+
+
+def test_reclaim_orphan_goals_skips_recent(tmp_path):
+    """Default max_age_seconds=60 protects goals from a sibling process."""
+    from maverick.world_model import WorldModel
+    wm = WorldModel(tmp_path / "w.db")
+    gid = wm.create_goal("live-in-sibling", "")
+    wm.set_goal_status(gid, "active")
+
+    # A startup hook with the default (60s) must NOT reclaim a goal
+    # whose updated_at is current.
+    reclaimed = wm.reclaim_orphan_goals()
+    assert reclaimed == 0
+    assert wm.get_goal(gid).status == "active"
 
 
 # ---------- foreign keys enforced ----------

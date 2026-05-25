@@ -63,14 +63,18 @@ def test_cache_write_is_one_and_a_quarter_input():
     assert abs(b.dollars - 3.75) < 0.001
 
 
-def test_cache_tokens_count_against_input_token_cap():
-    """Cache reads + writes are still tokens; they count against the cap."""
+def test_cache_tokens_tracked_separately_from_input_cap():
+    """max_input_tokens measures BILLABLE input only — cache reads/writes
+    have their own counters. A heavy-caching workload should not be
+    prematurely cap-killed for tokens it's getting at 0.1x rate."""
     b = Budget(max_dollars=100.0, max_input_tokens=2_500_000)
     b.record_tokens(
         1_000_000, 0, model=MODEL_SONNET,
         cache_read_tok=1_000_000, cache_write_tok=500_000,
     )
-    assert b.input_tokens == 2_500_000
+    assert b.input_tokens == 1_000_000
+    assert b.cache_read_tokens == 1_000_000
+    assert b.cache_write_tokens == 500_000
 
 
 def test_opus_run_actually_hits_the_dollar_cap():

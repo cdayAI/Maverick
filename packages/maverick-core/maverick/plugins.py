@@ -69,7 +69,15 @@ def _allowed_plugin_names() -> Optional[set[str]]:
             else:
                 items = {str(x).strip() for x in enabled}
                 return None if "*" in items else items
-        except Exception:
+        except Exception as exc:
+            # Council finding: bare except swallowed TOML parse errors,
+            # silently disabling every plugin with no diagnostic. Log
+            # the failure so a misconfigured user has something to grep.
+            log.warning(
+                "plugin allowlist read from config failed (%s: %s); "
+                "loading no plugins",
+                type(exc).__name__, exc,
+            )
             return set()
     if raw is None:
         return set()

@@ -209,7 +209,17 @@ async def healthz() -> JSONResponse:
         wm.conn.execute("SELECT 1").fetchone()
         checks["db"] = "ok"
     except Exception as e:
-        checks["db"] = f"fail: {type(e).__name__}: {e}"
+        # Council security finding: /healthz is auth-exempt so an
+        # unauthenticated caller probing it during a DB failure used to
+        # learn the absolute world.db path (and therefore the OS
+        # username). Surface only the exception type when an
+        # MAVERICK_DASHBOARD_TOKEN is configured (i.e. we're on a
+        # potentially exposed deployment). Local-dev (no token set)
+        # keeps the full detail for debuggability.
+        if os.environ.get("MAVERICK_DASHBOARD_TOKEN"):
+            checks["db"] = f"fail: {type(e).__name__}"
+        else:
+            checks["db"] = f"fail: {type(e).__name__}: {e}"
         overall_ok = False
 
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY"):

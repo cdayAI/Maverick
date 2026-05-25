@@ -82,19 +82,23 @@ class SMSChannel(Channel):
             log.warning("SMS webhook signature invalid; ignoring")
             raise HTTPException(status_code=403, detail="signature invalid")
 
-        # Council finding (Tier 0): Twilio retries non-2xx and slow
-        # handlers; without MessageSid dedup the same inbound SMS spawns
-        # N goals and burns N API spends. Best-effort dedup -- if the
-        # world model isn't reachable here we fall through to processing.
+        # Council finding (Tier 0 + Wave 4): Twilio retries non-2xx and
+        # slow handlers; without MessageSid dedup the same inbound SMS
+        # spawns N goals and burns N API spends. We use lookup BEFORE
+        # processing (so retries are no-ops) and mark AFTER successful
+        # processing (so a handler crash doesn't permanently lose the
+        # message -- Twilio's next retry will re-process it).
+        wm = None
         if MessageSid:
             try:
                 from maverick.world_model import DEFAULT_DB, WorldModel
                 wm = WorldModel(DEFAULT_DB)
-                if not wm.mark_message_processed("sms", MessageSid):
+                if wm.is_processed_message("sms", MessageSid):
                     log.info("SMS MessageSid %s already processed; skipping", MessageSid)
                     return Response(content="", media_type="text/xml")
             except Exception:  # pragma: no cover
                 log.warning("SMS dedup check failed; processing anyway")
+                wm = None
 
         msg = IncomingMessage(user_id=From, text=Body, channel="sms")
         try:
@@ -102,7 +106,17 @@ class SMSChannel(Channel):
         except Exception as e:  # pragma: no cover
             log.exception("handler error")
             reply = f"⚠ error: {e}"
+            # Don't mark as processed on handler error -- let Twilio retry.
+            await self.send(From, reply)
+            return Response(content="", media_type="text/xml")
+
         await self.send(From, reply)
+        # Only mark after the full handler + send succeeded.
+        if wm is not None and MessageSid:
+            try:
+                wm.mark_message_processed("sms", MessageSid)
+            except Exception:  # pragma: no cover
+                log.warning("SMS dedup mark failed (message processed OK)")
         return Response(content="", media_type="text/xml")
 
     async def start(self) -> None:

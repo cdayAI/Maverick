@@ -631,29 +631,80 @@ def erase(ctx, channel: str, user: str, yes: bool) -> None:
         click.echo(f"This will erase {len(convs)} conversation(s) for {channel}:{user}.")
         click.confirm("Proceed?", abort=True)
 
+    # Council security finding: previous version left goals, messages,
+    # episodes, questions, goal_events, attachments-rows, and
+    # processed_messages intact -- a documented Art. 17 violation. Full
+    # cascade now wipes every row referencing goals tied to this user's
+    # conversations, in one transaction so a partial failure rolls back.
+    # Attachment FILE unlinks happen AFTER the DB transaction commits so
+    # we don't leave dangling rows pointing at deleted paths if the DB
+    # write fails.
+
+    # Step 1: gather every goal_id referenced by any turn in any of
+    # these conversations. We use ALL turns (not just recent), so a
+    # conversation with >10k turns doesn't leave orphan attachments.
+    conv_ids = [c.id for c in convs]
+    placeholders = ",".join("?" * len(conv_ids))
+    goal_ids: set[int] = set()
+    for row in world.conn.execute(
+        f"SELECT DISTINCT goal_id FROM turns "
+        f"WHERE conversation_id IN ({placeholders}) AND goal_id IS NOT NULL",
+        conv_ids,
+    ).fetchall():
+        goal_ids.add(row[0])
+
+    # Step 2: collect attachment paths to unlink (after commit).
+    attachment_paths: list[str] = []
+    for gid in goal_ids:
+        for a in world.list_attachments(gid):
+            attachment_paths.append(a.path)
+
+    # Step 3: cascade DELETEs in a single transaction.
     removed_turns = 0
-    removed_attachments = 0
-    for c in convs:
-        # Find goals attached to this conversation's turns and remove
-        # their attachments from disk.
-        turns = world.recent_turns(c.id, limit=10_000)
-        goal_ids = {t.goal_id for t in turns if t.goal_id is not None}
-        for gid in goal_ids:
-            for a in world.list_attachments(gid):
-                try:
-                    Path(a.path).unlink(missing_ok=True)
-                    removed_attachments += 1
-                except OSError:
-                    pass
-        # Delete turns + the conversation row.
+    try:
+        world.conn.execute("BEGIN IMMEDIATE")
         cur = world.conn.execute(
-            "DELETE FROM turns WHERE conversation_id = ?", (c.id,),
+            f"DELETE FROM turns WHERE conversation_id IN ({placeholders})",
+            conv_ids,
         )
-        removed_turns += cur.rowcount
-        world.conn.execute("DELETE FROM conversations WHERE id = ?", (c.id,))
-    world.conn.commit()
+        removed_turns = cur.rowcount
+
+        if goal_ids:
+            gph = ",".join("?" * len(goal_ids))
+            gids = list(goal_ids)
+            # Order matters: children before parents (FK now enforced).
+            world.conn.execute(f"DELETE FROM goal_events WHERE goal_id IN ({gph})", gids)
+            world.conn.execute(f"DELETE FROM messages    WHERE goal_id IN ({gph})", gids)
+            world.conn.execute(f"DELETE FROM questions   WHERE goal_id IN ({gph})", gids)
+            world.conn.execute(f"DELETE FROM attachments WHERE goal_id IN ({gph})", gids)
+            world.conn.execute(f"DELETE FROM episodes    WHERE goal_id IN ({gph})", gids)
+            world.conn.execute(
+                f"DELETE FROM processed_messages WHERE goal_id IN ({gph})", gids,
+            )
+            world.conn.execute(f"DELETE FROM goals WHERE id IN ({gph})", gids)
+
+        world.conn.execute(
+            f"DELETE FROM conversations WHERE id IN ({placeholders})", conv_ids,
+        )
+        world.conn.commit()
+    except Exception:
+        world.conn.rollback()
+        raise
+
+    # Step 4: now that DB rows are gone, unlink files. A failure here
+    # only leaks file bytes (no row points at them) -- the metadata is
+    # already erased, which is the part that matters legally.
+    removed_attachments = 0
+    for p in attachment_paths:
+        try:
+            Path(p).unlink(missing_ok=True)
+            removed_attachments += 1
+        except OSError:
+            pass
+
     click.echo(
         f"erased {len(convs)} conversation(s), {removed_turns} turn(s), "
+        f"{len(goal_ids)} goal(s) and all linked rows, "
         f"{removed_attachments} attachment file(s)"
     )
 
@@ -732,7 +783,13 @@ def gc(ctx, days: int, events_days: int, yes: bool) -> None:
         click.confirm("Proceed?", abort=True)
     convs = world.prune_conversations(idle_for_seconds=days * 24 * 3600)
     events = world.prune_goal_events(older_than_seconds=events_days * 24 * 3600)
-    click.echo(f"pruned {convs} conversation(s), {events} goal_event row(s)")
+    # Twilio dedup rows accumulate one-per-webhook forever; reap after
+    # 30 days (the retry window is minutes so this is generous).
+    dedup = world.prune_processed_messages(older_than_seconds=30 * 24 * 3600)
+    click.echo(
+        f"pruned {convs} conversation(s), {events} goal_event row(s), "
+        f"{dedup} processed-message row(s)"
+    )
 
 
 if __name__ == "__main__":

@@ -19,19 +19,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import random
 import time
 from typing import Awaitable, Callable, TypeVar
+
+from ._envparse import env_float, env_int
 
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
 
-MAX_ATTEMPTS = int(os.environ.get("MAVERICK_LLM_RETRY_ATTEMPTS", "5"))
-BASE_DELAY = float(os.environ.get("MAVERICK_LLM_RETRY_BASE_DELAY", "1.0"))
-MAX_DELAY = float(os.environ.get("MAVERICK_LLM_RETRY_MAX_DELAY", "30.0"))
+MAX_ATTEMPTS = env_int("MAVERICK_LLM_RETRY_ATTEMPTS", 5)
+BASE_DELAY = env_float("MAVERICK_LLM_RETRY_BASE_DELAY", 1.0)
+MAX_DELAY = env_float("MAVERICK_LLM_RETRY_MAX_DELAY", 30.0)
 
 
 def _retryable_exception_classes() -> tuple[type, ...]:
@@ -80,12 +81,17 @@ def _retry_after_from(exc: Exception) -> float | None:
 
 
 def _compute_delay(attempt: int, exc: Exception) -> float:
-    """Honor Retry-After if present; else exponential backoff with jitter."""
+    """Honor Retry-After if present; else exponential backoff with jitter.
+
+    Council finding: a hostile/buggy server returning `Retry-After: -1`
+    would feed time.sleep / asyncio.sleep a negative value and raise
+    ValueError, killing the retry loop. We clamp to [0, MAX_DELAY].
+    """
     explicit = _retry_after_from(exc)
     if explicit is not None:
-        return min(explicit, MAX_DELAY)
+        return max(0.0, min(explicit, MAX_DELAY))
     delay = min(BASE_DELAY * (2 ** attempt), MAX_DELAY)
-    return delay * (0.5 + random.random() * 0.5)
+    return max(0.0, delay * (0.5 + random.random() * 0.5))
 
 
 def _is_retryable_status_error(exc: Exception) -> bool:

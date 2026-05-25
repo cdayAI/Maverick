@@ -21,19 +21,21 @@ Usage::
 from __future__ import annotations
 
 import logging
-import os
 import threading
+
+from ._envparse import env_float, env_int
 
 log = logging.getLogger(__name__)
 
 # Process-wide concurrency cap. Override with MAVERICK_MAX_CONCURRENT_GOALS.
-MAX_CONCURRENT_GOALS = int(os.environ.get("MAVERICK_MAX_CONCURRENT_GOALS", "3"))
+# BoundedSemaphore(0) raises ValueError, so clamp to at least 1.
+MAX_CONCURRENT_GOALS = max(1, env_int("MAVERICK_MAX_CONCURRENT_GOALS", 3))
 _run_semaphore = threading.BoundedSemaphore(MAX_CONCURRENT_GOALS)
 
 
-DEFAULT_MAX_DOLLARS = float(os.environ.get("MAVERICK_DEFAULT_MAX_DOLLARS", "2.0"))
-DEFAULT_MAX_WALL_SECONDS = float(os.environ.get("MAVERICK_DEFAULT_MAX_WALL_SECONDS", "1800"))
-DEFAULT_MAX_DEPTH = int(os.environ.get("MAVERICK_DEFAULT_MAX_DEPTH", "3"))
+DEFAULT_MAX_DOLLARS = env_float("MAVERICK_DEFAULT_MAX_DOLLARS", 2.0)
+DEFAULT_MAX_WALL_SECONDS = env_float("MAVERICK_DEFAULT_MAX_WALL_SECONDS", 1800.0)
+DEFAULT_MAX_DEPTH = env_int("MAVERICK_DEFAULT_MAX_DEPTH", 3)
 
 
 def run_goal_in_thread(

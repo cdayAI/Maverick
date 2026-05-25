@@ -6,6 +6,7 @@ without patching the kernel.
 """
 from __future__ import annotations
 
+import secrets as _secrets
 import uuid
 from dataclasses import dataclass
 from typing import Optional
@@ -169,10 +170,16 @@ class Agent:
                     )
             except Exception:  # pragma: no cover -- shield must never block tools on its own bug
                 pass
+        # Council-of-20 security finding: a literal `</tool_output>` in
+        # `output` (attacker-controlled file contents, shell stdout, MCP
+        # response) escapes the framing and lets following text read as
+        # authoritative LLM context. Use a random per-call nonce so the
+        # close tag is unforgeable. `secrets.token_hex(8)` = 16 hex chars.
+        nonce = _secrets.token_hex(8)
         return (
-            f"<tool_output tool={name!r}>\n"
+            f"<tool_output tool={name!r} id={nonce}>\n"
             f"{output}\n"
-            f"</tool_output>"
+            f"</tool_output {nonce}>"
         )
 
     async def run(self) -> AgentResult:
