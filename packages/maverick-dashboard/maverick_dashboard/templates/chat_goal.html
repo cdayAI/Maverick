@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}goal #{{ goal.id }}{% endblock %}
+{% block content %}
+  <h2>goal #{{ goal.id }}</h2>
+
+  <div class="panel"
+       hx-get="/api/goal/{{ goal.id }}"
+       hx-trigger="every 3s"
+       hx-swap="none"
+       hx-on::after-request="
+         try {
+           const d = JSON.parse(event.detail.xhr.responseText);
+           document.getElementById('status').className = 'badge ' + d.status;
+           document.getElementById('status').textContent = d.status;
+           if (d.result) {
+             document.getElementById('result').textContent = d.result;
+             document.getElementById('result-section').style.display = 'block';
+           }
+         } catch (e) {}
+       ">
+    <p>
+      <span id="status" class="badge {{ goal.status }}">{{ goal.status }}</span>
+      <span class="muted" style="margin-left: 0.5rem;">{{ goal.title }}</span>
+    </p>
+    <p class="muted" style="font-size: 0.85rem;">Auto-refreshing every 3s. Watch the status badge.</p>
+  </div>
+
+  <div id="result-section" class="panel" style="display: {% if goal.result %}block{% else %}none{% endif %};">
+    <h3 style="margin-top: 0;">result</h3>
+    <pre id="result" style="white-space: pre-wrap; margin: 0; font: inherit;">{{ goal.result or '' }}</pre>
+  </div>
+
+  <p style="margin-top: 2rem;">
+    <a href="/chat" class="muted" style="text-decoration: underline;">← back to chat</a>
+  </p>
+
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+{% endblock %}

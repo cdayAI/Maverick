@@ -41,8 +41,7 @@ def init() -> None:
     except ImportError:
         click.echo(
             "The installer wizard isn't installed.\n"
-            "Install it with:  pipx install maverick-installer\n"
-            "Or:               pip install maverick[installer]",
+            "Install it with:  pipx install maverick-installer",
             err=True,
         )
         sys.exit(2)
@@ -52,11 +51,7 @@ def init() -> None:
 @main.command()
 def doctor() -> None:
     """Diagnose your Maverick installation."""
-    try:
-        from .health import diagnose
-    except ImportError as e:
-        click.echo(f"ERROR: {e}", err=True)
-        sys.exit(2)
+    from .health import diagnose
     diagnose()
 
 
@@ -80,18 +75,14 @@ def config(action: str) -> None:
 
 
 @main.command()
-@click.option("--host", default="127.0.0.1", help="Bind host (default: localhost only).")
+@click.option("--host", default="127.0.0.1")
 @click.option("--port", default=8765, type=int)
 def dashboard(host: str, port: int) -> None:
     """Start the local web dashboard (read-only goals/skills/facts viewer)."""
     try:
         from maverick_dashboard.app import app as fastapi_app
     except ImportError:
-        click.echo(
-            "The dashboard isn't installed.\n"
-            "Install it with:  pip install maverick-dashboard",
-            err=True,
-        )
+        click.echo("Install: pip install maverick-dashboard", err=True)
         sys.exit(2)
     import uvicorn
     click.echo(f"Maverick dashboard: http://{host}:{port}")
@@ -104,39 +95,73 @@ def mcp() -> None:
     try:
         from maverick_mcp.server import main as mcp_main
     except ImportError:
-        click.echo(
-            "The MCP server isn't installed.\n"
-            "Install it with:  pip install maverick-mcp",
-            err=True,
-        )
+        click.echo("Install: pip install maverick-mcp", err=True)
         sys.exit(2)
     mcp_main()
 
 
 @main.command()
-@click.argument("title")
-@click.option("--description", default="", help="Longer description of the goal.")
-@click.option("--max-dollars", default=5.0, type=float)
-@click.option("--max-wall-seconds", default=3600.0, type=float)
-@click.option("--max-depth", default=3, type=int, help="Maximum swarm spawn depth.")
-@click.option("--workdir", default=None, help="Sandbox working directory (defaults to config).")
+@click.argument("title", required=False)
+@click.option("--description", default="", help="Longer description.")
+@click.option("--template", "template_name", default=None,
+              help="Goal template name (see benchmarks/example-templates/).")
+@click.option("--param", "-p", "params", multiple=True,
+              help="key=value param for the template. Repeatable.")
+@click.option("--max-dollars", default=None, type=float)
+@click.option("--max-wall-seconds", default=None, type=float)
+@click.option("--max-depth", default=3, type=int)
+@click.option("--workdir", default=None)
 @click.option("--sandbox", "sandbox_backend", default=None,
-              type=click.Choice(["local", "docker"]),
-              help="Sandbox backend override.")
+              type=click.Choice(["local", "docker", "ssh"]))
 @click.pass_context
 def start(
-    ctx, title: str, description: str, max_dollars: float, max_wall_seconds: float,
-    max_depth: int, workdir, sandbox_backend,
+    ctx, title, description, template_name, params,
+    max_dollars, max_wall_seconds, max_depth, workdir, sandbox_backend,
 ) -> None:
-    """Start a new goal and run the swarm."""
+    """Start a new goal and run the swarm.
+
+    Pass either TITLE directly, or --template <name> with --param key=value pairs.
+    """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         click.echo("ERROR: ANTHROPIC_API_KEY not set. Run: maverick doctor", err=True)
         sys.exit(2)
+
+    if template_name:
+        from .templates import load_template
+        try:
+            tpl = load_template(template_name)
+        except FileNotFoundError as e:
+            click.echo(f"ERROR: {e}", err=True)
+            sys.exit(2)
+        # Parse key=value param pairs.
+        param_dict = {}
+        for raw in params:
+            if "=" not in raw:
+                click.echo(f"ERROR: --param must be key=value, got {raw!r}", err=True)
+                sys.exit(2)
+            k, v = raw.split("=", 1)
+            param_dict[k.strip()] = v.strip()
+        try:
+            title, description = tpl.render(**param_dict)
+        except ValueError as e:
+            click.echo(f"ERROR: {e}", err=True)
+            sys.exit(2)
+        max_dollars = max_dollars or tpl.budget_dollars
+        max_wall_seconds = max_wall_seconds or tpl.budget_wall_seconds
+        click.echo(f"[template {tpl.name}] {title}")
+    elif not title:
+        click.echo("ERROR: pass TITLE or --template <name>", err=True)
+        sys.exit(2)
+
     world = WorldModel(ctx.obj["db"])
     goal_id = world.create_goal(title, description)
     click.echo(f"goal #{goal_id} created: {title}")
+
     llm = LLM(model=ctx.obj["model"])
-    budget = Budget(max_dollars=max_dollars, max_wall_seconds=max_wall_seconds)
+    budget = Budget(
+        max_dollars=max_dollars or 5.0,
+        max_wall_seconds=max_wall_seconds or 3600.0,
+    )
     sandbox = build_sandbox(workdir=workdir, backend=sandbox_backend)
     result = run_goal_sync(llm, world, budget, goal_id, sandbox=sandbox, max_depth=max_depth)
     click.echo("")
@@ -144,8 +169,90 @@ def start(
 
 
 @main.command()
-@click.option("--max-depth", default=3, type=int, help="Maximum swarm spawn depth per request.")
-@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
+@click.option("--max-depth", default=3, type=int)
+@click.option("--max-dollars", default=2.0, type=float,
+              help="Cap per message (chat is per-turn).")
+@click.option("--workdir", default=None)
+@click.pass_context
+def chat(ctx, max_depth: int, max_dollars: float, workdir) -> None:
+    """Start an interactive chat REPL.
+
+    Each line you type becomes a goal. Maverick replies with the swarm's
+    final answer. Type 'exit' / 'quit' or Ctrl-D to leave.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        click.echo("ERROR: ANTHROPIC_API_KEY not set. Run: maverick doctor", err=True)
+        sys.exit(2)
+
+    world = WorldModel(ctx.obj["db"])
+    llm = LLM(model=ctx.obj["model"])
+    sandbox = build_sandbox(workdir=workdir)
+
+    click.echo(click.style("Maverick chat. Type 'exit' to leave.", fg="cyan"))
+    while True:
+        try:
+            line = click.prompt("", prompt_suffix="> ", default="", show_default=False)
+        except (EOFError, click.exceptions.Abort):
+            click.echo("")
+            return
+        line = line.strip()
+        if not line:
+            continue
+        if line in ("exit", "quit", "/exit", "/quit"):
+            return
+        title = line[:80]
+        goal_id = world.create_goal(title, line)
+        click.echo(click.style(f"  ... goal #{goal_id}", fg="bright_black"))
+        budget = Budget(max_dollars=max_dollars)
+        try:
+            result = run_goal_sync(llm, world, budget, goal_id,
+                                   sandbox=sandbox, max_depth=max_depth)
+        except Exception as e:
+            click.echo(click.style(f"  ✗ {e}", fg="red"))
+            continue
+        click.echo(result)
+        click.echo("")
+
+
+@main.group()
+def template() -> None:
+    """Manage goal templates."""
+
+
+@template.command("list")
+def template_list() -> None:
+    """List bundled + user-installed templates."""
+    from .templates import list_templates
+    names = list_templates()
+    if not names:
+        click.echo("no templates found.")
+        return
+    for n in names:
+        click.echo(f"  {n}")
+
+
+@template.command("show")
+@click.argument("name")
+def template_show(name: str) -> None:
+    """Print a template's title, body, and params."""
+    from .templates import load_template
+    try:
+        t = load_template(name)
+    except FileNotFoundError as e:
+        click.echo(f"ERROR: {e}", err=True)
+        sys.exit(2)
+    click.echo(f"template: {t.name}")
+    click.echo(f"path: {t.path}")
+    click.echo(f"title: {t.title}")
+    click.echo(f"budget: ${t.budget_dollars} / {t.budget_wall_seconds}s")
+    click.echo(f"params: {', '.join(t.params) or '(none)'}")
+    click.echo("")
+    click.echo(t.body)
+
+
+@main.command()
+@click.option("--max-depth", default=3, type=int)
+@click.option("--verbose", "-v", is_flag=True)
 def serve(max_depth: int, verbose: bool) -> None:
     """Start the channel server (Telegram, Discord, Signal, etc.)."""
     logging.basicConfig(
@@ -172,7 +279,7 @@ def serve(max_depth: int, verbose: bool) -> None:
 
 
 @main.command()
-@click.option("--limit", default=20, type=int, help="Max entries to show.")
+@click.option("--limit", default=20, type=int)
 @click.pass_context
 def logs(ctx, limit: int) -> None:
     """Show recent goal + episode history from the world model."""
@@ -271,8 +378,7 @@ def skills() -> None:
     """List skills the swarm has distilled or installed."""
     items = load_skills()
     if not items:
-        click.echo(f"no skills yet. they accrue in {SKILLS_DIR} after successful runs,")
-        click.echo("or install one with:  maverick skill install <source>")
+        click.echo(f"no skills yet. they accrue in {SKILLS_DIR} after successful runs.")
         return
     for s in items:
         click.echo(f"  {s.name}")
@@ -295,8 +401,6 @@ def skill_install(source: str) -> None:
         click.echo(f"ERROR: {e}", err=True)
         sys.exit(2)
     click.echo(f"installed: {s.name} -> {s.path}")
-    for t in s.triggers[:3]:
-        click.echo(f"  trigger: {t}")
 
 
 @skill.command("remove")
