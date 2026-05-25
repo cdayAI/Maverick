@@ -10,9 +10,13 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "texasreaper62" }]
 readme = "README.md"
-dependencies = [
-    "agent-shield>=14.0",
-]
+# Base install has no required deps so it works everywhere; the guard module
+# fail-opens with a clear warning if agent-shield isn't available at runtime.
+# Users who want real scanning install the [scan] extra.
+dependencies = []
+
+[project.optional-dependencies]
+scan = ["agent-shield>=14.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]

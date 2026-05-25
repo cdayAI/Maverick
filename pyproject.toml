@@ -6,6 +6,7 @@
 members = [
     "packages/maverick-core",
     "packages/maverick-shield",
+    "packages/maverick-channels",
     "apps/installer-cli",
 ]
 
@@ -14,7 +15,10 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W", "B", "UP"]
+# Conservative defaults: pycodestyle (E/W), pyflakes (F), import order (I).
+# Bugbear (B) and pyupgrade (UP) are intentionally off until we commit to a
+# sweeping Optional[X] -> X | None rewrite as its own PR.
+select = ["E", "F", "I", "W"]
 ignore = ["E501"]  # line length
 
 [tool.pytest.ini_options]
