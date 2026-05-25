@@ -24,7 +24,7 @@ from .world_model import DEFAULT_DB, WorldModel
 
 @click.group()
 @click.option("--db", default=str(DEFAULT_DB), help="World model database path.")
-@click.option("--model", default=DEFAULT_MODEL, help="LLM model id (per-role overrides apply).")
+@click.option("--model", default=DEFAULT_MODEL, help="LLM model id.")
 @click.pass_context
 def main(ctx: click.Context, db: str, model: str) -> None:
     """Maverick: multi-agent swarm for long-horizon work."""
@@ -49,6 +49,52 @@ def doctor() -> None:
     """Diagnose your Maverick installation."""
     from .health import diagnose
     diagnose()
+
+
+@main.command()
+def version() -> None:
+    """Show installed package versions + runtime info."""
+    import importlib.metadata
+
+    click.echo(click.style("Maverick installed packages", bold=True))
+    for pkg in ("maverick", "maverick-shield", "maverick-channels",
+                "maverick-dashboard", "maverick-mcp", "maverick-installer"):
+        try:
+            v = importlib.metadata.version(pkg)
+            click.echo(f"  {pkg:22s} {v}")
+        except importlib.metadata.PackageNotFoundError:
+            click.echo(f"  {pkg:22s} " + click.style("not installed", fg="yellow"))
+    click.echo("")
+    click.echo(click.style("Runtime", bold=True))
+    try:
+        from .world_model import SCHEMA_VERSION
+        click.echo(f"  schema:                v{SCHEMA_VERSION}")
+    except Exception:
+        pass
+    try:
+        from maverick_shield import Shield
+        s = Shield.from_config()
+        click.echo(f"  shield backend:        {s.backend}")
+    except ImportError:
+        click.echo("  shield backend:        (maverick-shield not installed)")
+    try:
+        from .providers import KNOWN_PROVIDERS
+        click.echo(f"  providers:             {', '.join(KNOWN_PROVIDERS)}")
+    except Exception:
+        pass
+    try:
+        from .persona import load_persona
+        p = load_persona()
+        if p["name"] or p["style"]:
+            ident = p["name"] or "(unnamed)"
+            style = p["style"] or "(default)"
+            click.echo(f"  persona:               {ident} ({style})")
+        else:
+            click.echo("  persona:               (none)")
+    except Exception:
+        pass
+    click.echo(f"  python:                {sys.version.split()[0]}")
+    click.echo(f"  platform:              {sys.platform}")
 
 
 @main.command()
@@ -78,7 +124,10 @@ def budget(ctx) -> None:
     total = world.total_spend()
     click.echo(click.style("Total spend", bold=True))
     click.echo(f"  ${total['dollars']:.4f}  across {total['runs']} run(s)")
-    click.echo(f"  {total['input_tokens']:,} input tokens  /  {total['output_tokens']:,} output tokens")
+    click.echo(
+        f"  {total['input_tokens']:,} input tokens  /  "
+        f"{total['output_tokens']:,} output tokens"
+    )
     click.echo("")
     eps = world.list_episodes(limit=15)
     if not eps:
@@ -98,19 +147,15 @@ def budget(ctx) -> None:
 @click.option("--host", default="127.0.0.1")
 @click.option("--port", default=8765, type=int)
 @click.option("--token", default=None,
-              help="Bearer token to require for non-/healthz requests "
-                   "(also via MAVERICK_DASHBOARD_TOKEN env).")
+              help="Bearer token for non-/healthz requests.")
 def dashboard(host: str, port: int, token) -> None:
-    """Start the local web dashboard."""
+    """Start the local web dashboard + REST API."""
     if token:
         os.environ["MAVERICK_DASHBOARD_TOKEN"] = token
-        click.echo(
-            click.style(
-                "Bearer auth enabled. Access with ?token=... in URL or "
-                "Authorization: Bearer <token> header.",
-                fg="yellow",
-            )
-        )
+        click.echo(click.style(
+            "Bearer auth enabled. Use ?token=... or Authorization: Bearer.",
+            fg="yellow",
+        ))
     try:
         from maverick_dashboard.app import app as fastapi_app
     except ImportError:
@@ -118,6 +163,7 @@ def dashboard(host: str, port: int, token) -> None:
         sys.exit(2)
     import uvicorn
     click.echo(f"Maverick dashboard: http://{host}:{port}")
+    click.echo(f"REST API docs:      http://{host}:{port}/docs")
     uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
 
 
@@ -135,10 +181,8 @@ def mcp() -> None:
 @main.command()
 @click.argument("title", required=False)
 @click.option("--description", default="")
-@click.option("--template", "template_name", default=None,
-              help="Goal template name.")
-@click.option("--param", "-p", "params", multiple=True,
-              help="key=value param for the template. Repeatable.")
+@click.option("--template", "template_name", default=None)
+@click.option("--param", "-p", "params", multiple=True)
 @click.option("--max-dollars", default=None, type=float)
 @click.option("--max-wall-seconds", default=None, type=float)
 @click.option("--max-depth", default=3, type=int)
@@ -154,7 +198,6 @@ def start(
     if not os.environ.get("ANTHROPIC_API_KEY"):
         click.echo("ERROR: ANTHROPIC_API_KEY not set. Run: maverick doctor", err=True)
         sys.exit(2)
-
     if template_name:
         from .templates import load_template
         try:

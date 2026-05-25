@@ -1,23 +1,8 @@
 """Recursive async agent.
 
-Every node in the swarm is an `Agent`. Agents:
-  - run an async tool-use loop against the LLM
-  - may spawn sub-agents (single or parallel swarm) via tools
-  - share blackboard, world model, budget, sandbox, shield, and MCP
-    clients via SwarmContext
-  - have a depth (root=0) and a parent reference
-
-The orchestrator is just an Agent with role='orchestrator' and a planning-
-oriented system prompt. It uses spawn_swarm to fan out parallel workers.
-
-Shield chokepoints (per ARCHITECTURE.md):
-  - tool-call scan: every tool_use is run through ctx.shield.scan_tool_call()
-    before execution. Blocked calls return a synthetic tool_result rather
-    than running the tool.
-  - input/output scans: handled at the channel boundary in server.py.
-
-MCP tools (when ctx.mcp_clients is non-empty) appear in the tool registry
-as ``mcp_<server>__<tool>`` and route through the corresponding MCPClient.
+v0.1.4: appends ``persona.render_persona_prompt()`` to the system
+prompt of every agent so users can give the swarm a name and voice
+without patching the kernel.
 """
 from __future__ import annotations
 
@@ -123,6 +108,16 @@ class Agent:
                 role=self.role, depth=self.depth, max_depth=self.ctx.max_depth
             )
 
+        # Persona (optional, additive).
+        try:
+            from .persona import render_persona_prompt
+            persona = render_persona_prompt()
+            if persona:
+                base = base + persona
+        except Exception:
+            pass
+
+        # Skills from prior runs (existing logic).
         if self.ctx.use_skills:
             try:
                 from .skills import load_skills, relevant_skills, render_for_prompt
@@ -131,6 +126,7 @@ class Agent:
                     base = base + "\n\n" + render_for_prompt(skills)
             except (ImportError, FileNotFoundError, ValueError):
                 pass
+
         return base
 
     def _thinking_budget(self) -> Optional[int]:
