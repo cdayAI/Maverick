@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maverick-installer"
+version = "0.1.0"
+description = "Interactive setup wizard for Maverick"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "texasreaper62" }]
+readme = "README.md"
+dependencies = [
+    "maverick>=0.1",
+    "questionary>=2.0",
+    "rich>=13.7",
+]
+
+[project.scripts]
+maverick-init = "maverick_installer.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["maverick_installer*"]
