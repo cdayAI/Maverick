@@ -60,11 +60,21 @@ class ToolRegistry:
             return f"ERROR: {type(e).__name__}: {e}"
 
 
-def base_registry(world, sandbox, mcp_clients: Optional[list] = None) -> ToolRegistry:
+def base_registry(
+    world,
+    sandbox,
+    mcp_clients: Optional[list] = None,
+    goal_id: Optional[int] = None,
+) -> ToolRegistry:
     """Build the base tool set (no spawn tools).
 
     If ``mcp_clients`` is given, each one's discovered tools are
     registered as ``mcp_<server>__<tool>``.
+
+    ``goal_id`` scopes ``ask_user`` so questions are filed against the
+    running goal — otherwise the orchestrator's ``open_questions(gid)``
+    filter returns nothing and "PAUSED: 0 open question(s)" is shown
+    even though the agent asked.
     """
     from .ask_user import ask_user
     from .fs import list_dir, read_file, write_file
@@ -75,7 +85,7 @@ def base_registry(world, sandbox, mcp_clients: Optional[list] = None) -> ToolReg
     reg.register(write_file(sandbox))
     reg.register(list_dir(sandbox))
     reg.register(shell(sandbox))
-    reg.register(ask_user(world))
+    reg.register(ask_user(world, goal_id=goal_id))
 
     if mcp_clients:
         from ..mcp_tools import tools_from_mcp

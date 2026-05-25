@@ -36,12 +36,31 @@
       let done = false;
 
       function fmtKind(k) {
+        // Map internal kinds to user-friendly labels so non-technical
+        // users can read live progress without knowing blackboard vocab.
+        const labels = {
+          plan: 'thinking',
+          finding: 'answer',
+          observation: 'result',
+          error: 'error',
+          verify: 'checking',
+          artifact: 'produced',
+        };
         const colors = {
           plan: 'var(--accent)', finding: 'var(--accent)',
           observation: 'var(--text)', error: 'var(--danger)',
-          verify: 'var(--warn)',
+          verify: 'var(--warn)', artifact: 'var(--accent)',
         };
-        return `<span style="color:${colors[k] || 'var(--muted)'};">${k}</span>`;
+        const label = labels[k] || k;
+        return `<span style="color:${colors[k] || 'var(--muted)'};">${label}</span>`;
+      }
+
+      function fmtAgent(a) {
+        // The internal name is `<role>-<depth>-<hex>` (e.g.
+        // `orchestrator-0-3a7c91`). Strip the hex+depth for readability.
+        if (!a) return '';
+        const dashIdx = a.indexOf('-');
+        return dashIdx > 0 ? a.slice(0, dashIdx) : a;
       }
 
       async function poll() {
@@ -57,7 +76,7 @@
           const d = await resp.json();
           for (const e of d.events) {
             const line = document.createElement('div');
-            line.innerHTML = `<span class="muted">[${e.agent}]</span> ${fmtKind(e.kind)} ${escapeHTML(e.content)}`;
+            line.innerHTML = `<span class="muted">[${escapeHTML(fmtAgent(e.agent))}]</span> ${fmtKind(e.kind)} ${escapeHTML(e.content)}`;
             eventsEl.appendChild(line);
           }
           if (d.events.length > 0) sinceId = d.next_id;

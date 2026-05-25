@@ -244,7 +244,11 @@ def start(
 @click.option("--workdir", default=None)
 @click.pass_context
 def chat(ctx, max_depth: int, max_dollars: float, workdir) -> None:
-    """Interactive chat REPL. Each line becomes a goal."""
+    """Interactive chat REPL. Each turn becomes a goal.
+
+    Multi-line input: end a line with ``\\`` to continue, or open with
+    ``\"\"\"`` to enter a paste block ending with ``\"\"\"`` on its own line.
+    """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         click.echo("ERROR: ANTHROPIC_API_KEY not set.", err=True)
         sys.exit(2)
@@ -252,19 +256,65 @@ def chat(ctx, max_depth: int, max_dollars: float, workdir) -> None:
     llm = LLM(model=ctx.obj["model"])
     sandbox = build_sandbox(workdir=workdir)
     click.echo(click.style("Maverick chat. Type 'exit' to leave.", fg="cyan"))
+    click.echo(click.style(
+        "Multi-line: end a line with \\ or wrap a block in \"\"\".",
+        fg="bright_black",
+    ))
     while True:
         try:
             line = click.prompt("", prompt_suffix="> ", default="", show_default=False)
         except (EOFError, click.exceptions.Abort):
             click.echo("")
             return
-        line = line.strip()
+        line = line.rstrip()
         if not line:
             continue
         if line in ("exit", "quit", "/exit", "/quit"):
             return
-        title = line[:80]
-        goal_id = world.create_goal(title, line)
+
+        # Paste-block mode: """ ... """
+        if line.startswith('"""'):
+            buf = [line[3:]] if len(line) > 3 else []
+            while True:
+                try:
+                    nxt = click.prompt(
+                        "", prompt_suffix="... ", default="", show_default=False,
+                    )
+                except (EOFError, click.exceptions.Abort):
+                    click.echo("")
+                    break
+                if nxt.rstrip().endswith('"""'):
+                    tail = nxt.rstrip()[:-3].rstrip()
+                    if tail:
+                        buf.append(tail)
+                    break
+                buf.append(nxt)
+            full = "\n".join(buf).strip()
+        # Line-continuation mode: trailing backslash.
+        elif line.endswith("\\"):
+            buf = [line[:-1].rstrip()]
+            while True:
+                try:
+                    nxt = click.prompt(
+                        "", prompt_suffix="... ", default="", show_default=False,
+                    ).rstrip()
+                except (EOFError, click.exceptions.Abort):
+                    click.echo("")
+                    break
+                if nxt.endswith("\\"):
+                    buf.append(nxt[:-1].rstrip())
+                else:
+                    buf.append(nxt)
+                    break
+            full = "\n".join(b for b in buf if b)
+        else:
+            full = line
+
+        if not full.strip():
+            continue
+
+        title = full.splitlines()[0][:80]
+        goal_id = world.create_goal(title, full)
         click.echo(click.style(f"  ... goal #{goal_id}", fg="bright_black"))
         bud = Budget(max_dollars=max_dollars)
         try:

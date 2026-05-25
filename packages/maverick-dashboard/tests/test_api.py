@@ -195,3 +195,24 @@ class TestOpenAPI:
             headers={"Authorization": "Bearer s3cr3t"},
         )
         assert resp.status_code == 200
+
+    def test_api_endpoint_with_query_token_succeeds(self, monkeypatch):
+        """Phone browsers bookmark `?token=...`; that has to authenticate."""
+        monkeypatch.setenv("MAVERICK_DASHBOARD_TOKEN", "s3cr3t")
+        resp = client.get("/api/v1/goals?token=s3cr3t")
+        assert resp.status_code == 200
+
+    def test_api_endpoint_with_wrong_bearer_rejected(self, monkeypatch):
+        monkeypatch.setenv("MAVERICK_DASHBOARD_TOKEN", "s3cr3t")
+        resp = client.get(
+            "/api/v1/goals",
+            headers={"Authorization": "Bearer wrong"},
+        )
+        assert resp.status_code == 401
+
+    def test_healthz_exempt_from_bearer_auth(self, monkeypatch):
+        """Monitors must be able to ping /healthz without a token."""
+        monkeypatch.setenv("MAVERICK_DASHBOARD_TOKEN", "s3cr3t")
+        resp = client.get("/healthz")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
