@@ -1,30 +1,20 @@
 """FastAPI dashboard for Maverick.
 
-Local browser UI over the world model + skills directory. v0.1.3
-adds a chat surface: POST a message, the agent runs it as a goal in
-a background task, the page polls for the result via htmx.
-
-Run directly::
-
-    maverick-dashboard --host 127.0.0.1 --port 8765
-
-Or via the core CLI once installed::
-
-    maverick dashboard
-
-Binds to localhost by default so nothing is exposed off-host.
+v0.1.3 additions:
+  - /chat with background-task goal runs + live event polling
+  - /api/goal/{id}/events streams blackboard entries via long-poll
+  - Optional bearer-token auth for VPS deployments via
+    MAVERICK_DASHBOARD_TOKEN env var
 """
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 log = logging.getLogger(__name__)
@@ -33,6 +23,27 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 app = FastAPI(title="Maverick Dashboard", docs_url=None, redoc_url=None)
+
+
+@app.middleware("http")
+async def bearer_auth(request: Request, call_next):
+    """Optional bearer-token gate for VPS / non-localhost deployments.
+
+    If ``MAVERICK_DASHBOARD_TOKEN`` is set, every request must carry
+    ``Authorization: Bearer <token>`` OR ``?token=<token>`` query
+    parameter (so phone browsers can be bookmarked once with the
+    token in the URL).
+
+    /healthz is always reachable so reverse proxies can probe it.
+    """
+    expected = os.environ.get("MAVERICK_DASHBOARD_TOKEN")
+    if not expected or request.url.path == "/healthz":
+        return await call_next(request)
+    auth = request.headers.get("authorization", "")
+    token_qs = request.query_params.get("token", "")
+    if auth == f"Bearer {expected}" or token_qs == expected:
+        return await call_next(request)
+    return JSONResponse({"detail": "unauthorized"}, status_code=401)
 
 
 def _world():
@@ -96,11 +107,6 @@ async def chat_page(request: Request) -> HTMLResponse:
 
 
 def _run_goal_in_thread(goal_id: int) -> None:
-    """Run a goal synchronously (in the background-task thread).
-
-    Constructs LLM/sandbox lazily so import failures don't break the
-    dashboard startup. Logs exceptions; never re-raises.
-    """
     try:
         from maverick.budget import Budget
         from maverick.llm import LLM
@@ -142,15 +148,34 @@ async def chat_goal(request: Request, goal_id: int) -> HTMLResponse:
 
 @app.get("/api/goal/{goal_id}")
 async def api_goal(goal_id: int) -> dict:
-    """Polled by the chat page via htmx to render live status."""
     g = _world().get_goal(goal_id)
     if g is None:
         raise HTTPException(status_code=404, detail="no such goal")
+    return {"id": g.id, "status": g.status, "title": g.title, "result": g.result or ""}
+
+
+@app.get("/api/goal/{goal_id}/events")
+async def api_goal_events(goal_id: int, since: int = 0, limit: int = 200) -> dict:
+    """Live stream of blackboard entries for a goal.
+
+    Long-poll style: pass `since=<last_id>` to get only new entries.
+    Returned ``next_id`` is the highest id seen; pass it back as
+    `since` on the next request.
+    """
+    w = _world()
+    g = w.get_goal(goal_id)
+    if g is None:
+        raise HTTPException(status_code=404, detail="no such goal")
+    events = w.goal_events(goal_id, since_id=since, limit=limit)
     return {
-        "id": g.id,
         "status": g.status,
-        "title": g.title,
         "result": g.result or "",
+        "next_id": events[-1].id if events else since,
+        "events": [
+            {"id": e.id, "agent": e.agent, "kind": e.kind,
+             "content": e.content, "ts": e.ts}
+            for e in events
+        ],
     }
 
 

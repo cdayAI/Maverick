@@ -1,8 +1,7 @@
 """Run a top-level goal through the swarm.
 
-v0.1.3: spawns MCP servers from [mcp_servers.<name>] config at start,
-shuts them down at end. Each server's tools are exposed to the agent
-as ``mcp_<server>__<tool>``.
+v0.1.3: attaches blackboard to world model so every post mirrors into
+`goal_events`. Dashboard reads from there to stream live progress.
 """
 from __future__ import annotations
 
@@ -65,11 +64,10 @@ async def run_goal(
     world.set_goal_status(goal_id, "active")
     episode_id = world.start_episode(goal_id)
     blackboard = Blackboard()
+    blackboard.attach_world(world, goal_id)  # persist every post for live streaming
     sandbox = sandbox or LocalBackend()
     shield = _build_shield()
 
-    # Spawn external MCP servers (e.g., filesystem, github). Skipped if
-    # config doesn't enable any -- no overhead for users who don't use MCP.
     mcp_specs = load_mcp_specs_from_config()
     mcp_clients = await start_mcp_clients(mcp_specs) if mcp_specs else []
 

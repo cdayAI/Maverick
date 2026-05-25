@@ -1,7 +1,12 @@
 """Persistent world model. SQLite with FTS5 for cheap recall.
 
-v0.1.2: schema_version bumped to 2. Episodes now track ``cost_dollars``
-so the dashboard can show per-run spend and aggregate by day/week.
+v0.1.3: schema_version bumped to 3. Adds a ``goal_events`` table that
+the agent writes blackboard entries to in near-real-time so the
+dashboard can stream live progress without sharing in-memory state
+with the agent process.
+
+v0.1.2: episodes track cost_dollars/tokens/tool_calls so the
+dashboard can show per-run spend and aggregate.
 """
 from __future__ import annotations
 
@@ -13,7 +18,7 @@ from typing import Optional
 
 
 DEFAULT_DB = Path.home() / ".maverick" / "world.db"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 SCHEMA = """
@@ -72,6 +77,18 @@ CREATE TABLE IF NOT EXISTS messages (
     ts REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS goal_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id INTEGER NOT NULL REFERENCES goals(id),
+    agent TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    content TEXT NOT NULL,
+    ts REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_goal_events_goal_ts
+    ON goal_events(goal_id, id);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content, content='messages', content_rowid='id'
 );
@@ -82,14 +99,16 @@ END;
 """
 
 
-# v1 -> v2: add cost / token / tool_call columns to episodes.
-# Idempotent guard: only ALTER if the column isn't already there.
 MIGRATIONS: dict[int, list[str]] = {
     2: [
         "ALTER TABLE episodes ADD COLUMN cost_dollars REAL DEFAULT 0",
         "ALTER TABLE episodes ADD COLUMN input_tokens INTEGER DEFAULT 0",
         "ALTER TABLE episodes ADD COLUMN output_tokens INTEGER DEFAULT 0",
         "ALTER TABLE episodes ADD COLUMN tool_calls INTEGER DEFAULT 0",
+    ],
+    3: [
+        # goal_events table is defined idempotently in SCHEMA above;
+        # no ALTER needed. This migration entry just bumps the version.
     ],
 }
 
@@ -119,7 +138,6 @@ class Question:
 
 @dataclass
 class EpisodeSpend:
-    """One row aggregating cost/tokens for an episode."""
     id: int
     goal_id: int
     started_at: float
@@ -129,6 +147,16 @@ class EpisodeSpend:
     input_tokens: int
     output_tokens: int
     tool_calls: int
+
+
+@dataclass
+class GoalEvent:
+    id: int
+    goal_id: int
+    agent: str
+    kind: str
+    content: str
+    ts: float
 
 
 class WorldModel:
@@ -159,8 +187,6 @@ class WorldModel:
                 try:
                     self.conn.execute(stmt)
                 except sqlite3.OperationalError as e:
-                    # "duplicate column" is fine -- means we partially applied
-                    # before. Anything else is a real error.
                     if "duplicate column" not in str(e).lower():
                         raise
             self.conn.execute("UPDATE schema_version SET version = ?", (next_version,))
@@ -258,6 +284,23 @@ class WorldModel:
             "output_tokens": row["out_tok"],
             "runs": row["runs"],
         }
+
+    # ----- goal events (live progress stream) -----
+    def append_event(self, goal_id: int, agent: str, kind: str, content: str) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO goal_events(goal_id, agent, kind, content, ts) VALUES(?, ?, ?, ?, ?)",
+            (goal_id, agent, kind, content, time.time()),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def goal_events(self, goal_id: int, since_id: int = 0, limit: int = 200) -> list[GoalEvent]:
+        rows = self.conn.execute(
+            "SELECT id, goal_id, agent, kind, content, ts FROM goal_events "
+            "WHERE goal_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
+            (goal_id, since_id, limit),
+        ).fetchall()
+        return [GoalEvent(**dict(r)) for r in rows]
 
     # ----- facts -----
     def upsert_fact(self, key: str, value: str, episode_id: Optional[int] = None) -> None:

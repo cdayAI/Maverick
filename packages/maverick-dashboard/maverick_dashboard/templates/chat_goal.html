@@ -3,26 +3,17 @@
 {% block content %}
   <h2>goal #{{ goal.id }}</h2>
 
-  <div class="panel"
-       hx-get="/api/goal/{{ goal.id }}"
-       hx-trigger="every 3s"
-       hx-swap="none"
-       hx-on::after-request="
-         try {
-           const d = JSON.parse(event.detail.xhr.responseText);
-           document.getElementById('status').className = 'badge ' + d.status;
-           document.getElementById('status').textContent = d.status;
-           if (d.result) {
-             document.getElementById('result').textContent = d.result;
-             document.getElementById('result-section').style.display = 'block';
-           }
-         } catch (e) {}
-       ">
+  <div class="panel">
     <p>
       <span id="status" class="badge {{ goal.status }}">{{ goal.status }}</span>
       <span class="muted" style="margin-left: 0.5rem;">{{ goal.title }}</span>
     </p>
-    <p class="muted" style="font-size: 0.85rem;">Auto-refreshing every 3s. Watch the status badge.</p>
+    <p class="muted" style="font-size: 0.85rem;">Live progress streams below. Polls every 2s.</p>
+  </div>
+
+  <h2 id="progress-header">progress</h2>
+  <div class="panel" id="progress" data-goal="{{ goal.id }}">
+    <pre id="events" style="white-space: pre-wrap; margin: 0; font: inherit; max-height: 480px; overflow-y: auto;"></pre>
   </div>
 
   <div id="result-section" class="panel" style="display: {% if goal.result %}block{% else %}none{% endif %};">
@@ -34,5 +25,66 @@
     <a href="/chat" class="muted" style="text-decoration: underline;">← back to chat</a>
   </p>
 
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script>
+    (function() {
+      const goalId = {{ goal.id }};
+      const eventsEl = document.getElementById('events');
+      const statusEl = document.getElementById('status');
+      const resultEl = document.getElementById('result');
+      const resultSection = document.getElementById('result-section');
+      let sinceId = 0;
+      let done = false;
+
+      function fmtKind(k) {
+        const colors = {
+          plan: 'var(--accent)', finding: 'var(--accent)',
+          observation: 'var(--text)', error: 'var(--danger)',
+          verify: 'var(--warn)',
+        };
+        return `<span style="color:${colors[k] || 'var(--muted)'};">${k}</span>`;
+      }
+
+      async function poll() {
+        if (done) return;
+        try {
+          const url = `/api/goal/${goalId}/events?since=${sinceId}`;
+          const opts = {};
+          // Carry bearer token through if set (for VPS deployments).
+          const tokenQs = new URLSearchParams(window.location.search).get('token');
+          const fullUrl = tokenQs ? `${url}&token=${encodeURIComponent(tokenQs)}` : url;
+          const resp = await fetch(fullUrl, opts);
+          if (!resp.ok) { setTimeout(poll, 5000); return; }
+          const d = await resp.json();
+          for (const e of d.events) {
+            const line = document.createElement('div');
+            line.innerHTML = `<span class="muted">[${e.agent}]</span> ${fmtKind(e.kind)} ${escapeHTML(e.content)}`;
+            eventsEl.appendChild(line);
+          }
+          if (d.events.length > 0) sinceId = d.next_id;
+          eventsEl.parentElement.scrollTop = eventsEl.parentElement.scrollHeight;
+          statusEl.className = 'badge ' + d.status;
+          statusEl.textContent = d.status;
+          if (d.result) {
+            resultEl.textContent = d.result;
+            resultSection.style.display = 'block';
+          }
+          if (d.status === 'done' || d.status === 'blocked') {
+            done = true;
+            return;
+          }
+        } catch (e) {
+          console.error('poll error', e);
+        }
+        setTimeout(poll, 2000);
+      }
+
+      function escapeHTML(s) {
+        const div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      poll();
+    })();
+  </script>
 {% endblock %}

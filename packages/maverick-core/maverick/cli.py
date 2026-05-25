@@ -39,11 +39,7 @@ def init() -> None:
     try:
         from maverick_installer.wizard import run as run_wizard
     except ImportError:
-        click.echo(
-            "The installer wizard isn't installed.\n"
-            "Install it with:  pipx install maverick-installer",
-            err=True,
-        )
+        click.echo("Install: pipx install maverick-installer", err=True)
         sys.exit(2)
     sys.exit(run_wizard())
 
@@ -75,10 +71,46 @@ def config(action: str) -> None:
 
 
 @main.command()
+@click.pass_context
+def budget(ctx) -> None:
+    """Show total spend + per-run cost history."""
+    world = WorldModel(ctx.obj["db"])
+    total = world.total_spend()
+    click.echo(click.style("Total spend", bold=True))
+    click.echo(f"  ${total['dollars']:.4f}  across {total['runs']} run(s)")
+    click.echo(f"  {total['input_tokens']:,} input tokens  /  {total['output_tokens']:,} output tokens")
+    click.echo("")
+    eps = world.list_episodes(limit=15)
+    if not eps:
+        click.echo("no completed runs yet.")
+        return
+    click.echo(click.style("Recent runs", bold=True))
+    for e in eps:
+        outcome = e.outcome or "running"
+        click.echo(
+            f"  ep #{e.id} (goal {e.goal_id}) [{outcome}]  "
+            f"${e.cost_dollars:.4f}  "
+            f"in={e.input_tokens:,} out={e.output_tokens:,} tools={e.tool_calls}"
+        )
+
+
+@main.command()
 @click.option("--host", default="127.0.0.1")
 @click.option("--port", default=8765, type=int)
-def dashboard(host: str, port: int) -> None:
-    """Start the local web dashboard (read-only goals/skills/facts viewer)."""
+@click.option("--token", default=None,
+              help="Bearer token to require for non-/healthz requests "
+                   "(also via MAVERICK_DASHBOARD_TOKEN env).")
+def dashboard(host: str, port: int, token) -> None:
+    """Start the local web dashboard."""
+    if token:
+        os.environ["MAVERICK_DASHBOARD_TOKEN"] = token
+        click.echo(
+            click.style(
+                "Bearer auth enabled. Access with ?token=... in URL or "
+                "Authorization: Bearer <token> header.",
+                fg="yellow",
+            )
+        )
     try:
         from maverick_dashboard.app import app as fastapi_app
     except ImportError:
@@ -91,7 +123,7 @@ def dashboard(host: str, port: int) -> None:
 
 @main.command()
 def mcp() -> None:
-    """Start the MCP server on stdio (for Claude Code / Cursor / etc.)."""
+    """Start the MCP server on stdio."""
     try:
         from maverick_mcp.server import main as mcp_main
     except ImportError:
@@ -102,9 +134,9 @@ def mcp() -> None:
 
 @main.command()
 @click.argument("title", required=False)
-@click.option("--description", default="", help="Longer description.")
+@click.option("--description", default="")
 @click.option("--template", "template_name", default=None,
-              help="Goal template name (see benchmarks/example-templates/).")
+              help="Goal template name.")
 @click.option("--param", "-p", "params", multiple=True,
               help="key=value param for the template. Repeatable.")
 @click.option("--max-dollars", default=None, type=float)
@@ -118,10 +150,7 @@ def start(
     ctx, title, description, template_name, params,
     max_dollars, max_wall_seconds, max_depth, workdir, sandbox_backend,
 ) -> None:
-    """Start a new goal and run the swarm.
-
-    Pass either TITLE directly, or --template <name> with --param key=value pairs.
-    """
+    """Start a new goal and run the swarm."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         click.echo("ERROR: ANTHROPIC_API_KEY not set. Run: maverick doctor", err=True)
         sys.exit(2)
@@ -133,7 +162,6 @@ def start(
         except FileNotFoundError as e:
             click.echo(f"ERROR: {e}", err=True)
             sys.exit(2)
-        # Parse key=value param pairs.
         param_dict = {}
         for raw in params:
             if "=" not in raw:
@@ -156,38 +184,30 @@ def start(
     world = WorldModel(ctx.obj["db"])
     goal_id = world.create_goal(title, description)
     click.echo(f"goal #{goal_id} created: {title}")
-
     llm = LLM(model=ctx.obj["model"])
-    budget = Budget(
+    bud = Budget(
         max_dollars=max_dollars or 5.0,
         max_wall_seconds=max_wall_seconds or 3600.0,
     )
     sandbox = build_sandbox(workdir=workdir, backend=sandbox_backend)
-    result = run_goal_sync(llm, world, budget, goal_id, sandbox=sandbox, max_depth=max_depth)
+    result = run_goal_sync(llm, world, bud, goal_id, sandbox=sandbox, max_depth=max_depth)
     click.echo("")
     click.echo(result)
 
 
 @main.command()
 @click.option("--max-depth", default=3, type=int)
-@click.option("--max-dollars", default=2.0, type=float,
-              help="Cap per message (chat is per-turn).")
+@click.option("--max-dollars", default=2.0, type=float)
 @click.option("--workdir", default=None)
 @click.pass_context
 def chat(ctx, max_depth: int, max_dollars: float, workdir) -> None:
-    """Start an interactive chat REPL.
-
-    Each line you type becomes a goal. Maverick replies with the swarm's
-    final answer. Type 'exit' / 'quit' or Ctrl-D to leave.
-    """
+    """Interactive chat REPL. Each line becomes a goal."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        click.echo("ERROR: ANTHROPIC_API_KEY not set. Run: maverick doctor", err=True)
+        click.echo("ERROR: ANTHROPIC_API_KEY not set.", err=True)
         sys.exit(2)
-
     world = WorldModel(ctx.obj["db"])
     llm = LLM(model=ctx.obj["model"])
     sandbox = build_sandbox(workdir=workdir)
-
     click.echo(click.style("Maverick chat. Type 'exit' to leave.", fg="cyan"))
     while True:
         try:
@@ -203,9 +223,9 @@ def chat(ctx, max_depth: int, max_dollars: float, workdir) -> None:
         title = line[:80]
         goal_id = world.create_goal(title, line)
         click.echo(click.style(f"  ... goal #{goal_id}", fg="bright_black"))
-        budget = Budget(max_dollars=max_dollars)
+        bud = Budget(max_dollars=max_dollars)
         try:
-            result = run_goal_sync(llm, world, budget, goal_id,
+            result = run_goal_sync(llm, world, bud, goal_id,
                                    sandbox=sandbox, max_depth=max_depth)
         except Exception as e:
             click.echo(click.style(f"  ✗ {e}", fg="red"))
@@ -221,7 +241,6 @@ def template() -> None:
 
 @template.command("list")
 def template_list() -> None:
-    """List bundled + user-installed templates."""
     from .templates import list_templates
     names = list_templates()
     if not names:
@@ -234,19 +253,15 @@ def template_list() -> None:
 @template.command("show")
 @click.argument("name")
 def template_show(name: str) -> None:
-    """Print a template's title, body, and params."""
     from .templates import load_template
     try:
         t = load_template(name)
     except FileNotFoundError as e:
         click.echo(f"ERROR: {e}", err=True)
         sys.exit(2)
-    click.echo(f"template: {t.name}")
-    click.echo(f"path: {t.path}")
-    click.echo(f"title: {t.title}")
+    click.echo(f"template: {t.name}\npath: {t.path}\ntitle: {t.title}")
     click.echo(f"budget: ${t.budget_dollars} / {t.budget_wall_seconds}s")
-    click.echo(f"params: {', '.join(t.params) or '(none)'}")
-    click.echo("")
+    click.echo(f"params: {', '.join(t.params) or '(none)'}\n")
     click.echo(t.body)
 
 
@@ -254,7 +269,7 @@ def template_show(name: str) -> None:
 @click.option("--max-depth", default=3, type=int)
 @click.option("--verbose", "-v", is_flag=True)
 def serve(max_depth: int, verbose: bool) -> None:
-    """Start the channel server (Telegram, Discord, Signal, etc.)."""
+    """Start the channel server."""
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -282,7 +297,7 @@ def serve(max_depth: int, verbose: bool) -> None:
 @click.option("--limit", default=20, type=int)
 @click.pass_context
 def logs(ctx, limit: int) -> None:
-    """Show recent goal + episode history from the world model."""
+    """Show recent goal + episode history."""
     world = WorldModel(ctx.obj["db"])
     goals = world.list_goals()
     if not goals:
@@ -348,8 +363,8 @@ def resume(ctx, goal_id, max_depth: int) -> None:
             click.echo(f"  #{q.id}: {q.question}")
         return
     llm = LLM(model=ctx.obj["model"])
-    budget = Budget()
-    result = run_goal_sync(llm, world, budget, goal_id, max_depth=max_depth)
+    bud = Budget()
+    result = run_goal_sync(llm, world, bud, goal_id, max_depth=max_depth)
     click.echo(result)
 
 
@@ -378,7 +393,7 @@ def skills() -> None:
     """List skills the swarm has distilled or installed."""
     items = load_skills()
     if not items:
-        click.echo(f"no skills yet. they accrue in {SKILLS_DIR} after successful runs.")
+        click.echo(f"no skills yet (in {SKILLS_DIR}).")
         return
     for s in items:
         click.echo(f"  {s.name}")
@@ -394,7 +409,7 @@ def skill() -> None:
 @skill.command("install")
 @click.argument("source")
 def skill_install(source: str) -> None:
-    """Install a SKILL.md from a URL, gh:org/repo[:path], or local file."""
+    """Install a SKILL.md."""
     try:
         s = install_skill(source)
     except ValueError as e:
@@ -406,7 +421,6 @@ def skill_install(source: str) -> None:
 @skill.command("remove")
 @click.argument("name")
 def skill_remove(name: str) -> None:
-    """Remove an installed skill by name."""
     if remove_skill(name):
         click.echo(f"removed: {name}")
     else:
@@ -417,11 +431,9 @@ def skill_remove(name: str) -> None:
 @skill.command("info")
 @click.argument("name")
 def skill_info(name: str) -> None:
-    """Print a skill's body and triggers."""
     for s in load_skills():
         if s.name == name:
             click.echo(s.path)
-            click.echo("")
             for t in s.triggers:
                 click.echo(f"trigger: {t}")
             click.echo("")
