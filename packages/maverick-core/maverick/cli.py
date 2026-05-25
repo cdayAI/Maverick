@@ -13,7 +13,12 @@ from .budget import Budget
 from .llm import LLM, DEFAULT_MODEL
 from .orchestrator import run_goal_sync
 from .sandbox import build_sandbox
-from .skills import load_skills, SKILLS_DIR
+from .skills import (
+    SKILLS_DIR,
+    install_skill,
+    load_skills,
+    remove_skill,
+)
 from .world_model import WorldModel, DEFAULT_DB
 
 
@@ -87,12 +92,7 @@ def start(
 @click.option("--max-depth", default=3, type=int, help="Maximum swarm spawn depth per request.")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
 def serve(max_depth: int, verbose: bool) -> None:
-    """Start the channel server (Telegram, Discord, Signal, etc.).
-
-    Reads enabled channels from ~/.maverick/config.toml and listens on
-    each one. Each incoming message becomes a goal that runs through
-    the swarm; the response is sent back over the same channel.
-    """
+    """Start the channel server (Telegram, Discord, Signal, etc.)."""
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -202,15 +202,71 @@ def facts(ctx) -> None:
 
 @main.command()
 def skills() -> None:
-    """List skills the swarm has distilled from past runs."""
+    """List skills the swarm has distilled or installed."""
     items = load_skills()
     if not items:
-        click.echo(f"no skills yet. they accrue in {SKILLS_DIR} after successful runs.")
+        click.echo(f"no skills yet. they accrue in {SKILLS_DIR} after successful runs,")
+        click.echo("or install one with:  maverick skill install <source>")
         return
     for s in items:
         click.echo(f"  {s.name}")
         for t in s.triggers[:3]:
             click.echo(f"    trigger: {t}")
+
+
+@main.group()
+def skill() -> None:
+    """Manage skills (install, remove, info)."""
+
+
+@skill.command("install")
+@click.argument("source")
+def skill_install(source: str) -> None:
+    """Install a SKILL.md from a URL, gh:org/repo[:path], or local file.
+
+    Examples:
+
+      maverick skill install gh:texasreaper62/awesome-maverick-skills
+      maverick skill install gh:texasreaper62/skills:research/web-search.md
+      maverick skill install https://example.com/my-skill.md
+      maverick skill install ./local-skill.md
+    """
+    try:
+        s = install_skill(source)
+    except ValueError as e:
+        click.echo(f"ERROR: {e}", err=True)
+        sys.exit(2)
+    click.echo(f"installed: {s.name} -> {s.path}")
+    for t in s.triggers[:3]:
+        click.echo(f"  trigger: {t}")
+
+
+@skill.command("remove")
+@click.argument("name")
+def skill_remove(name: str) -> None:
+    """Remove an installed skill by name."""
+    if remove_skill(name):
+        click.echo(f"removed: {name}")
+    else:
+        click.echo(f"no skill named {name!r}", err=True)
+        sys.exit(2)
+
+
+@skill.command("info")
+@click.argument("name")
+def skill_info(name: str) -> None:
+    """Print a skill's body and triggers."""
+    for s in load_skills():
+        if s.name == name:
+            click.echo(s.path)
+            click.echo("")
+            for t in s.triggers:
+                click.echo(f"trigger: {t}")
+            click.echo("")
+            click.echo(s.body)
+            return
+    click.echo(f"no skill named {name!r}", err=True)
+    sys.exit(2)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Skill auto-generation.
+"""Skill auto-generation + community install.
 
 After a goal completes successfully, ask a distiller model to extract a
 reusable SKILL.md from the trajectory. On the next run, relevant skills
@@ -8,10 +8,17 @@ compound over time.
 This is the closed-loop learning piece. Hermes does it; Maverick does it
 better because the orchestrator-blackboard structure gives us a clean
 trajectory to distill.
+
+Users can also install skills from the community:
+
+    maverick skill install gh:texasreaper62/awesome-maverick-skills:research/web-search.md
+    maverick skill install https://example.com/my-skill.md
+    maverick skill install ./local-skill.md
 """
 from __future__ import annotations
 
 import re
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -20,8 +27,8 @@ from .blackboard import Blackboard
 from .budget import Budget
 from .llm import LLM, MODEL_SONNET
 
-
 SKILLS_DIR = Path.home() / ".maverick" / "skills"
+INSTALL_TIMEOUT = 30.0
 
 
 DISTILLER_SYSTEM = """You distill successful agent trajectories into reusable SKILL.md files.
@@ -136,6 +143,70 @@ def render_for_prompt(skills: list[Skill]) -> str:
     return "\n".join(parts)
 
 
+def _safe_name(raw: str) -> str:
+    name = re.sub(r"[^a-z0-9-]", "-", raw.lower()).strip("-")
+    return name or "skill"
+
+
+def install_skill(source: str, skills_dir: Path = SKILLS_DIR) -> Skill:
+    """Install a skill from a URL, ``gh:org/repo[:path]``, or local path.
+
+    Returns the installed Skill. Raises ValueError if the source can't be
+    fetched or parsed.
+
+    Supported sources::
+
+        gh:texasreaper62/awesome-maverick-skills
+            -> https://raw.githubusercontent.com/.../main/SKILL.md
+        gh:texasreaper62/awesome-maverick-skills:research/web-search.md
+            -> same, with explicit path inside the repo
+        https://example.com/my-skill.md
+        /home/me/my-skill.md  (or any local file)
+    """
+    skills_dir.mkdir(parents=True, exist_ok=True)
+
+    if source.startswith("gh:"):
+        rest = source[3:]
+        if ":" in rest:
+            repo, path = rest.split(":", 1)
+        else:
+            repo, path = rest, "SKILL.md"
+        url = f"https://raw.githubusercontent.com/{repo}/main/{path}"
+        content = _fetch_url(url)
+    elif source.startswith(("http://", "https://")):
+        content = _fetch_url(source)
+    else:
+        p = Path(source).expanduser()
+        if not p.exists():
+            raise ValueError(f"local file {source!r} does not exist")
+        content = p.read_text(encoding="utf-8")
+
+    m = re.search(r"^name:\s*(\S+)", content, re.MULTILINE)
+    name = _safe_name(m.group(1)) if m else "imported-skill"
+    target = skills_dir / f"{name}.md"
+    target.write_text(content, encoding="utf-8")
+    return Skill.parse(content, target)
+
+
+def _fetch_url(url: str) -> str:
+    try:
+        with urllib.request.urlopen(url, timeout=INSTALL_TIMEOUT) as resp:
+            if resp.status != 200:
+                raise ValueError(f"HTTP {resp.status} from {url}")
+            return resp.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+        raise ValueError(f"failed to fetch {url}: {e}") from e
+
+
+def remove_skill(name: str, skills_dir: Path = SKILLS_DIR) -> bool:
+    """Delete an installed skill by name. Returns True if removed."""
+    target = skills_dir / f"{_safe_name(name)}.md"
+    if target.exists():
+        target.unlink()
+        return True
+    return False
+
+
 def distill(
     goal: str,
     summary: str,
@@ -171,10 +242,8 @@ def distill(
         text = text.strip()
 
     try:
-        # Extract name from frontmatter to pick filename.
         m = re.search(r"^name:\s*(\S+)", text, re.MULTILINE)
-        name = m.group(1) if m else "skill"
-        name = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-") or "skill"
+        name = _safe_name(m.group(1)) if m else "skill"
         path = skills_dir / f"{name}.md"
         path.write_text(text)
         return Skill.parse(text, path)
