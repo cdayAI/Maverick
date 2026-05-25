@@ -45,6 +45,52 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  pypi:
+    # Publishes every package in the workspace to PyPI on tag. Requires
+    # PYPI_API_TOKEN secret to be set in the repo (Settings > Secrets >
+    # Actions). Falls back to no-op if the token isn't configured so
+    # forks don't fail.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check for PyPI token
+        id: token_check
+        env:
+          TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "no_token=true" >> "$GITHUB_OUTPUT"
+            echo "PYPI_API_TOKEN not set; skipping PyPI publish."
+          else
+            echo "no_token=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install build tools
+        if: steps.token_check.outputs.no_token == 'false'
+        run: pip install build twine
+      - name: Build all packages
+        if: steps.token_check.outputs.no_token == 'false'
+        run: |
+          for pkg in packages/maverick-core packages/maverick-shield \
+                    packages/maverick-channels packages/maverick-dashboard \
+                    packages/maverick-mcp apps/installer-cli; do
+            echo "--- building $pkg ---"
+            (cd "$pkg" && python -m build)
+          done
+      - name: Publish to PyPI
+        if: steps.token_check.outputs.no_token == 'false'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          for pkg in packages/maverick-core packages/maverick-shield \
+                    packages/maverick-channels packages/maverick-dashboard \
+                    packages/maverick-mcp apps/installer-cli; do
+            twine upload --skip-existing "$pkg/dist/"*
+          done
+
   binaries:
     strategy:
       fail-fast: false
@@ -86,8 +132,6 @@ jobs:
       - name: Rename artifact
         shell: bash
         run: |
-          # PyInstaller writes dist/maverick (+ .exe on Windows). Rename for the
-          # platform-tagged release upload.
           if [ "${{ runner.os }}" = "Windows" ]; then
             mv dist/maverick.exe "dist/${{ matrix.artifact }}"
           else
@@ -99,8 +143,9 @@ jobs:
           path: dist/${{ matrix.artifact }}
 
   release:
-    needs: [docker-image, binaries]
+    needs: [docker-image, binaries, pypi]
     runs-on: ubuntu-latest
+    if: always() && needs.docker-image.result == 'success' && needs.binaries.result == 'success'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

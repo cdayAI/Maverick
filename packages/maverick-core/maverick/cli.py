@@ -51,12 +51,7 @@ def init() -> None:
 
 @main.command()
 def doctor() -> None:
-    """Diagnose your Maverick installation.
-
-    Checks config, API keys, sandbox availability, channel readiness, and
-    world.db integrity. Prints a green checkmark or a yellow/red status
-    per item so you can see at a glance what's healthy and what isn't.
-    """
+    """Diagnose your Maverick installation."""
     try:
         from .health import diagnose
     except ImportError as e:
@@ -77,12 +72,45 @@ def config(action: str) -> None:
     if action == "edit":
         editor = os.environ.get("EDITOR", "nano")
         os.execvp(editor, [editor, str(p)])
-        return  # not reached
-    # show
+        return
     if not p.exists():
         click.echo(f"No config at {p}. Run:  maverick init", err=True)
         sys.exit(1)
     click.echo(p.read_text())
+
+
+@main.command()
+@click.option("--host", default="127.0.0.1", help="Bind host (default: localhost only).")
+@click.option("--port", default=8765, type=int)
+def dashboard(host: str, port: int) -> None:
+    """Start the local web dashboard (read-only goals/skills/facts viewer)."""
+    try:
+        from maverick_dashboard.app import app as fastapi_app
+    except ImportError:
+        click.echo(
+            "The dashboard isn't installed.\n"
+            "Install it with:  pip install maverick-dashboard",
+            err=True,
+        )
+        sys.exit(2)
+    import uvicorn
+    click.echo(f"Maverick dashboard: http://{host}:{port}")
+    uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
+
+
+@main.command()
+def mcp() -> None:
+    """Start the MCP server on stdio (for Claude Code / Cursor / etc.)."""
+    try:
+        from maverick_mcp.server import main as mcp_main
+    except ImportError:
+        click.echo(
+            "The MCP server isn't installed.\n"
+            "Install it with:  pip install maverick-mcp",
+            err=True,
+        )
+        sys.exit(2)
+    mcp_main()
 
 
 @main.command()
@@ -97,28 +125,19 @@ def config(action: str) -> None:
               help="Sandbox backend override.")
 @click.pass_context
 def start(
-    ctx,
-    title: str,
-    description: str,
-    max_dollars: float,
-    max_wall_seconds: float,
-    max_depth: int,
-    workdir,
-    sandbox_backend,
+    ctx, title: str, description: str, max_dollars: float, max_wall_seconds: float,
+    max_depth: int, workdir, sandbox_backend,
 ) -> None:
     """Start a new goal and run the swarm."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         click.echo("ERROR: ANTHROPIC_API_KEY not set. Run: maverick doctor", err=True)
         sys.exit(2)
-
     world = WorldModel(ctx.obj["db"])
     goal_id = world.create_goal(title, description)
     click.echo(f"goal #{goal_id} created: {title}")
-
     llm = LLM(model=ctx.obj["model"])
     budget = Budget(max_dollars=max_dollars, max_wall_seconds=max_wall_seconds)
     sandbox = build_sandbox(workdir=workdir, backend=sandbox_backend)
-
     result = run_goal_sync(llm, world, budget, goal_id, sandbox=sandbox, max_depth=max_depth)
     click.echo("")
     click.echo(result)
@@ -150,6 +169,23 @@ def serve(max_depth: int, verbose: bool) -> None:
     except KeyboardInterrupt:
         click.echo("\nshutting down...")
         asyncio.run(server.stop())
+
+
+@main.command()
+@click.option("--limit", default=20, type=int, help="Max entries to show.")
+@click.pass_context
+def logs(ctx, limit: int) -> None:
+    """Show recent goal + episode history from the world model."""
+    world = WorldModel(ctx.obj["db"])
+    goals = world.list_goals()
+    if not goals:
+        click.echo("no goals yet.")
+        return
+    for g in goals[-limit:]:
+        click.echo(f"#{g.id} [{g.status}] {g.title}")
+        if g.result:
+            preview = (g.result or "")[:200].replace("\n", " ")
+            click.echo(f"  -> {preview}{'...' if len(g.result) > 200 else ''}")
 
 
 @main.command()
