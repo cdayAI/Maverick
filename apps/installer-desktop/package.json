@@ -1,0 +1,10 @@
+{
+  "name": "@maverick/installer-desktop",
+  "version": "0.1.0-pre",
+  "private": true,
+  "description": "Tauri-based GUI installer for Maverick (planned)",
+  "scripts": {
+    "dev": "echo 'not yet implemented — see README.md'",
+    "build": "echo 'not yet implemented — see README.md'"
+  }
+}

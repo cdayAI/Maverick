@@ -1,0 +1,24 @@
+"""Ollama provider client.
+
+Local models via Ollama's OpenAI-compatible API at ``/v1``. Nothing
+leaves the user's machine; pricing is implicitly $0 since inference
+runs locally.
+
+Default base_url is ``http://localhost:11434/v1``. Override via
+``[providers.ollama] base_url`` in config.
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+from .openai_provider import OpenAIClient
+
+
+class OllamaClient(OpenAIClient):
+    DEFAULT_MODEL = "llama3.3:70b"
+
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
+        super().__init__(
+            api_key=api_key or "ollama",  # placeholder; Ollama ignores it
+            base_url=base_url or "http://localhost:11434/v1",
+        )
