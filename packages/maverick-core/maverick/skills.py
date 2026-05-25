@@ -18,6 +18,7 @@ Users can also install skills from the community:
 from __future__ import annotations
 
 import re
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path

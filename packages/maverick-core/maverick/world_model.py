@@ -2,6 +2,10 @@
 
 This is the consumer wedge: not chat history, but a typed model of the user
 and their ongoing work that survives restarts.
+
+v0.1.1: added schema_version table + migrations dispatch. When SCHEMA is
+changed in a future version, append the upgrade SQL to MIGRATIONS keyed by
+the new version number; existing user DBs will apply it on next open.
 """
 from __future__ import annotations
 
@@ -14,8 +18,17 @@ from typing import Optional
 
 DEFAULT_DB = Path.home() / ".maverick" / "world.db"
 
+# Bump when adding a migration to MIGRATIONS. New DBs are created at this
+# version; existing DBs are upgraded by applying every migration with
+# version > current_version.
+SCHEMA_VERSION = 1
+
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY
+);
+
 CREATE TABLE IF NOT EXISTS goals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     parent_id INTEGER REFERENCES goals(id),
@@ -73,6 +86,18 @@ END;
 """
 
 
+# Future migrations: MIGRATIONS[N] is the list of SQL statements to bring a
+# DB from version N-1 to N. Example:
+#
+# MIGRATIONS = {
+#     2: [
+#         "ALTER TABLE goals ADD COLUMN priority INTEGER DEFAULT 0",
+#         "CREATE INDEX idx_goals_priority ON goals(priority)",
+#     ],
+# }
+MIGRATIONS: dict[int, list[str]] = {}
+
+
 @dataclass
 class Goal:
     id: int
@@ -103,7 +128,40 @@ class WorldModel:
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._init_schema_version()
+        self._apply_migrations()
         self.conn.commit()
+
+    def _init_schema_version(self) -> None:
+        row = self.conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        if row is None:
+            self.conn.execute(
+                "INSERT INTO schema_version(version) VALUES(?)", (SCHEMA_VERSION,)
+            )
+
+    def _apply_migrations(self) -> None:
+        """Run any migrations whose version > current schema_version."""
+        current = self.conn.execute(
+            "SELECT version FROM schema_version LIMIT 1"
+        ).fetchone()[0]
+        target = SCHEMA_VERSION
+        while current < target:
+            next_version = current + 1
+            migration = MIGRATIONS.get(next_version)
+            if migration is None:
+                # No migration defined yet; just bump the recorded version
+                # so the gap closes (assumes idempotent CREATE TABLE IF NOT EXISTS
+                # in SCHEMA covers new objects).
+                break
+            for stmt in migration:
+                self.conn.execute(stmt)
+            self.conn.execute("UPDATE schema_version SET version = ?", (next_version,))
+            current = next_version
+
+    @property
+    def schema_version(self) -> int:
+        row = self.conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        return row[0] if row else 0
 
     # ----- goals -----
     def create_goal(self, title: str, description: str = "", parent_id: Optional[int] = None) -> int:
