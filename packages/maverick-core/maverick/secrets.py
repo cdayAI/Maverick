@@ -1,0 +1,61 @@
+"""Secret scrubber for logs + error messages.
+
+Privacy reviewer flagged that LLM exceptions, MCP stderr drains, and
+`subprocess.run` stdout were being logged verbatim — any of which could
+contain API keys / bearer tokens / .env values. This module gives a
+single ``scrub(text)`` that pattern-matches the common shapes and
+redacts them to ``[REDACTED:<kind>]``.
+
+The patterns aren't exhaustive (a determined exfiltrator can wrap
+secrets in something unusual), but they cover what people accidentally
+paste into goal descriptions, what shell tools echo by mistake, and
+what LLM error payloads tend to include.
+"""
+from __future__ import annotations
+
+import re
+
+# Each entry: (kind, regex). Order matters -- longer / more specific
+# patterns run first so they don't get partially matched by generic ones.
+_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    # Anthropic API key (sk-ant-...)
+    ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
+    # OpenAI / OpenRouter key (sk-...)
+    ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
+    # AWS access key id
+    ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    # GitHub PAT (ghp_/gho_/ghu_/ghr_/ghs_ prefix)
+    ("github_token", re.compile(r"\bgh[ps]_[A-Za-z0-9_]{30,}\b|\bghu_[A-Za-z0-9_]{30,}\b|\bgho_[A-Za-z0-9_]{30,}\b|\bghr_[A-Za-z0-9_]{30,}\b")),
+    # Slack tokens (xoxb-, xoxp-, xapp-)
+    ("slack_token", re.compile(r"\bxox[bpaors]-[A-Za-z0-9-]{10,}\b")),
+    # Generic bearer header (Authorization: Bearer ...)
+    ("bearer", re.compile(r"(?i)\b(authorization\s*:\s*bearer\s+)([A-Za-z0-9._\-+/=]{16,})")),
+    # .env-style KEY=value lines (only the value part; only redact when key
+    # contains TOKEN / KEY / SECRET / PASSWORD / PASS)
+    ("env_secret", re.compile(
+        r"((?:^|\n)\s*[A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASS)[A-Z0-9_]*\s*=\s*)([^\s\n]+)",
+        re.MULTILINE,
+    )),
+    # JWT (three base64url segments separated by dots, common shape)
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
+]
+
+
+def scrub(text: str) -> str:
+    """Return a copy of ``text`` with detected secrets replaced.
+
+    The replacement preserves enough structure that the redacted result
+    is still useful for debugging (you can see WHAT got redacted), but
+    the actual secret value is gone.
+    """
+    if not text:
+        return text
+    out = text
+    for kind, pat in _PATTERNS:
+        if kind == "bearer":
+            out = pat.sub(lambda m: m.group(1) + f"[REDACTED:{kind}]", out)
+        elif kind == "env_secret":
+            out = pat.sub(lambda m: m.group(1) + f"[REDACTED:{kind}]", out)
+        else:
+            out = pat.sub(f"[REDACTED:{kind}]", out)
+    return out

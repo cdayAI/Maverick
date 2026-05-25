@@ -75,7 +75,8 @@ async def test_ask_user_pauses_goal_as_blocked(tmp_path: Path, fake_llm, make_ll
         sandbox=LocalBackend(workdir=tmp_path), max_depth=1,
     )
 
-    assert "PAUSED" in out
+    # Council UX fix: message is now sentence-case "Paused" not "PAUSED".
+    assert "Paused" in out
     goal = world.get_goal(gid)
     assert goal.status == "blocked"
     qs = world.open_questions(gid)

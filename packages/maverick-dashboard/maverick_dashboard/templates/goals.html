@@ -18,7 +18,20 @@
       </tbody>
     </table>
     {% else %}
-      <p class="muted">No goals yet.</p>
+      <div style="text-align: center; padding: 2rem 1rem;">
+        <h3 style="margin-top: 0;">Welcome!</h3>
+        <p class="muted">You haven't started any goals yet.</p>
+        <p>Try one of these to get a feel for how Maverick works:</p>
+        <ul style="list-style: none; padding: 0; max-width: 36rem; margin: 1.5rem auto;">
+          <li style="margin: 0.5rem 0;"><code>maverick start "summarize my unread emails"</code></li>
+          <li style="margin: 0.5rem 0;"><code>maverick start "plan a 3-day trip to Lisbon under $1500"</code></li>
+          <li style="margin: 0.5rem 0;"><code>maverick start "write a follow-up email to John saying I'll be 10 minutes late"</code></li>
+        </ul>
+        <p>
+          Or use the <a href="/chat">chat tab</a> to send your first message
+          straight from the browser.
+        </p>
+      </div>
     {% endif %}
   </div>
 {% endblock %}

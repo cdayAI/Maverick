@@ -4,16 +4,26 @@
 children in parallel via asyncio.gather and returns their findings.
 
 Both respect the swarm's max_depth and the shared budget.
+
+v0.2 (council AI-safety review): added a fan-out anomaly cap. An agent
+asking to spawn 50 siblings burns budget before refusal triggers.
+``MAVERICK_MAX_SWARM_FANOUT`` (default 8) caps the per-call branching
+factor. Excess agents are dropped with a warning posted to the
+blackboard.
 """
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import TYPE_CHECKING
 
 from . import Tool
 
 if TYPE_CHECKING:
     from ..agent import Agent
+
+
+MAX_SWARM_FANOUT = int(os.environ.get("MAVERICK_MAX_SWARM_FANOUT", "8"))
 
 
 def spawn_subagent_tool(parent: "Agent") -> Tool:
@@ -68,6 +78,17 @@ def spawn_swarm_tool(parent: "Agent") -> Tool:
 
         if parent.depth + 1 > parent.ctx.max_depth:
             return f"ERROR: max depth {parent.ctx.max_depth} reached"
+
+        # Cap per-call fan-out: an agent asking for 50 siblings on a
+        # trivial sub-goal is almost always confused / under attack, and
+        # the budget shouldn't bear the cost of refusing per-spawn.
+        if len(agents_spec) > MAX_SWARM_FANOUT:
+            parent.ctx.blackboard.post(
+                parent.name, "error",
+                f"swarm fan-out capped: requested {len(agents_spec)}, "
+                f"max {MAX_SWARM_FANOUT}",
+            )
+            agents_spec = agents_spec[:MAX_SWARM_FANOUT]
 
         children = [
             Agent(

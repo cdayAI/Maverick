@@ -249,9 +249,67 @@ def start(
         max_wall_seconds=max_wall_seconds or 3600.0,
     )
     sandbox = build_sandbox(workdir=workdir, backend=sandbox_backend)
-    result = run_goal_sync(llm, world, bud, goal_id, sandbox=sandbox, max_depth=max_depth)
+
+    # Council UX finding: `maverick start "..."` used to look hung
+    # between "goal created" and the final printout. A background poller
+    # streams goal_events to stderr so the user sees the swarm thinking
+    # in real time. Non-tty output (e.g. piped to a file) skips the
+    # poller so logs aren't littered with progress lines.
+    import threading
+    stop_poll = threading.Event()
+    if not click.get_text_stream("stderr").isatty() or os.environ.get("MAVERICK_NO_PROGRESS"):
+        poller = None
+    else:
+        poller = threading.Thread(
+            target=_stream_progress, args=(world.path, goal_id, stop_poll),
+            daemon=True,
+        )
+        poller.start()
+
+    try:
+        result = run_goal_sync(llm, world, bud, goal_id, sandbox=sandbox, max_depth=max_depth)
+    finally:
+        stop_poll.set()
+        if poller is not None:
+            poller.join(timeout=2.0)
     click.echo("")
     click.echo(result)
+
+
+def _stream_progress(db_path, goal_id: int, stop) -> None:
+    """Poll goal_events and print one line per new entry to stderr.
+
+    Uses a fresh WorldModel so we don't share the connection with the
+    main thread (SQLite WAL handles concurrent reads + one writer).
+    """
+    try:
+        wm = WorldModel(db_path)
+    except Exception:
+        return
+    seen = 0
+    labels = {
+        "plan": "thinking", "finding": "answer", "observation": "result",
+        "error": "error", "verify": "checking", "artifact": "produced",
+    }
+    while not stop.is_set():
+        try:
+            evs = wm.goal_events(goal_id, since_id=seen, limit=200)
+            for e in evs:
+                label = labels.get(e.kind, e.kind)
+                # Strip the hex suffix from agent names for readability.
+                agent = e.agent.split("-")[0] if e.agent else "agent"
+                content = e.content[:200]
+                click.echo(
+                    click.style(f"  [{agent}] ", fg="bright_black")
+                    + click.style(f"{label}: ", fg="cyan")
+                    + content,
+                    err=True,
+                )
+                seen = e.id
+        except Exception:
+            pass
+        if stop.wait(timeout=1.5):
+            return
 
 
 @main.command()

@@ -135,7 +135,13 @@ async def run_goal(
         except BudgetExceeded as e:
             _end_episode_with_spend(world, episode_id, f"budget: {e}", "failure", budget)
             world.set_goal_status(goal_id, "blocked", result=f"budget exceeded: {e}")
-            return f"BUDGET EXCEEDED: {budget.summary()}"
+            # Sentence-style error so a non-engineer can read it.
+            return (
+                f"Stopped: this goal hit your spending or time limit "
+                f"(${budget.dollars:.2f}, {budget.elapsed():.0f}s elapsed).\n"
+                f"Resume with a higher cap: "
+                f"maverick resume #{goal_id} --max-dollars <higher>"
+            )
 
         if result.blocked_on_user:
             _end_episode_with_spend(
@@ -143,15 +149,29 @@ async def run_goal(
             )
             world.set_goal_status(goal_id, "blocked")
             qs = world.open_questions(goal_id)
+            if not qs:
+                return (
+                    "Paused: the assistant said it needs more information, "
+                    "but no question was filed. You can resume with "
+                    f"`maverick resume #{goal_id}` or send a follow-up message."
+                )
+            lines = [f"  #{q.id}: {q.question}" for q in qs]
             return (
-                f"PAUSED: waiting on user. {len(qs)} open question(s).\n"
-                + "\n".join(f"  #{q.id}: {q.question}" for q in qs)
+                f"Paused: waiting for you to answer "
+                f"{len(qs)} question{'s' if len(qs) != 1 else ''}.\n"
+                + "\n".join(lines)
+                + "\n\nAnswer with: maverick answer <id> \"<your answer>\""
             )
 
         if result.error:
             _end_episode_with_spend(world, episode_id, result.error, "failure", budget)
             world.set_goal_status(goal_id, "blocked", result=result.error)
-            return f"FAILED: {result.error}\n[{budget.summary()}]"
+            return (
+                f"Stopped: the assistant ran into an error and couldn't finish.\n"
+                f"Detail: {result.error}\n"
+                f"You can try again with: maverick resume #{goal_id}\n"
+                f"[{budget.summary()}]"
+            )
 
         summary = result.final or "(no answer)"
         _end_episode_with_spend(world, episode_id, summary, "success", budget)
