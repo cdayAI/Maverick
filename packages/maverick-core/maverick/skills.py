@@ -1,22 +1,15 @@
-"""Skill auto-generation + community install.
+"""Skill auto-generation, community install, and retrieval.
 
-After a goal completes successfully, ask a distiller model to extract a
-reusable SKILL.md from the trajectory. On the next run, relevant skills
-are loaded into the orchestrator's context, so successful patterns
-compound over time.
-
-This is the closed-loop learning piece. Hermes does it; Maverick does it
-better because the orchestrator-blackboard structure gives us a clean
-trajectory to distill.
-
-Users can also install skills from the community:
-
-    maverick skill install gh:texasreaper62/awesome-maverick-skills:research/web-search.md
-    maverick skill install https://example.com/my-skill.md
-    maverick skill install ./local-skill.md
+v0.1.5: ``relevant_skills`` now tries the embedding-based retriever in
+``maverick.skill_embeddings`` first, falling back to the lexical scorer
+when ``fastembed`` isn't installed. This keeps the closed-loop
+learning effective on paraphrased goals (e.g. "compare these two
+things" matches a skill triggered by "vs.") without forcing the heavy
+ONNX runtime on users who don't want it.
 """
 from __future__ import annotations
 
+import logging
 import re
 import urllib.error
 import urllib.request
@@ -27,6 +20,8 @@ from typing import Optional
 from .blackboard import Blackboard
 from .budget import Budget
 from .llm import LLM, MODEL_SONNET
+
+log = logging.getLogger(__name__)
 
 SKILLS_DIR = Path.home() / ".maverick" / "skills"
 INSTALL_TIMEOUT = 30.0
@@ -114,8 +109,8 @@ def load_skills(skills_dir: Path = SKILLS_DIR) -> list[Skill]:
     return out
 
 
-def relevant_skills(goal: str, all_skills: list[Skill], max_n: int = 3) -> list[Skill]:
-    """Cheap lexical match. Good enough until embeddings land."""
+def _relevant_skills_lexical(goal: str, all_skills: list[Skill], max_n: int = 3) -> list[Skill]:
+    """Original word-overlap + substring scorer. Always available, fast."""
     goal_lower = goal.lower()
     goal_words = set(re.findall(r"\w+", goal_lower))
 
@@ -131,6 +126,23 @@ def relevant_skills(goal: str, all_skills: list[Skill], max_n: int = 3) -> list[
             scored.append((score, s))
     scored.sort(key=lambda x: -x[0])
     return [s for _, s in scored[:max_n]]
+
+
+def relevant_skills(goal: str, all_skills: list[Skill], max_n: int = 3) -> list[Skill]:
+    """Pick the top-N skills for a goal.
+
+    Tries embedding-based retrieval first (when ``fastembed`` is installed)
+    and falls back to lexical scoring otherwise. The fallback is also used
+    when embeddings fail for any reason (corrupt cache, OOM, etc.).
+    """
+    try:
+        from .skill_embeddings import relevant_skills_embed
+        result = relevant_skills_embed(goal, all_skills, max_n=max_n)
+        if result is not None:
+            return result
+    except Exception as e:
+        log.debug("embedding retrieval failed; falling back to lexical: %s", e)
+    return _relevant_skills_lexical(goal, all_skills, max_n=max_n)
 
 
 def render_for_prompt(skills: list[Skill]) -> str:
@@ -150,20 +162,6 @@ def _safe_name(raw: str) -> str:
 
 
 def install_skill(source: str, skills_dir: Path = SKILLS_DIR) -> Skill:
-    """Install a skill from a URL, ``gh:org/repo[:path]``, or local path.
-
-    Returns the installed Skill. Raises ValueError if the source can't be
-    fetched or parsed.
-
-    Supported sources::
-
-        gh:texasreaper62/awesome-maverick-skills
-            -> https://raw.githubusercontent.com/.../main/SKILL.md
-        gh:texasreaper62/awesome-maverick-skills:research/web-search.md
-            -> same, with explicit path inside the repo
-        https://example.com/my-skill.md
-        /home/me/my-skill.md  (or any local file)
-    """
     skills_dir.mkdir(parents=True, exist_ok=True)
 
     if source.startswith("gh:"):
@@ -200,7 +198,6 @@ def _fetch_url(url: str) -> str:
 
 
 def remove_skill(name: str, skills_dir: Path = SKILLS_DIR) -> bool:
-    """Delete an installed skill by name. Returns True if removed."""
     target = skills_dir / f"{_safe_name(name)}.md"
     if target.exists():
         target.unlink()
@@ -216,7 +213,6 @@ def distill(
     budget: Optional[Budget] = None,
     skills_dir: Path = SKILLS_DIR,
 ) -> Optional[Skill]:
-    """After a successful run, ask the model to extract a SKILL.md."""
     skills_dir.mkdir(parents=True, exist_ok=True)
 
     trajectory = blackboard.render(200)

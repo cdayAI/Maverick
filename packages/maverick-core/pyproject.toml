@@ -17,16 +17,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Provider extras: install the SDK only if you actually pick that provider.
 openai     = ["openai>=1.30"]
 openrouter = ["openai>=1.30"]
 ollama     = ["openai>=1.30"]
 shield     = ["maverick-shield"]
 installer  = ["maverick-installer"]
 channels   = ["maverick-channels"]
+embeddings = ["fastembed>=0.3"]
 dev        = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
 all        = [
     "openai>=1.30",
+    "fastembed>=0.3",
     "maverick-shield",
     "maverick-installer",
     "maverick-channels",
