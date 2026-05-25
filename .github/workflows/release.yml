@@ -120,6 +120,12 @@ jobs:
       - name: Build single-file binary
         shell: bash
         run: |
+          # --collect-all maverick brings in our code; PyInstaller's static
+          # analyzer normally picks up stdlib transitively, but on the
+          # v0.1.0 release sqlite3 was missed on all three platforms, so
+          # we force-include it (and _sqlite3, its C extension) explicitly.
+          # Same defensive treatment for other stdlib modules we depend on
+          # through deep import chains where the analyzer is unreliable.
           pyinstaller \
             --onefile \
             --name maverick \
@@ -130,7 +136,19 @@ jobs:
             --collect-all maverick_mcp \
             --collect-all maverick_installer \
             --collect-all anthropic \
+            --collect-submodules sqlite3 \
+            --hidden-import sqlite3 \
+            --hidden-import _sqlite3 \
+            --hidden-import sqlite3.dbapi2 \
+            --hidden-import hashlib \
+            --hidden-import _hashlib \
+            --hidden-import hmac \
+            --hidden-import base64 \
+            --hidden-import secrets \
             --hidden-import tomli \
+            --hidden-import tomllib \
+            --hidden-import email.mime.text \
+            --hidden-import email.mime.multipart \
             build/pyinstaller_entry.py
       - name: Smoke-test the binary covers all subcommands
         shell: bash

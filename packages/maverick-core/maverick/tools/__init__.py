@@ -77,6 +77,7 @@ def base_registry(
     even though the agent asked.
     """
     from .ask_user import ask_user
+    from .attachments import list_attachments_tool
     from .fs import list_dir, read_file, write_file
     from .shell import shell
 
@@ -86,12 +87,30 @@ def base_registry(
     reg.register(list_dir(sandbox))
     reg.register(shell(sandbox))
     reg.register(ask_user(world, goal_id=goal_id))
+    reg.register(list_attachments_tool(world, goal_id))
 
     if mcp_clients:
         from ..mcp_tools import tools_from_mcp
         for client in mcp_clients:
             for t in tools_from_mcp(client):
                 reg.register(t)
+
+    # Plugin tools registered via the `maverick.tools` entry point. Each
+    # factory is called with no args and must return a Tool. A broken
+    # plugin logs but never takes the swarm down.
+    try:
+        from ..plugins import discover_tools
+        for name, factory in discover_tools():
+            try:
+                t = factory()
+                reg.register(t)
+            except Exception as e:  # pragma: no cover -- plugin failure
+                import logging
+                logging.getLogger(__name__).warning(
+                    "plugin tool %s factory raised: %s", name, e
+                )
+    except Exception:  # pragma: no cover -- importlib quirks
+        pass
 
     return reg
 

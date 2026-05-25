@@ -64,6 +64,16 @@ class Server:
             if not verdict.allowed:
                 return f"⚠ Blocked: {'; '.join(verdict.reasons)}"
 
+        # Multi-turn: a single (channel, user_id) gets one conversation
+        # row. Every inbound message becomes a 'user' turn; the
+        # orchestrator's final answer is appended as 'assistant' turn
+        # inside run_goal so future messages have history.
+        conversation = self.world.get_or_create_conversation(
+            channel=msg.channel or "unknown",
+            user_id=msg.user_id,
+        )
+        self.world.append_turn(conversation.id, "user", msg.text)
+
         title = msg.text[:80]
         goal_id = self.world.create_goal(title, msg.text)
 
@@ -74,6 +84,7 @@ class Server:
             result = await run_goal(
                 self.llm, self.world, budget, goal_id,
                 sandbox=sandbox, max_depth=self.max_depth,
+                conversation_id=conversation.id,
             )
         except Exception:
             log.exception("goal #%s run failed", goal_id)
