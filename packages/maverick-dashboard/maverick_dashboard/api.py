@@ -11,12 +11,6 @@ Auth: bearer token via the dashboard middleware (set
 ``MAVERICK_DASHBOARD_TOKEN``); same auth applies to /api routes.
 
 Auto-generated OpenAPI schema is at /docs and /openapi.json.
-
-Designed for integrations:
-  - Mobile app frontends (React Native + this API + a VPS)
-  - Zapier / IFTTT triggers
-  - Cron jobs that kick off a periodic Maverick goal
-  - Self-hosted bots that don't use the bundled channel adapters
 """
 from __future__ import annotations
 
@@ -31,8 +25,6 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["v1"])
 
-
-# ---------- models ----------
 
 class GoalIn(BaseModel):
     title: str = Field(..., max_length=200, examples=["Plan a 2-week trip to Japan"])
@@ -85,11 +77,10 @@ class SkillOut(BaseModel):
     tools_needed: list[str]
 
 
-# ---------- helpers ----------
-
 def _world():
-    from maverick.world_model import WorldModel
-    return WorldModel()
+    # See app.py:_world for why we resolve DEFAULT_DB at call time.
+    from maverick.world_model import DEFAULT_DB, WorldModel
+    return WorldModel(DEFAULT_DB)
 
 
 def _run_goal_in_thread(goal_id: int) -> None:
@@ -98,8 +89,8 @@ def _run_goal_in_thread(goal_id: int) -> None:
         from maverick.llm import LLM
         from maverick.orchestrator import run_goal_sync
         from maverick.sandbox import build_sandbox
-        from maverick.world_model import WorldModel
-        world = WorldModel()
+        from maverick.world_model import DEFAULT_DB, WorldModel
+        world = WorldModel(DEFAULT_DB)
         llm = LLM()
         sandbox = build_sandbox()
         run_goal_sync(llm, world, Budget(max_dollars=2.0), goal_id, sandbox=sandbox)
@@ -114,16 +105,8 @@ def _to_goal_out(g) -> GoalOut:
     )
 
 
-# ---------- routes ----------
-
 @router.post("/goals", response_model=GoalOut, status_code=201)
 async def create_goal(payload: GoalIn, bg: BackgroundTasks) -> GoalOut:
-    """Create a goal and start running it in the background.
-
-    Returns the goal record immediately with status='pending'. Poll
-    `GET /api/v1/goals/{id}` or stream events via
-    `GET /api/v1/goals/{id}/events?since=<last_id>` for live progress.
-    """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(
             status_code=400,
@@ -133,7 +116,6 @@ async def create_goal(payload: GoalIn, bg: BackgroundTasks) -> GoalOut:
     title = payload.title
     description = payload.description
 
-    # Template rendering (optional)
     if payload.template:
         from maverick.templates import load_template
         try:

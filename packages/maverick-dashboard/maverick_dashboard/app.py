@@ -48,8 +48,12 @@ async def bearer_auth(request: Request, call_next):
 
 
 def _world():
-    from maverick.world_model import WorldModel
-    return WorldModel()
+    # Read DEFAULT_DB from the module at call time so monkeypatching in tests
+    # actually reroutes the connection. WorldModel() (no arg) would bind to
+    # the default-arg value captured at function-definition time, defeating
+    # the test's monkeypatch.
+    from maverick.world_model import DEFAULT_DB, WorldModel
+    return WorldModel(DEFAULT_DB)
 
 
 def _load_skills():
@@ -113,8 +117,8 @@ def _run_goal_in_thread(goal_id: int) -> None:
         from maverick.llm import LLM
         from maverick.orchestrator import run_goal_sync
         from maverick.sandbox import build_sandbox
-        from maverick.world_model import WorldModel
-        world = WorldModel()
+        from maverick.world_model import DEFAULT_DB, WorldModel
+        world = WorldModel(DEFAULT_DB)
         llm = LLM()
         sandbox = build_sandbox()
         run_goal_sync(llm, world, Budget(max_dollars=2.0), goal_id, sandbox=sandbox)
