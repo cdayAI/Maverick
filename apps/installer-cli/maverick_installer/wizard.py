@@ -11,10 +11,17 @@ A friendly, opinionated walk-through. Sets up:
   - API keys (stored in ~/.maverick/.env, referenced from config.toml via ${VAR})
 
 Writes ~/.maverick/config.toml and ~/.maverick/.env. The agent reads from there.
+
+v0.1.1 additions (council UX feedback):
+  - Preflight: Python version, write perms, optional docker check
+  - API key validation: pings Anthropic with the entered key before save
 """
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -97,6 +104,102 @@ def _q_confirm(message: str, default: bool = True) -> bool:
     return questionary.confirm(message, default=default).ask()
 
 
+# ---------- preflight ----------
+
+def preflight() -> bool:
+    """Check the environment before asking any questions.
+
+    Returns True if all critical checks pass. Warnings are shown but
+    don't block the wizard.
+    """
+    console.print("\n[dim]Checking your environment...[/dim]")
+    all_ok = True
+
+    # Python version
+    if sys.version_info < (3, 10):
+        console.print(f"[red]✗[/red] Python 3.10+ required (you have {sys.version.split()[0]})")
+        all_ok = False
+    else:
+        console.print(f"[green]✓[/green] Python {sys.version.split()[0]}")
+
+    # Config dir writable
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        test_file = CONFIG_DIR / ".write-test"
+        test_file.write_text("ok")
+        test_file.unlink()
+        console.print(f"[green]✓[/green] {CONFIG_DIR} is writable")
+    except (PermissionError, OSError) as e:
+        console.print(f"[red]✗[/red] Can't write to {CONFIG_DIR}: {e}")
+        all_ok = False
+
+    # Docker (advisory only -- only matters if user picks docker sandbox)
+    if shutil.which("docker"):
+        try:
+            subprocess.run(
+                ["docker", "version"],
+                capture_output=True, timeout=5, check=True,
+            )
+            console.print("[green]✓[/green] Docker is running")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            console.print(
+                "[yellow]![/yellow] Docker installed but daemon isn't responding "
+                "(only matters if you pick the docker sandbox)"
+            )
+    else:
+        console.print(
+            "[yellow]![/yellow] Docker not installed "
+            "(only matters if you pick the docker sandbox)"
+        )
+
+    return all_ok
+
+
+# ---------- validators ----------
+
+def _validate_anthropic_key(key: str) -> tuple[bool, str]:
+    """Ping Anthropic with the key. Returns (ok, message)."""
+    if not key.startswith("sk-ant-"):
+        return False, "key doesn't start with 'sk-ant-' -- typo?"
+    try:
+        import anthropic
+    except ImportError:
+        return True, "anthropic SDK not installed -- skipping validation"
+    try:
+        client = anthropic.Anthropic(api_key=key)
+        # Minimal call -- list available models is enough to verify auth.
+        list(client.models.list(limit=1))
+        return True, "validated"
+    except anthropic.AuthenticationError:
+        return False, "API rejected the key"
+    except Exception as e:
+        return True, f"validation skipped: {type(e).__name__}"
+
+
+def _validate_openai_key(key: str) -> tuple[bool, str]:
+    if not key.startswith("sk-"):
+        return False, "key doesn't start with 'sk-' -- typo?"
+    try:
+        from openai import AuthenticationError, OpenAI
+    except ImportError:
+        return True, "openai SDK not installed -- skipping validation"
+    try:
+        client = OpenAI(api_key=key)
+        list(client.models.list().data[:1])
+        return True, "validated"
+    except AuthenticationError:
+        return False, "API rejected the key"
+    except Exception as e:
+        return True, f"validation skipped: {type(e).__name__}"
+
+
+_VALIDATORS = {
+    "ANTHROPIC_API_KEY": _validate_anthropic_key,
+    "OPENAI_API_KEY":    _validate_openai_key,
+    # Channel tokens validated when 'maverick serve' starts (less time-critical).
+}
+
+
 # ---------- wizard steps ----------
 
 def welcome() -> None:
@@ -140,6 +243,13 @@ def pick_providers() -> list[str]:
 
 
 def pick_models_per_role(providers: list[str]) -> dict[str, str]:
+    console.print()
+    if _q_confirm(
+        "Use recommended defaults for per-role models? (Yes = skip the 8-question gauntlet)",
+        default=True,
+    ):
+        return {}
+
     console.print()
     console.print(Panel.fit(
         "[bold]Per-role model assignment[/bold]\n\n"
@@ -320,6 +430,14 @@ def collect_api_keys(providers: list[str], channel_envs: set[str]) -> dict[str, 
         masked = (current[:7] + "...") if current else "(none)"
         val = _q_text(f"  {env_name} [current: {masked}]", default=current)
         if val:
+            # Validate when we know how.
+            validator = _VALIDATORS.get(env_name)
+            if validator:
+                ok, msg = validator(val)
+                marker = "[green]✓[/green]" if ok else "[red]✗[/red]"
+                console.print(f"    {marker} {msg}")
+                if not ok and not _q_confirm("Save anyway?", default=False):
+                    continue
             keys[env_name] = val
     return keys
 
@@ -428,6 +546,11 @@ def smoke_test() -> bool:
 
 def run() -> int:
     welcome()
+    if not preflight():
+        console.print(
+            "[red]Preflight failed.[/red] Fix the issues above and re-run `maverick init`."
+        )
+        return 1
     deployment = pick_deployment()
     providers = pick_providers()
     if not providers:
@@ -455,7 +578,7 @@ def run() -> int:
             "Try:\n"
             f"  [bold]{next_step}[/bold]\n"
             "  [bold]maverick status[/bold]\n"
-            "  [bold]maverick skills[/bold]",
+            "  [bold]maverick skill install gh:texasreaper62/awesome-maverick-skills[/bold]",
             border_style="green",
         ))
         return 0

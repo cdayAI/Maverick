@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}goal #{{ goal.id }}{% endblock %}
+{% block content %}
+  <h2>goal #{{ goal.id }}</h2>
+
+  <div class="panel">
+    <p>
+      <span id="status" class="badge {{ goal.status }}">{{ goal.status }}</span>
+      <span class="muted" style="margin-left: 0.5rem;">{{ goal.title }}</span>
+    </p>
+    <p class="muted" style="font-size: 0.85rem;">Live progress streams below. Polls every 2s.</p>
+  </div>
+
+  <h2 id="progress-header">progress</h2>
+  <div class="panel" id="progress" data-goal="{{ goal.id }}">
+    <pre id="events" style="white-space: pre-wrap; margin: 0; font: inherit; max-height: 480px; overflow-y: auto;"></pre>
+  </div>
+
+  <div id="result-section" class="panel" style="display: {% if goal.result %}block{% else %}none{% endif %};">
+    <h3 style="margin-top: 0;">result</h3>
+    <pre id="result" style="white-space: pre-wrap; margin: 0; font: inherit;">{{ goal.result or '' }}</pre>
+  </div>
+
+  <p style="margin-top: 2rem;">
+    <a href="/chat" class="muted" style="text-decoration: underline;">← back to chat</a>
+  </p>
+
+  <script>
+    (function() {
+      const goalId = {{ goal.id }};
+      const eventsEl = document.getElementById('events');
+      const statusEl = document.getElementById('status');
+      const resultEl = document.getElementById('result');
+      const resultSection = document.getElementById('result-section');
+      let sinceId = 0;
+      let done = false;
+
+      function fmtKind(k) {
+        // Map internal kinds to user-friendly labels so non-technical
+        // users can read live progress without knowing blackboard vocab.
+        const labels = {
+          plan: 'thinking',
+          finding: 'answer',
+          observation: 'result',
+          error: 'error',
+          verify: 'checking',
+          artifact: 'produced',
+        };
+        const colors = {
+          plan: 'var(--accent)', finding: 'var(--accent)',
+          observation: 'var(--text)', error: 'var(--danger)',
+          verify: 'var(--warn)', artifact: 'var(--accent)',
+        };
+        const label = labels[k] || k;
+        return `<span style="color:${colors[k] || 'var(--muted)'};">${label}</span>`;
+      }
+
+      function fmtAgent(a) {
+        // The internal name is `<role>-<depth>-<hex>` (e.g.
+        // `orchestrator-0-3a7c91`). Strip the hex+depth for readability.
+        if (!a) return '';
+        const dashIdx = a.indexOf('-');
+        return dashIdx > 0 ? a.slice(0, dashIdx) : a;
+      }
+
+      async function poll() {
+        if (done) return;
+        try {
+          const url = `/api/goal/${goalId}/events?since=${sinceId}`;
+          const opts = {};
+          // Carry bearer token through if set (for VPS deployments).
+          const tokenQs = new URLSearchParams(window.location.search).get('token');
+          const fullUrl = tokenQs ? `${url}&token=${encodeURIComponent(tokenQs)}` : url;
+          const resp = await fetch(fullUrl, opts);
+          if (!resp.ok) { setTimeout(poll, 5000); return; }
+          const d = await resp.json();
+          for (const e of d.events) {
+            const line = document.createElement('div');
+            line.innerHTML = `<span class="muted">[${escapeHTML(fmtAgent(e.agent))}]</span> ${fmtKind(e.kind)} ${escapeHTML(e.content)}`;
+            eventsEl.appendChild(line);
+          }
+          if (d.events.length > 0) sinceId = d.next_id;
+          eventsEl.parentElement.scrollTop = eventsEl.parentElement.scrollHeight;
+          statusEl.className = 'badge ' + d.status;
+          statusEl.textContent = d.status;
+          if (d.result) {
+            resultEl.textContent = d.result;
+            resultSection.style.display = 'block';
+          }
+          if (d.status === 'done' || d.status === 'blocked') {
+            done = true;
+            return;
+          }
+        } catch (e) {
+          console.error('poll error', e);
+        }
+        setTimeout(poll, 2000);
+      }
+
+      function escapeHTML(s) {
+        const div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      poll();
+    })();
+  </script>
+{% endblock %}

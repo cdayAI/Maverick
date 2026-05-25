@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}spend{% endblock %}
+{% block content %}
+  <h2>spend overview</h2>
+  <div class="grid">
+    <div class="stat">
+      <div class="num">${{ '%.2f'|format(total.dollars) }}</div>
+      <div class="label">total spent</div>
+    </div>
+    <div class="stat">
+      <div class="num">{{ total.runs }}</div>
+      <div class="label">completed runs</div>
+    </div>
+    <div class="stat">
+      <div class="num">{{ '{:,}'.format(total.input_tokens) }}</div>
+      <div class="label">input tokens</div>
+    </div>
+    <div class="stat">
+      <div class="num">{{ '{:,}'.format(total.output_tokens) }}</div>
+      <div class="label">output tokens</div>
+    </div>
+  </div>
+
+  <h2>recent episodes</h2>
+  <div class="panel">
+    {% if episodes %}
+    <table>
+      <thead>
+        <tr>
+          <th>id</th><th>goal</th><th>outcome</th><th>cost</th>
+          <th>in tok</th><th>out tok</th><th>tools</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in episodes %}
+          <tr>
+            <td><code>#{{ e.id }}</code></td>
+            <td>#{{ e.goal_id }}</td>
+            <td>
+              {% if e.outcome %}
+                <span class="badge {{ 'done' if e.outcome == 'success' else 'blocked' }}">{{ e.outcome }}</span>
+              {% else %}
+                <span class="badge active">running</span>
+              {% endif %}
+            </td>
+            <td>${{ '%.4f'|format(e.cost_dollars) }}</td>
+            <td>{{ '{:,}'.format(e.input_tokens) }}</td>
+            <td>{{ '{:,}'.format(e.output_tokens) }}</td>
+            <td>{{ e.tool_calls }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      <p class="muted">No completed episodes yet.</p>
+    {% endif %}
+  </div>
+{% endblock %}

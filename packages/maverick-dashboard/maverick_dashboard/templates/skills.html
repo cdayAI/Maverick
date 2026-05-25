@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}skills{% endblock %}
+{% block content %}
+  <h2>installed skills</h2>
+  <div class="panel">
+    {% if skills %}
+      {% for s in skills %}
+        <h3 style="margin-top: 1.5rem;"><code>{{ s.name }}</code></h3>
+        {% if s.triggers %}
+          <p class="muted">triggers:</p>
+          <ul>{% for t in s.triggers %}<li>{{ t }}</li>{% endfor %}</ul>
+        {% endif %}
+        {% if s.tools_needed %}
+          <p class="muted">tools: {{ s.tools_needed | join(', ') }}</p>
+        {% endif %}
+      {% endfor %}
+    {% else %}
+      <p class="muted">No skills yet. Install one with <code>maverick skill install gh:...</code>.</p>
+    {% endif %}
+  </div>
+{% endblock %}

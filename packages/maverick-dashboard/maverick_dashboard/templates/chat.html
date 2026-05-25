@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}chat{% endblock %}
+{% block content %}
+  <h2>chat</h2>
+  <div class="panel">
+    <p class="muted" style="margin-top: 0;">
+      Each message becomes a goal. Maverick runs it through the swarm and replies
+      below. Press the button or hit Enter.
+    </p>
+    <form method="post" action="/chat/send" style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+      <input
+        type="text"
+        name="title"
+        placeholder="What do you want Maverick to do?"
+        required
+        autofocus
+        style="flex: 1; padding: 0.65rem; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font: inherit;"
+      />
+      <button
+        type="submit"
+        style="padding: 0.65rem 1.5rem; background: var(--accent); color: #fff; border: none; border-radius: 6px; cursor: pointer; font: inherit;"
+      >send</button>
+    </form>
+  </div>
+
+  <h2>recent goals</h2>
+  <div class="panel">
+    {% if recent %}
+      <table>
+        <thead><tr><th>id</th><th>status</th><th>title</th></tr></thead>
+        <tbody>
+          {% for g in recent %}
+          <tr>
+            <td><a href="/chat/goal/{{ g.id }}" style="color: var(--text);"><code>#{{ g.id }}</code></a></td>
+            <td><span class="badge {{ g.status }}">{{ g.status }}</span></td>
+            <td>{{ g.title }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No goals yet. Send your first message above.</p>
+    {% endif %}
+  </div>
+{% endblock %}

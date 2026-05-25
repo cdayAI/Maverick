@@ -15,17 +15,14 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-# Conservative defaults: pycodestyle (E/W), pyflakes (F), import order (I).
-# Bugbear (B) and pyupgrade (UP) are intentionally off until we commit to a
-# sweeping Optional[X] -> X | None rewrite as its own PR.
-select = ["E", "F", "I", "W"]
+# E/F/W: pycodestyle errors, pyflakes (real bugs), pycodestyle warnings.
+# I (isort) intentionally dropped -- it kept generating cosmetic noise on a
+# clean codebase. Re-enable as its own focused cleanup PR with --fix.
+# B (bugbear) and UP (pyupgrade) also off until we commit to those styles.
+select = ["E", "F", "W"]
 ignore = ["E501"]  # line length
 
 [tool.pytest.ini_options]
 testpaths = ["packages", "apps"]
 python_files = "test_*.py"
-# importlib mode is required in this monorepo because every package has its
-# own packages/<pkg>/tests/__init__.py. pytest's default "prepend" mode would
-# collide all four into one 'tests' namespace and fail collection with
-# ModuleNotFoundError on the second test directory it walks.
 addopts = "--import-mode=importlib"

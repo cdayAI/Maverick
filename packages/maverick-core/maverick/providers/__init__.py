@@ -6,8 +6,8 @@ Each provider client implements the same interface as ``AnthropicClient``:
     complete_async(system, messages, tools=None, budget=None, ...) -> LLMResponse
 
 Accepting Anthropic-format messages/tools and returning a
-``maverick.llm.LLMResponse``. OpenAI/OpenRouter/Ollama clients translate
-the format on the fly.
+``maverick.llm.LLMResponse``. OpenAI/OpenRouter/Ollama/Gemini clients
+translate the format on the fly.
 """
 from __future__ import annotations
 
@@ -15,11 +15,7 @@ from typing import Any, Optional
 
 
 def get_provider_client(name: str, api_key: Optional[str] = None) -> Any:
-    """Lazy-import and instantiate the named provider client.
-
-    Lazy so users don't need the openai SDK installed unless they actually
-    route a role to openai/openrouter/ollama.
-    """
+    """Lazy-import and instantiate the named provider client."""
     if name == "anthropic":
         from .anthropic_provider import AnthropicClient
         return AnthropicClient(api_key=api_key)
@@ -32,12 +28,16 @@ def get_provider_client(name: str, api_key: Optional[str] = None) -> Any:
     if name == "ollama":
         from .ollama_provider import OllamaClient
         return OllamaClient()
+    if name == "gemini":
+        from .gemini_provider import GeminiClient
+        return GeminiClient(api_key=api_key)
     raise ValueError(
-        f"unknown provider {name!r}. Available: anthropic, openai, openrouter, ollama"
+        f"unknown provider {name!r}. Available: "
+        "anthropic, openai, openrouter, ollama, gemini"
     )
 
 
-KNOWN_PROVIDERS = ("anthropic", "openai", "openrouter", "ollama")
+KNOWN_PROVIDERS = ("anthropic", "openai", "openrouter", "ollama", "gemini")
 
 
 __all__ = ["get_provider_client", "KNOWN_PROVIDERS"]

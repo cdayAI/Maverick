@@ -59,6 +59,32 @@ streaming   = true
 [channels.telegram]
 enabled   = false
 bot_token = "${TELEGRAM_BOT_TOKEN}"
+
+[dashboard]
+# Optional bearer token. Required for VPS deploys reachable from the open
+# internet; harmless to leave unset on a desktop install (localhost-only).
+token = "${MAVERICK_DASHBOARD_TOKEN}"
+
+[persona]
+# Appended to every agent's system prompt. Optional.
+name      = "Maverick"
+style     = "concise"   # concise | thorough | friendly | formal | playful
+addendum  = ""           # free-form extra instruction
+
+[mcp_servers.filesystem]
+# External MCP servers Maverick consumes as tools. Each one is spawned as
+# a subprocess; their tools appear in the agent's catalog as
+# `mcp_<name>__<tool>` and still pass through Shield.
+command       = "npx"
+args          = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+inherit_env   = false    # default; opt-in to pass the full process env
+
+[mcp_servers.github]
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-github"]
+# Pass-through env values must be listed explicitly; secrets live in
+# ~/.maverick/.env so they aren't committed by accident.
+env     = { GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}" }
 ```
 
 ## Per-role model choice
@@ -92,3 +118,57 @@ MAVERICK_CONFIG=/etc/maverick/config.toml maverick start "..."
 ```
 
 Useful for VPS deployments where you want the config under `/etc/`.
+
+## Dashboard authentication
+
+For desktop installs the dashboard binds to `127.0.0.1:8765` and bearer
+auth is optional. For VPS deploys (reachable from the open internet)
+set `MAVERICK_DASHBOARD_TOKEN` — every request to `/api/v1/*` and every
+HTML page is then gated. Only `/healthz`, `/openapi.json`, `/docs`, and
+`/redoc` are exempt (so monitoring + API discovery still works).
+
+Two ways to authenticate:
+
+- **Header**: `Authorization: Bearer <token>` — for API clients.
+- **Query string**: `?token=<token>` — so phone browsers can bookmark a
+  page once and not retype the token.
+
+Token comparison is constant-time (`hmac.compare_digest`).
+
+## External MCP servers
+
+Maverick can consume any MCP server (filesystem, GitHub, Postgres,
+browser, etc.) as tools. Add entries under `[mcp_servers.<name>]`:
+
+```toml
+[mcp_servers.filesystem]
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+```
+
+Behavior:
+
+- The server is spawned as a stdio subprocess on swarm start and torn
+  down on goal completion.
+- Every tool it exposes is registered as `mcp_<name>__<tool>` in the
+  agent's catalog and passes through `Shield.scan_tool_call` like any
+  other tool.
+- By default *no* environment is inherited from the parent process —
+  only `PATH`, `HOME`, `USER`, `LANG`, `TZ`, `TMPDIR` (see
+  `mcp_client.DEFAULT_ENV_ALLOWLIST`). Pass secrets explicitly via the
+  `env = { ... }` table or set `inherit_env = true` to pass the full
+  environment (only do this for fully-trusted servers).
+- A background reader drains stderr to prevent pipe-buffer deadlocks
+  when a server logs verbosely.
+
+## Concurrency cap
+
+The dashboard, REST API, and MCP server all share a process-wide
+semaphore that bounds the number of swarms running in background
+threads simultaneously. Override with:
+
+```bash
+MAVERICK_MAX_CONCURRENT_GOALS=4 maverick dashboard
+```
+
+Default is 2. Raise on a beefy machine; lower on a Raspberry Pi.

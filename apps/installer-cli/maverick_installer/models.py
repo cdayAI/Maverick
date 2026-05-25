@@ -3,9 +3,9 @@
 Updated whenever providers ship new models. Each entry has an id, a
 notes string the wizard shows, and a status marker.
 
-All four providers are now wired up (anthropic, openai, openrouter,
-ollama). Picking any of them in the wizard generates a config that the
-agent kernel actually dispatches to via the multi-provider LLM facade.
+All five providers are now wired up. Picking any of them in the wizard
+generates a config that the agent kernel actually dispatches to via
+the multi-provider LLM facade.
 """
 
 ROLES: list[tuple[str, str]] = [
@@ -60,6 +60,15 @@ PROVIDERS: dict[str, dict] = {
             {"id": "llama3.3:70b",         "notes": "Local, free, requires beefy machine."},
             {"id": "qwen2.5-coder:32b",    "notes": "Local, code-focused."},
             {"id": "phi3:14b",             "notes": "Local, small, fast."},
+        ],
+    },
+    "gemini": {
+        "status": "ready",
+        "label": "Google Gemini",
+        "env": "GEMINI_API_KEY",
+        "models": [
+            {"id": "gemini-2.5-pro",   "notes": "Long context, smart."},
+            {"id": "gemini-2.5-flash", "notes": "Fast and cheap."},
         ],
     },
 }

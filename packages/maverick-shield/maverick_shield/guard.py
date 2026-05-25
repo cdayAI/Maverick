@@ -1,21 +1,17 @@
-"""Maverick's safety chokepoints, backed by Agent Shield.
+"""Maverick's safety chokepoints, backed by Agent Shield with a built-in fallback.
 
 The agent wraps three sinks through this module:
   - on every user input    -> Shield.scan_input
   - on every tool call     -> Shield.scan_tool_call
   - on every final output  -> Shield.scan_output
 
-If ``agent-shield`` is not installed, all methods become no-ops with a
-single startup warning. This keeps the kernel usable as a research tool
-while making the safe path the default for end users installed via the
-wizard.
+Backends (chosen automatically in order):
+  1. ``agent_shield`` SDK if installed (full F1 0.988 rule pack)
+  2. ``builtin_rules`` (~20 high-impact rules bundled with maverick-shield)
+  3. No-op (only if the user explicitly disabled safety via [safety] profile=off)
 
-Design notes
-------------
-- Fail-open on internal errors. A broken scanner must not stop the agent.
-- Scans operate on strings; tool call args get serialized to a stable
-  ``tool=<name> args=<repr>`` representation before scanning.
-- Verdicts carry a severity and list of reasons; callers decide what to do.
+Fail-open on internal errors -- a broken scanner must not stop the agent --
+but never fail-open SILENTLY; the constructor logs which backend is active.
 """
 from __future__ import annotations
 
@@ -23,13 +19,15 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from .builtin_rules import scan as builtin_scan
+
 log = logging.getLogger(__name__)
 
-try:  # pragma: no cover - import side-effect tested separately
-    from agent_shield import AgentShield  # type: ignore
-    _HAVE_SHIELD = True
+try:  # pragma: no cover
+    from agent_shield import AgentShield
+    _HAVE_SDK = True
 except ImportError:
-    _HAVE_SHIELD = False
+    _HAVE_SDK = False
     AgentShield = None  # type: ignore
 
 
@@ -50,89 +48,103 @@ class ShieldVerdict:
 
 
 class Shield:
-    """Thin facade over AgentShield. Stable interface for the agent loop."""
+    """Facade over AgentShield SDK + built-in fallback."""
+
+    BACKEND_SDK = "agent-shield"
+    BACKEND_BUILTIN = "builtin"
+    BACKEND_NONE = "none"
 
     def __init__(
         self,
         profile: str = "balanced",
         block_threshold: str = "high",
+        backend: str = "auto",
         warn_if_missing: bool = True,
     ):
         self.profile = profile
         self.block_threshold = block_threshold
-        if not _HAVE_SHIELD:
-            if warn_if_missing:
-                log.warning(
-                    "agent-shield not installed; safety scans are NO-OPS. "
-                    "Install with: pip install agent-shield"
-                )
-            self._shield = None
+
+        if backend == "none" or profile == "off":
+            self.backend = self.BACKEND_NONE
+            self._sdk = None
             return
 
-        # Map profiles to AgentShield sensitivity.
-        sens = {"strict": "high", "balanced": "medium", "permissive": "low"}.get(profile, "medium")
-        try:
-            self._shield = AgentShield(
-                sensitivity=sens,
-                blockOnThreat=True,
-                blockThreshold=block_threshold,
+        # Auto: prefer SDK, fall back to builtin.
+        if backend in ("auto", "agent-shield") and _HAVE_SDK:
+            sens = {"strict": "high", "balanced": "medium", "permissive": "low"}.get(
+                profile, "medium"
             )
-        except Exception as e:
-            log.error("Failed to initialize AgentShield (fail-open): %s", e)
-            self._shield = None
+            try:
+                self._sdk = AgentShield(
+                    sensitivity=sens, blockOnThreat=True, blockThreshold=block_threshold,
+                )
+                self.backend = self.BACKEND_SDK
+                log.info("Shield: using agent-shield SDK (full ruleset)")
+                return
+            except Exception as e:
+                log.error("Shield: agent-shield SDK init failed (%s); falling back to builtin", e)
+
+        # Built-in fallback
+        self._sdk = None
+        self.backend = self.BACKEND_BUILTIN
+        if warn_if_missing and not _HAVE_SDK:
+            log.warning(
+                "Shield: agent-shield SDK not installed; using built-in rules "
+                "(~20 high-impact patterns vs. ~115 in the full SDK). "
+                "For full protection: pip install agent-shield"
+            )
 
     @property
     def enabled(self) -> bool:
-        return self._shield is not None
+        return self.backend != self.BACKEND_NONE
 
     @classmethod
     def from_config(cls) -> "Shield":
-        """Build a Shield from ``~/.maverick/config.toml`` [safety] section."""
         try:
             from maverick.config import get_safety
             safety = get_safety()
         except Exception:
             safety = {"profile": "balanced", "block_threshold": "high"}
         if safety.get("profile") == "off":
-            return cls(profile="permissive", warn_if_missing=False)
+            return cls(profile="off", backend="none", warn_if_missing=False)
         return cls(profile=safety["profile"], block_threshold=safety["block_threshold"])
 
-    def _interpret(self, result: Any) -> ShieldVerdict:
-        if getattr(result, "blocked", False):
-            threats = getattr(result, "threats", []) or []
-            reasons = [getattr(t, "category", "threat") for t in threats]
-            return ShieldVerdict.block(
-                severity=getattr(result, "severity", "high"),
-                reason="; ".join(reasons) or "blocked",
-                raw=result,
-            )
-        return ShieldVerdict.allow()
+    def _scan_via_backend(self, text: str) -> ShieldVerdict:
+        if self.backend == self.BACKEND_NONE:
+            return ShieldVerdict.allow()
+        if self.backend == self.BACKEND_SDK:
+            try:
+                result = self._sdk.scanInput(text)  # type: ignore
+                if getattr(result, "blocked", False):
+                    threats = getattr(result, "threats", []) or []
+                    reasons = [getattr(t, "category", "threat") for t in threats]
+                    return ShieldVerdict.block(
+                        severity=getattr(result, "severity", "high"),
+                        reason="; ".join(reasons) or "blocked",
+                        raw=result,
+                    )
+                return ShieldVerdict.allow()
+            except Exception as e:
+                log.error("Shield SDK scan failed (fail-open): %s", e)
+                return ShieldVerdict.allow()
+        # builtin
+        try:
+            blocked, severity, names = builtin_scan(text, block_threshold=self.block_threshold)
+            if blocked:
+                return ShieldVerdict.block(
+                    severity=severity, reason="; ".join(names) or "builtin-rule",
+                )
+            return ShieldVerdict.allow()
+        except Exception as e:  # pragma: no cover
+            log.error("Shield builtin scan failed (fail-open): %s", e)
+            return ShieldVerdict.allow()
 
     def scan_input(self, text: str) -> ShieldVerdict:
-        if not self.enabled:
-            return ShieldVerdict.allow()
-        try:
-            return self._interpret(self._shield.scanInput(text))  # type: ignore
-        except Exception as e:
-            log.error("Shield input scan failed (fail-open): %s", e)
-            return ShieldVerdict.allow()
+        return self._scan_via_backend(text)
 
     def scan_tool_call(self, tool_name: str, args: dict) -> ShieldVerdict:
-        if not self.enabled:
-            return ShieldVerdict.allow()
         payload = f"tool={tool_name} args={args!r}"
-        try:
-            return self._interpret(self._shield.scanInput(payload))  # type: ignore
-        except Exception as e:
-            log.error("Shield tool-call scan failed (fail-open): %s", e)
-            return ShieldVerdict.allow()
+        return self._scan_via_backend(payload)
 
     def scan_output(self, text: str) -> ShieldVerdict:
-        if not self.enabled:
-            return ShieldVerdict.allow()
-        try:
-            scanner = getattr(self._shield, "scanOutput", None) or self._shield.scanInput  # type: ignore
-            return self._interpret(scanner(text))
-        except Exception as e:
-            log.error("Shield output scan failed (fail-open): %s", e)
-            return ShieldVerdict.allow()
+        return self._scan_via_backend(text)

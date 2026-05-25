@@ -6,13 +6,21 @@ sub-tasks) or pause. The user answers later via `maverick answer`.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from . import Tool
 
 
-def ask_user(world) -> Tool:
+def ask_user(world, goal_id: Optional[int] = None) -> Tool:
+    """Build the ask_user tool, scoped to a goal so /goals/<id> can list
+    its open questions and `maverick answer` resolves them correctly."""
+
     def fn(args: dict) -> str:
-        qid = world.ask(args["question"])
-        return f"QUEUED question #{qid}. The user will answer asynchronously. Continue with independent work if possible; otherwise pause."
+        qid = world.ask(args["question"], goal_id=goal_id)
+        return (
+            f"QUEUED question #{qid}. The user will answer asynchronously. "
+            "Continue with independent work if possible; otherwise pause."
+        )
 
     return Tool(
         name="ask_user",

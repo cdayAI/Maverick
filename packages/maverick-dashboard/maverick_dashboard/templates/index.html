@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Maverick — overview{% endblock %}
+{% block content %}
+  <div class="grid">
+    <div class="stat">
+      <div class="num">{{ counts.total }}</div>
+      <div class="label">total goals</div>
+    </div>
+    <div class="stat">
+      <div class="num">{{ counts.active }}</div>
+      <div class="label">active</div>
+    </div>
+    <div class="stat">
+      <div class="num">{{ counts.done }}</div>
+      <div class="label">done</div>
+    </div>
+    <div class="stat">
+      <div class="num">{{ counts.blocked }}</div>
+      <div class="label">blocked</div>
+    </div>
+  </div>
+
+  <h2>recent goals</h2>
+  <div class="panel">
+    {% if goals %}
+    <table>
+      <thead><tr><th>id</th><th>status</th><th>title</th><th>updated</th></tr></thead>
+      <tbody>
+      {% for g in goals %}
+        <tr>
+          <td><code>#{{ g.id }}</code></td>
+          <td><span class="badge {{ g.status }}">{{ g.status }}</span></td>
+          <td>{{ g.title }}</td>
+          <td class="muted">{{ g.updated_at | round | int }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      <p class="muted">No goals yet. Run <code>maverick start "..."</code> to begin.</p>
+    {% endif %}
+  </div>
+
+  <h2>facts</h2>
+  <div class="panel">
+    {% if facts %}
+      {% for k, v in facts.items() %}
+        <p><code>{{ k }}</code>: {{ v }}</p>
+      {% endfor %}
+    {% else %}
+      <p class="muted">No facts learned yet. Set one with <code>maverick fact &lt;key&gt; &lt;value&gt;</code>.</p>
+    {% endif %}
+  </div>
+
+  <h2>top skills</h2>
+  <div class="panel">
+    {% if skills %}
+      {% for s in skills %}
+        <p><code>{{ s.name }}</code> <span class="muted">— {{ s.triggers|length }} trigger(s)</span></p>
+      {% endfor %}
+    {% else %}
+      <p class="muted">No skills yet. Install one with <code>maverick skill install gh:...</code>.</p>
+    {% endif %}
+  </div>
+
+  <p class="muted" style="margin-top: 2rem;">
+    <a href="/spend" style="color: var(--muted); text-decoration: underline;">view spend →</a>
+  </p>
+{% endblock %}

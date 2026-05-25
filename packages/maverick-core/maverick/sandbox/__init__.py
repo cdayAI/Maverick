@@ -1,9 +1,10 @@
 """Execution backends.
 
-Local (subprocess) and Docker (throwaway containers) today; SSH and
-remote services next.
+Local (subprocess), Docker (throwaway containers), SSH (remote host
+via system ssh binary). All implement ``.exec(cmd) -> ExecResult``
+so the agent loop is backend-agnostic.
 
-The agent never instantiates a backend directly — always go through
+The agent never instantiates a backend directly -- always go through
 ``build_sandbox()`` so the [sandbox] config section is the single
 source of truth.
 """
@@ -12,13 +13,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Union
 
-from .local import LocalBackend, ExecResult
 from .docker import DockerBackend
+from .local import ExecResult, LocalBackend
+from .ssh import SSHBackend
 
-__all__ = ["LocalBackend", "DockerBackend", "ExecResult", "build_sandbox"]
+__all__ = [
+    "LocalBackend",
+    "DockerBackend",
+    "SSHBackend",
+    "ExecResult",
+    "build_sandbox",
+]
 
-
-Sandbox = Union[LocalBackend, DockerBackend]
+Sandbox = Union[LocalBackend, DockerBackend, SSHBackend]
 
 
 def build_sandbox(
@@ -33,16 +40,33 @@ def build_sandbox(
     try:
         from ..config import get_sandbox
         cfg = get_sandbox()
+        full_cfg = None
+        try:
+            from ..config import load_config
+            full_cfg = load_config().get("sandbox", {})
+        except Exception:
+            full_cfg = {}
     except Exception:
         cfg = {}
+        full_cfg = {}
 
     chosen = backend or cfg.get("backend", "local")
     wd = Path(workdir or cfg.get("workdir", str(Path.cwd()))).expanduser()
     timeout = float(cfg.get("timeout", 60))
 
     if chosen == "docker":
-        image = cfg.get("image", "python:3.12-slim")
+        image = full_cfg.get("image", "python:3.12-slim")
         return DockerBackend(workdir=wd, image=image, timeout=timeout)
     if chosen == "ssh":
-        raise NotImplementedError("SSH backend is planned for v0.2.")
+        host = full_cfg.get("host")
+        if not host:
+            raise ValueError(
+                "sandbox backend=ssh requires [sandbox] host = \"user@example.com\""
+            )
+        return SSHBackend(
+            host=host,
+            workdir=Path(full_cfg.get("workdir", "~/maverick-workspace")),
+            timeout=timeout,
+            ssh_args=full_cfg.get("ssh_args", []),
+        )
     return LocalBackend(workdir=wd, timeout=timeout)
