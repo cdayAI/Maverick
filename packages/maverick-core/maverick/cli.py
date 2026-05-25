@@ -12,7 +12,7 @@ import click
 from .budget import Budget
 from .llm import LLM, DEFAULT_MODEL
 from .orchestrator import run_goal_sync
-from .sandbox import LocalBackend
+from .sandbox import build_sandbox
 from .skills import load_skills, SKILLS_DIR
 from .world_model import WorldModel, DEFAULT_DB
 
@@ -50,7 +50,10 @@ def init() -> None:
 @click.option("--max-dollars", default=5.0, type=float)
 @click.option("--max-wall-seconds", default=3600.0, type=float)
 @click.option("--max-depth", default=3, type=int, help="Maximum swarm spawn depth.")
-@click.option("--workdir", default=".", help="Sandbox working directory.")
+@click.option("--workdir", default=None, help="Sandbox working directory (defaults to config).")
+@click.option("--sandbox", "sandbox_backend", default=None,
+              type=click.Choice(["local", "docker"]),
+              help="Sandbox backend override.")
 @click.pass_context
 def start(
     ctx,
@@ -59,7 +62,8 @@ def start(
     max_dollars: float,
     max_wall_seconds: float,
     max_depth: int,
-    workdir: str,
+    workdir,
+    sandbox_backend,
 ) -> None:
     """Start a new goal and run the swarm."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -72,7 +76,7 @@ def start(
 
     llm = LLM(model=ctx.obj["model"])
     budget = Budget(max_dollars=max_dollars, max_wall_seconds=max_wall_seconds)
-    sandbox = LocalBackend(workdir=Path(workdir).resolve())
+    sandbox = build_sandbox(workdir=workdir, backend=sandbox_backend)
 
     result = run_goal_sync(llm, world, budget, goal_id, sandbox=sandbox, max_depth=max_depth)
     click.echo("")
@@ -83,7 +87,7 @@ def start(
 @click.option("--max-depth", default=3, type=int, help="Maximum swarm spawn depth per request.")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
 def serve(max_depth: int, verbose: bool) -> None:
-    """Start the channel server (Telegram, iMessage, etc.).
+    """Start the channel server (Telegram, Discord, Signal, etc.).
 
     Reads enabled channels from ~/.maverick/config.toml and listens on
     each one. Each incoming message becomes a goal that runs through

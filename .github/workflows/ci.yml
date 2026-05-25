@@ -9,7 +9,6 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     # Informational while we triage rule conflicts on the ported codebase.
-    # Lint cleanup is a focused follow-up; this stays visible but non-blocking.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -35,15 +34,12 @@ jobs:
       - name: Install packages
         run: |
           pip install -e ./packages/maverick-core
-          pip install -e ./packages/maverick-shield || true
-          pip install -e ./packages/maverick-channels || true
-          pip install -e ./apps/installer-cli || true
+          pip install -e ./packages/maverick-shield
+          pip install -e ./packages/maverick-channels
+          pip install -e ./apps/installer-cli
           pip install pytest pytest-asyncio
       - name: Test
         run: pytest -q
-        # Tests will be added next session; for now this step is a
-        # smoke test that all packages import cleanly.
-        continue-on-error: true
 
   docker:
     runs-on: ubuntu-latest
