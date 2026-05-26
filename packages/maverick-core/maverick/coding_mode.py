@@ -720,6 +720,95 @@ _PARSERS = {
 }
 
 
+# Wave 11 (PROBE-lite): classify test-failure type so we can give
+# the model a tailored revision critique. Per Scale's empirical
+# study + the PROBE paper (arxiv 2605.08717), failure-class-aware
+# revision lifts +1-2pp on Pro and converges 30-50% faster than a
+# generic "try again" critique.
+_FAILURE_PATTERNS = [
+    ("ImportError",      re.compile(r"\bImportError\b|\bModuleNotFoundError\b")),
+    ("AttributeError",   re.compile(r"\bAttributeError\b")),
+    ("TypeError",        re.compile(r"\bTypeError\b")),
+    ("NameError",        re.compile(r"\bNameError\b")),
+    ("KeyError",         re.compile(r"\bKeyError\b")),
+    ("ValueError",       re.compile(r"\bValueError\b")),
+    ("AssertionError",   re.compile(r"\bAssertionError\b|\bassert\s")),
+    ("SyntaxError",      re.compile(r"\bSyntaxError\b|invalid syntax")),
+    ("IndentationError", re.compile(r"\bIndentationError\b")),
+    ("Timeout",          re.compile(r"\bTIMEOUT\b|exit 124|TimeoutExpired")),
+]
+
+# In OPAQUE mode we surface only the CLASS, not the assertion body, so
+# the agent can't hardcode to the expected value. Each entry's hint is
+# the targeted revision guidance keyed off the class.
+_FAILURE_HINTS = {
+    "ImportError": (
+        "Your patch references a symbol that doesn't exist at import "
+        "time. Verify the import path with `read_file` BEFORE submitting; "
+        "the symbol may have been renamed, moved, or guarded behind a "
+        "version check."
+    ),
+    "AttributeError": (
+        "Your patch calls a method/attribute that doesn't exist on the "
+        "receiving object. Check the class definition for the actual "
+        "attribute name and signature."
+    ),
+    "TypeError": (
+        "Argument count or type mismatch. Re-read the function signature "
+        "you're calling; ensure you're passing the right number and type "
+        "of arguments."
+    ),
+    "NameError": (
+        "Your patch uses an undefined name. Either a typo, missing "
+        "import, or the variable is out of scope at the call site."
+    ),
+    "KeyError": (
+        "Dictionary key not present. The fix likely needs `dict.get()` "
+        "with a default, OR the key must be added/renamed somewhere."
+    ),
+    "ValueError": (
+        "Function got the right type but the wrong value. Inspect the "
+        "validation logic in the function under test."
+    ),
+    "AssertionError": (
+        "The test's invariant fails. The production code is producing a "
+        "different value than expected — trace from the test's expected "
+        "value backward through the call chain to identify which "
+        "computation is wrong."
+    ),
+    "SyntaxError": (
+        "Your patch produces invalid Python syntax. Run `ast.parse` "
+        "mentally on each new line: unmatched parens, indentation, "
+        "missing colons are the usual causes."
+    ),
+    "IndentationError": (
+        "Indentation mismatch. Match the file's prevailing indent style "
+        "(read the existing function with `read_file`); never mix tabs "
+        "and spaces."
+    ),
+    "Timeout": (
+        "The test ran longer than the budget. Your fix likely introduces "
+        "infinite recursion, an unbounded loop, or O(n^2) behaviour. "
+        "Look for the simplest possible change."
+    ),
+}
+
+
+def classify_failure(raw_output: str) -> tuple[str, str]:
+    """Return (class, hint) for the dominant failure pattern in raw_output.
+
+    Wave 11: lightweight PROBE-style failure-class router. We scan in
+    a deterministic order; the FIRST match wins (more specific classes
+    listed earlier). Returns ("other", "") on no match.
+    """
+    if not raw_output:
+        return ("other", "")
+    for name, pat in _FAILURE_PATTERNS:
+        if pat.search(raw_output):
+            return name, _FAILURE_HINTS.get(name, "")
+    return ("other", "")
+
+
 def run_failing_tests(
     workdir: Path,
     fail_to_pass: list[str],

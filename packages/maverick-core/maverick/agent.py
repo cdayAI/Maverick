@@ -681,25 +681,38 @@ class Agent:
                             # do NOT leak raw assertion bodies to the
                             # agent in benchmark mode -- that's a recipe
                             # for hardcoding to the test's expected value.
+                            # Wave 11 (PROBE-lite): classify the failure
+                            # type and surface a targeted hint without
+                            # leaking expected values.
                             opaque = os.environ.get("MAVERICK_BENCHMARK_OPAQUE", "1") != "0"
+                            from .coding_mode import classify_failure
+                            fail_class, fail_hint = classify_failure(
+                                test_result.raw_output,
+                            )
+                            class_line = (
+                                f"Dominant failure class: {fail_class}.\n{fail_hint}"
+                                if fail_class != "other" else ""
+                            )
                             if opaque:
                                 critique = (
                                     "Your patch did not pass the required tests.\n\n"
                                     f"{test_result.summary()}\n\n"
+                                    f"{class_line}\n\n"
                                     "Revise based on your understanding of the "
                                     "code, not from inspecting the failing "
                                     "tests' expected values. Respond with a "
-                                    "new FINAL: containing only the diff."
-                                )
+                                    "new FINAL using SEARCH/REPLACE blocks."
+                                ).strip()
                             else:
                                 critique = (
                                     "Your patch did not pass the required tests.\n\n"
                                     f"{test_result.summary()}\n\n"
+                                    f"{class_line}\n\n"
                                     f"Recent test output:\n{test_result.raw_output}\n\n"
                                     "Inspect the failing tests, revise your patch, "
-                                    "and respond with a new FINAL: containing only "
-                                    "the unified diff."
-                                )
+                                    "and respond with a new FINAL using "
+                                    "SEARCH/REPLACE blocks."
+                                ).strip()
                             # Wave 9 fix (#2): one retry max so a flaky
                             # verifier or unfixable instance doesn't loop
                             # forever. The retry IS re-verified.
