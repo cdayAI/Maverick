@@ -102,6 +102,17 @@ PROVIDERS: dict[str, dict] = {
             {"id": "phi3:14b",             "notes": "Local, small, fast."},
         ],
     },
+    "chatgpt-session": {
+        "status": "ready",
+        "label": "ChatGPT browser session (use your Plus subscription, no API key)",
+        "env": None,
+        "session": True,
+        "tool_support": False,
+        "models": [
+            {"id": "gpt-4o",      "notes": "Free for Plus subscribers. Best for summarizer/writer/analyst."},
+            {"id": "gpt-4o-mini", "notes": "Free tier model. Use for cheap roles."},
+        ],
+    },
 }
 
 
