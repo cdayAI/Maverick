@@ -98,6 +98,14 @@ class LLMResponse:
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
     raw: Any = None
+    # May 26 smoke fix: when extended/adaptive thinking is enabled,
+    # Anthropic emits a `signature` field on each thinking block. That
+    # signature MUST be preserved when the assistant message is fed
+    # back as history, or the API rejects with HTTP 400:
+    #   messages.N.content.0.thinking.signature: Field required
+    # Capture it here so agent.py can echo it into the reconstructed
+    # assistant message.
+    thinking_signature: Optional[str] = None
 
 
 def model_for_role(role: str) -> str:

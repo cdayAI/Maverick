@@ -359,7 +359,16 @@ class Agent:
 
             assistant_content: list[dict] = []
             if resp.thinking:
-                assistant_content.append({"type": "thinking", "thinking": resp.thinking})
+                # May 26 smoke fix: Anthropic requires `signature` on
+                # thinking blocks when they appear in assistant message
+                # history. Without it, the next API call returns:
+                #   messages.N.content.0.thinking.signature: Field required
+                thinking_block: dict = {
+                    "type": "thinking", "thinking": resp.thinking,
+                }
+                if resp.thinking_signature:
+                    thinking_block["signature"] = resp.thinking_signature
+                assistant_content.append(thinking_block)
             if resp.text:
                 assistant_content.append({"type": "text", "text": resp.text})
             for tc in resp.tool_calls:
