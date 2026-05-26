@@ -270,6 +270,24 @@ class WorldModel:
         self._apply_migrations()
         self.conn.commit()
 
+    def close(self) -> None:
+        """Close the underlying SQLite connection.
+
+        Wave 9 fix (council H1): benchmark runs construct ~1865
+        WorldModel instances in one process; without close() the
+        FD count climbs and the host eventually OOMs.
+        """
+        try:
+            self.conn.close()
+        except Exception:  # pragma: no cover
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
     def reclaim_orphan_goals(self, *, max_age_seconds: float = 60.0) -> int:
         """Mark goals stuck in 'active' or 'pending' as 'blocked'.
 

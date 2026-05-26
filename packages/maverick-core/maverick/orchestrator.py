@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Optional
 
 from .agent import Agent
@@ -274,13 +275,20 @@ async def run_goal_best_of_n(
             conversation_id=conversation_id,
         )
 
-    # Run N attempts. Each gets its own slice of budget so one bad
-    # attempt can't starve the others.
-    per_attempt_dollars = budget.max_dollars / n
-    per_attempt_wall = budget.max_wall_seconds / n
+    # Wave 9 fix (council B6): per-attempt budget is generous-floor
+    # (max(total/n, 1200s)) so pip install / Docker setup doesn't
+    # starve the LLM phase. Total spend is bounded by parent budget's
+    # max_dollars via early-break on parent.dollars >= cap.
+    per_attempt_dollars = max(budget.max_dollars / n, 1.50)
+    per_attempt_wall = max(budget.max_wall_seconds / n, 1200.0)
     candidates: list[Candidate] = []
 
     for i in range(n):
+        # Wave 9 fix (council M12): respect parent dollar cap.
+        if budget.dollars >= budget.max_dollars * 0.95:
+            log.info("best-of-N early break: parent budget 95%% spent")
+            break
+
         from .budget import Budget as _Budget
         attempt_budget = _Budget(
             max_dollars=per_attempt_dollars,
@@ -289,23 +297,35 @@ async def run_goal_best_of_n(
             max_output_tokens=budget.max_output_tokens,
             max_tool_calls=budget.max_tool_calls,
         )
+        # Wave 9 fix (council H6): give each attempt a temperature nudge
+        # so we get real diversity instead of 4× the same answer. The
+        # nudge is wired via env so all providers/agents see it.
+        prior_temp = os.environ.get("MAVERICK_TEMPERATURE")
+        os.environ["MAVERICK_TEMPERATURE"] = str(round(0.2 + i * 0.25, 2))
         try:
-            answer = await run_goal(
-                llm, world, attempt_budget, goal_id,
-                sandbox=sandbox, max_depth=max_depth,
-                conversation_id=conversation_id,
-            )
-        except Exception as e:
-            log.warning("best-of-N attempt %d failed: %s", i, e)
-            candidates.append(Candidate(
-                index=i, patch="", score=0.0,
-                apply_check_passed=False, error=str(e),
-            ))
-            # Roll the spend into the parent budget so we don't lie.
-            budget.dollars += attempt_budget.dollars
-            budget.input_tokens += attempt_budget.input_tokens
-            budget.output_tokens += attempt_budget.output_tokens
-            continue
+            try:
+                answer = await run_goal(
+                    llm, world, attempt_budget, goal_id,
+                    sandbox=sandbox, max_depth=max_depth,
+                    conversation_id=conversation_id,
+                )
+            except Exception as e:
+                log.warning("best-of-N attempt %d failed: %s", i, e)
+                candidates.append(Candidate(
+                    index=i, patch="", score=0.0,
+                    apply_check_passed=False, error=str(e),
+                ))
+                # Roll the spend into the parent budget so we don't lie.
+                budget.dollars += attempt_budget.dollars
+                budget.input_tokens += attempt_budget.input_tokens
+                budget.output_tokens += attempt_budget.output_tokens
+                continue
+        finally:
+            # Restore temperature so the next call site isn't surprised.
+            if prior_temp is None:
+                os.environ.pop("MAVERICK_TEMPERATURE", None)
+            else:
+                os.environ["MAVERICK_TEMPERATURE"] = prior_temp
 
         budget.dollars += attempt_budget.dollars
         budget.input_tokens += attempt_budget.input_tokens

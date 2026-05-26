@@ -144,7 +144,7 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
     )
 
 
-def run_sonnet_single(instance_id: str, brief: str) -> Row:
+def run_sonnet_single(instance_id: str, brief: str, **_kwargs) -> Row:
     """Baseline #1: single Anthropic call, no tools.
 
     The simplest possible baseline. If Maverick can't beat this on
@@ -192,7 +192,7 @@ def run_sonnet_single(instance_id: str, brief: str) -> Row:
     )
 
 
-def run_sonnet_tools(instance_id: str, brief: str) -> Row:
+def run_sonnet_tools(instance_id: str, brief: str, **_kwargs) -> Row:
     """Baseline #2: Sonnet with bash + read/write tools, no swarm.
 
     Closer to Devin / Cursor. Same model as Maverick uses for workers
@@ -209,7 +209,7 @@ def run_sonnet_tools(instance_id: str, brief: str) -> Row:
     return row
 
 
-def run_sonnet_self_consistency_n8(instance_id: str, brief: str) -> Row:
+def run_sonnet_self_consistency_n8(instance_id: str, brief: str, **_kwargs) -> Row:
     """Baseline #3: 8 single-shot calls; pick the most common patch.
 
     Tests test-time compute (the cheap version) without any agent
@@ -231,29 +231,41 @@ _PIPELINE_FNS = {
 }
 
 
-def load_instances(manifest: Path) -> list[tuple[str, str]]:
-    """Manifest format: one JSON object per line:
-        {"instance_id": "django__django-12345", "brief": "..."}
+def load_instances(manifest: Path) -> list[dict]:
+    """Parse the manifest, yielding one dict per instance.
 
-    or one ID per line (brief loaded from same-name .txt file).
+    Supported formats:
+      - one JSON object per line with at minimum `instance_id` + `brief`;
+        optional `fail_to_pass`, `pass_to_pass`, `gold_patch`, `language`
+      - one bare ID per line (brief loaded from same-name .txt file)
+
+    Wave 9 fix: previously returned `(id, brief)` tuples and dropped the
+    test sets entirely — the test-driven verifier never fired.
     """
-    out: list[tuple[str, str]] = []
+    out: list[dict] = []
     for line in manifest.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         if line.startswith("{"):
             obj = json.loads(line)
-            out.append((obj["instance_id"], obj.get("brief", "")))
+            out.append(obj)
         else:
             brief_path = manifest.parent / f"{line}.txt"
             brief = brief_path.read_text() if brief_path.exists() else ""
-            out.append((line, brief))
+            out.append({"instance_id": line, "brief": brief})
     return out
 
 
 def write_csv(rows: list[Row], out_path: Path) -> None:
-    """Append (or create) a CSV at out_path. One row per (instance, pipeline)."""
+    """Append (or create) a CSV at out_path. One row per (instance, pipeline).
+
+    Wave 9 fix: dropped the manual `\\n` escape — csv.DictWriter quotes
+    newlines correctly; the runbook's `replace('\\\\n', chr(10))` was a
+    no-op on the unescaped data anyway, and would corrupt patches that
+    contained the literal two-character sequence `\\n` (Python source,
+    docstrings).
+    """
     cols = list(asdict(Row("", "", "")).keys())
     cols.remove("extra")
     new_file = not out_path.exists()
@@ -264,8 +276,24 @@ def write_csv(rows: list[Row], out_path: Path) -> None:
         for row in rows:
             d = asdict(row)
             d.pop("extra", None)
-            d["predicted_patch"] = d["predicted_patch"].replace("\n", "\\n")
             w.writerow(d)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def already_done(out_path: Path) -> set[tuple[str, str]]:
+    """Read out_path and return the set of (instance_id, pipeline) pairs
+    already written. Used by main() to skip on resume."""
+    if not out_path.exists():
+        return set()
+    done: set[tuple[str, str]] = set()
+    try:
+        with out_path.open() as f:
+            for row in csv.DictReader(f):
+                done.add((row["instance_id"], row["pipeline"]))
+    except (OSError, KeyError, csv.Error):
+        pass
+    return done
 
 
 def main() -> int:
@@ -276,6 +304,10 @@ def main() -> int:
                     help="comma-separated subset of: " + ",".join(PIPELINES))
     ap.add_argument("--out", type=Path,
                     default=Path(__file__).parent / "RESULTS_SWE.csv")
+    ap.add_argument("--abort-at-total-dollars", type=float, default=None,
+                    help="Stop the run when accumulated $ spend exceeds N.")
+    ap.add_argument("--no-resume", action="store_true",
+                    help="Don't skip rows already in the output CSV.")
     args = ap.parse_args()
 
     if not args.instances.exists():
@@ -289,21 +321,59 @@ def main() -> int:
             return 2
 
     instances = load_instances(args.instances)
-    rows: list[Row] = []
-    for instance_id, brief in instances:
-        for pipeline in pipelines:
-            try:
-                row = _PIPELINE_FNS[pipeline](instance_id, brief)
-            except Exception as e:
-                row = Row(
-                    instance_id=instance_id, pipeline=pipeline, model_id="",
-                    outcome=f"error: {type(e).__name__}: {e}",
-                )
-            rows.append(row)
-            print(f"{instance_id}\t{pipeline}\t{row.outcome}\t"
-                  f"${row.cost_dollars:.3f}\t{row.wall_seconds:.1f}s")
-    write_csv(rows, args.out)
-    print(f"\n{len(rows)} row(s) appended to {args.out}")
+    done = set() if args.no_resume else already_done(args.out)
+    if done:
+        print(f"resuming: {len(done)} (instance,pipeline) pairs already in {args.out}",
+              file=sys.stderr)
+
+    total_spend = 0.0
+    skipped = 0
+    written = 0
+
+    try:
+        for inst in instances:
+            iid = inst["instance_id"]
+            brief = inst.get("brief", "")
+            extra = {
+                "fail_to_pass": inst.get("fail_to_pass", []) or [],
+                "pass_to_pass": inst.get("pass_to_pass", []) or [],
+                "gold_patch": inst.get("gold_patch", "") or "",
+                "language": inst.get("language", "") or "",
+            }
+            for pipeline in pipelines:
+                if (iid, pipeline) in done:
+                    skipped += 1
+                    continue
+                if (args.abort_at_total_dollars is not None
+                        and total_spend >= args.abort_at_total_dollars):
+                    print(f"aborting: total spend ${total_spend:.2f} >= "
+                          f"${args.abort_at_total_dollars:.2f} cap",
+                          file=sys.stderr)
+                    return 0
+                try:
+                    row = _PIPELINE_FNS[pipeline](iid, brief, **extra)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    row = Row(
+                        instance_id=iid, pipeline=pipeline, model_id="",
+                        outcome=f"error: {type(e).__name__}: {e}",
+                    )
+                # Append THIS row immediately so a crash on instance N+1
+                # doesn't lose rows 0..N. fsync via write_csv.
+                write_csv([row], args.out)
+                written += 1
+                total_spend += row.cost_dollars
+                print(f"{iid}\t{pipeline}\t{row.outcome}\t"
+                      f"${row.cost_dollars:.3f}\t{row.wall_seconds:.1f}s"
+                      f"\ttotal=${total_spend:.2f}")
+    except KeyboardInterrupt:
+        print(f"\nSIGINT caught; {written} row(s) flushed to {args.out}",
+              file=sys.stderr)
+        return 130
+
+    print(f"\n{written} row(s) appended to {args.out}; "
+          f"{skipped} skipped (already done); total ${total_spend:.2f}")
     return 0
 
 

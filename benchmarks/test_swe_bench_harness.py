@@ -40,7 +40,7 @@ def test_load_instances_plain_ids(swebench, tmp_path):
     manifest = tmp_path / "smoke.txt"
     manifest.write_text("django__django-1\n# comment\nsympy__sympy-2\n")
     out = swebench.load_instances(manifest)
-    assert [iid for iid, _ in out] == ["django__django-1", "sympy__sympy-2"]
+    assert [d["instance_id"] for d in out] == ["django__django-1", "sympy__sympy-2"]
 
 
 def test_load_instances_json_per_line(swebench, tmp_path):
@@ -50,7 +50,36 @@ def test_load_instances_json_per_line(swebench, tmp_path):
         '{"instance_id": "b", "brief": "fix b"}\n'
     )
     out = swebench.load_instances(manifest)
-    assert out == [("a", "fix a"), ("b", "fix b")]
+    assert out == [{"instance_id": "a", "brief": "fix a"},
+                   {"instance_id": "b", "brief": "fix b"}]
+
+
+def test_load_instances_carries_test_sets(swebench, tmp_path):
+    """Wave 9 fix: fail_to_pass/pass_to_pass/language must round-trip."""
+    manifest = tmp_path / "smoke.jsonl"
+    manifest.write_text(
+        '{"instance_id": "a", "brief": "fix", '
+        '"fail_to_pass": ["t::x"], "pass_to_pass": ["t::y"], '
+        '"language": "python"}\n'
+    )
+    out = swebench.load_instances(manifest)
+    assert out[0]["fail_to_pass"] == ["t::x"]
+    assert out[0]["pass_to_pass"] == ["t::y"]
+    assert out[0]["language"] == "python"
+
+
+def test_already_done_skips_resumed(swebench, tmp_path):
+    """Wave 9: re-run skips (instance_id, pipeline) pairs already in CSV."""
+    csv_path = tmp_path / "r.csv"
+    rows = [
+        swebench.Row(instance_id="a", pipeline="maverick", model_id="x"),
+        swebench.Row(instance_id="b", pipeline="maverick", model_id="x"),
+    ]
+    swebench.write_csv(rows, csv_path)
+    done = swebench.already_done(csv_path)
+    assert ("a", "maverick") in done
+    assert ("b", "maverick") in done
+    assert ("c", "maverick") not in done
 
 
 def test_write_csv_creates_header_once(swebench, tmp_path):
@@ -72,7 +101,8 @@ def test_main_dry_run_end_to_end(swebench, tmp_path, monkeypatch, capsys):
     manifest.write_text("foo__bar-1\nfoo__bar-2\n")
     out_csv = tmp_path / "results.csv"
     # main() reads sys.argv; exercise the module-level helpers directly.
-    instances = swebench.load_instances(manifest)
+    instances = [(d["instance_id"], d.get("brief", ""))
+                 for d in swebench.load_instances(manifest)]
     rows = []
     for iid, brief in instances:
         for p in ("maverick", "sonnet_single"):

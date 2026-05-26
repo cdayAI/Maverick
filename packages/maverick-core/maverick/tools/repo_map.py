@@ -22,11 +22,16 @@ from . import Tool
 
 _MAX_TOP_ENTRIES = 80
 _MAX_NESTED_PER_DIR = 30
+_MAX_OUTPUT_BYTES = 8000  # Wave 9 council H7: hard token cap
 _IGNORE_DIRS = {
     ".git", "node_modules", ".venv", "venv", "__pycache__",
     "dist", "build", "target", ".pytest_cache", ".mypy_cache",
     ".tox", ".idea", ".vscode", "coverage",
 }
+
+# Wave 9 council H7: cache per-workdir so a chatty agent calling
+# repo_map every turn doesn't pay the walk cost N times.
+_CACHE: dict[str, str] = {}
 
 
 def _detect_languages(root: Path) -> list[str]:
@@ -56,6 +61,14 @@ def repo_map(sandbox) -> Tool:
         root = Path(getattr(sandbox, "workdir", ".")).expanduser()
         if not root.exists():
             return f"ERROR: workdir {root} does not exist"
+
+        cache_key = str(root.resolve())
+        if cache_key in _CACHE:
+            return (
+                _CACHE[cache_key]
+                + "\n\n(cached; repo unchanged since first call this run)"
+            )
+
         lines: list[str] = [f"Repo map for {root}:"]
 
         langs = _detect_languages(root)
@@ -106,7 +119,14 @@ def repo_map(sandbox) -> Tool:
                 lines.append(f"\n{readme} present (use read_file to read)")
                 break
 
-        return "\n".join(lines)
+        text = "\n".join(lines)
+        if len(text) > _MAX_OUTPUT_BYTES:
+            text = text[:_MAX_OUTPUT_BYTES] + (
+                f"\n\n... [truncated to {_MAX_OUTPUT_BYTES}B; "
+                f"use `list_dir` for specifics]"
+            )
+        _CACHE[cache_key] = text
+        return text
 
     return Tool(
         name="repo_map",

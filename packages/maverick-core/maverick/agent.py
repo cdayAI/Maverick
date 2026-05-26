@@ -6,6 +6,7 @@ without patching the kernel.
 """
 from __future__ import annotations
 
+import os
 import secrets as _secrets
 import uuid
 from dataclasses import dataclass
@@ -106,21 +107,25 @@ class Agent:
         return reg
 
     def _build_system(self) -> str:
-        # Coding mode (--coding-mode CLI or env) swaps the worker template
-        # for a strict diff-only one. SWE-bench scoring rejects prose;
-        # coding mode is the difference between 0% and ~50% pass rate.
+        # Wave 9 fix: coding mode applies to the ORCHESTRATOR too, not
+        # just workers. The orchestrator emits the FINAL; if it's still
+        # using ORCHESTRATOR_SYSTEM_TEMPLATE (prose-oriented), the patch
+        # validator + test-driven verifier both operate on prose, every
+        # extract_unified_diff returns None, every git apply --check
+        # rejects -> Wave 8 contributes negative value. (council code
+        # reviewer finding #1)
         try:
             from .coding_mode import CODER_CODING_MODE_TEMPLATE, from_env as _cm_from_env
             _coding_cfg = _cm_from_env()
         except Exception:
             _coding_cfg = None
 
-        if self.role == "orchestrator":
-            base = ORCHESTRATOR_SYSTEM_TEMPLATE.format(max_depth=self.ctx.max_depth)
-        elif _coding_cfg is not None and _coding_cfg.enabled:
+        if _coding_cfg is not None and _coding_cfg.enabled:
             base = CODER_CODING_MODE_TEMPLATE.format(
                 role=self.role, depth=self.depth, max_depth=self.ctx.max_depth,
             )
+        elif self.role == "orchestrator":
+            base = ORCHESTRATOR_SYSTEM_TEMPLATE.format(max_depth=self.ctx.max_depth)
         else:
             base = WORKER_SYSTEM_TEMPLATE.format(
                 role=self.role, depth=self.depth, max_depth=self.ctx.max_depth
@@ -359,48 +364,128 @@ class Agent:
                                 and (coding_cfg.fail_to_pass or coding_cfg.pass_to_pass)):
                             from pathlib import Path as _Path
                             from .coding_mode import run_failing_tests
-                            self._already_verified = True
+                            import subprocess as _subprocess
                             workdir = _Path(getattr(self.ctx.sandbox, "workdir", "."))
                             # Apply the patch first so tests run against it.
                             patch = extract_unified_diff(final) or final
+
+                            apply_ok = False
                             try:
-                                import subprocess as _subprocess
-                                _subprocess.run(
+                                ap = _subprocess.run(
                                     ["git", "-C", str(workdir), "apply", "-"],
                                     input=patch.encode("utf-8"),
                                     capture_output=True, timeout=30,
                                 )
+                                apply_ok = (ap.returncode == 0)
                             except Exception:
-                                pass
-                            test_result = run_failing_tests(
-                                workdir,
-                                coding_cfg.fail_to_pass,
-                                coding_cfg.pass_to_pass,
-                                self.ctx.sandbox,
-                            )
+                                apply_ok = False
+
+                            try:
+                                test_result = run_failing_tests(
+                                    workdir,
+                                    coding_cfg.fail_to_pass,
+                                    coding_cfg.pass_to_pass,
+                                    self.ctx.sandbox,
+                                )
+                            finally:
+                                # Wave 9 fix (B3): ALWAYS revert the workdir
+                                # so the next attempt reads HEAD, not the
+                                # post-patch tree. Without this, successive
+                                # revisions see corrupted state and
+                                # compound the error.
+                                try:
+                                    _subprocess.run(
+                                        ["git", "-C", str(workdir),
+                                         "reset", "--hard", "HEAD"],
+                                        capture_output=True, timeout=20,
+                                    )
+                                    _subprocess.run(
+                                        ["git", "-C", str(workdir), "clean", "-fd"],
+                                        capture_output=True, timeout=20,
+                                    )
+                                except Exception:
+                                    pass
+
+                            if not apply_ok:
+                                # Apply failed -> tests ran on unpatched
+                                # code -> all FAIL_TO_PASS still fail.
+                                # Council finding #9: distinguish this
+                                # from "patch was wrong" so the agent
+                                # doesn't 'fix' a working patch into a
+                                # broken one.
+                                if not getattr(self, "_patch_validated", False):
+                                    self._patch_validated = True
+                                    bb.post(
+                                        self.name, "verify",
+                                        "patch failed to apply pre-test; "
+                                        "asking proposer to revise",
+                                    )
+                                    messages.append({
+                                        "role": "user",
+                                        "content": (
+                                            "Your patch could not be applied "
+                                            "via `git apply`. Re-examine the "
+                                            "current file contents with "
+                                            "`read_file` and produce a fresh "
+                                            "unified diff against HEAD."
+                                        ),
+                                    })
+                                    continue
+                                # Already retried once; surface and exit.
+                                return AgentResult(
+                                    final=final, role=self.role, name=self.name,
+                                    verifier_confidence=0.0,
+                                    verifier_critique="patch did not apply",
+                                )
+
                             bb.post(
                                 self.name, "verify",
                                 f"test-driven verifier: {test_result.summary()}",
                             )
                             if test_result.all_pass:
                                 # Tests pass → accept FINAL. Skip LLM verifier.
+                                self._already_verified = True
                                 return AgentResult(
                                     final=final, role=self.role, name=self.name,
                                     verifier_confidence=test_result.score,
                                     verifier_critique=test_result.summary(),
                                 )
-                            # Tests failed → revise with failures as critique.
-                            messages.append({
-                                "role": "user",
-                                "content": (
+                            # Tests failed → revise. Wave 9 (council H2):
+                            # do NOT leak raw assertion bodies to the
+                            # agent in benchmark mode -- that's a recipe
+                            # for hardcoding to the test's expected value.
+                            opaque = os.environ.get("MAVERICK_BENCHMARK_OPAQUE", "1") != "0"
+                            if opaque:
+                                critique = (
+                                    "Your patch did not pass the required tests.\n\n"
+                                    f"{test_result.summary()}\n\n"
+                                    "Revise based on your understanding of the "
+                                    "code, not from inspecting the failing "
+                                    "tests' expected values. Respond with a "
+                                    "new FINAL: containing only the diff."
+                                )
+                            else:
+                                critique = (
                                     "Your patch did not pass the required tests.\n\n"
                                     f"{test_result.summary()}\n\n"
                                     f"Recent test output:\n{test_result.raw_output}\n\n"
                                     "Inspect the failing tests, revise your patch, "
                                     "and respond with a new FINAL: containing only "
                                     "the unified diff."
-                                ),
-                            })
+                                )
+                            # Wave 9 fix (#2): one retry max so a flaky
+                            # verifier or unfixable instance doesn't loop
+                            # forever. The retry IS re-verified.
+                            if getattr(self, "_patch_validated", False):
+                                # Already revised once; accept whatever this is.
+                                self._already_verified = True
+                                return AgentResult(
+                                    final=final, role=self.role, name=self.name,
+                                    verifier_confidence=test_result.score,
+                                    verifier_critique=test_result.summary(),
+                                )
+                            self._patch_validated = True
+                            messages.append({"role": "user", "content": critique})
                             continue
 
                         try:
