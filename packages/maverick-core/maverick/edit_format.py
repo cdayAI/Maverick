@@ -500,7 +500,21 @@ def render_diff(workdir: Path) -> str:
             capture_output=True, timeout=30,
         )
         if proc.returncode == 0:
-            return proc.stdout.decode("utf-8", errors="replace")
+            raw = proc.stdout.decode("utf-8", errors="replace")
+            # May 26 smoke fix (grader audit): SWE-bench's evaluator
+            # tries `git apply --verbose` first; that command rejects
+            # patches with mixed line endings. If our agent edited a
+            # file that originally had CRLF line endings (or if any
+            # editor / Python file write injected CR), the rendered
+            # diff has CRLF inside hunks and stage 1 of the grader
+            # fails. Stage 2 (`--reject`) may apply hunks at wrong
+            # offsets. Stage 3 (`patch --fuzz=5`) may silently mis-
+            # apply. Normalize CRLF → LF in the rendered diff so the
+            # grader's strict apply succeeds. The actual files on
+            # disk in the agent's workdir keep whatever line endings
+            # were there; only the predicted_patch CSV cell is
+            # normalized.
+            return raw.replace("\r\n", "\n").replace("\r", "\n")
     except (subprocess.SubprocessError, OSError):
         pass
     return ""

@@ -374,11 +374,21 @@ class Agent:
                     resp.tool_calls = []
 
             assistant_content: list[dict] = []
-            if resp.thinking:
-                # May 26 smoke fix: Anthropic requires `signature` on
-                # thinking blocks when they appear in assistant message
-                # history. Without it, the next API call returns:
-                #   messages.N.content.0.thinking.signature: Field required
+            # May 26 council fix: emit ONE thinking block per original
+            # block, preserving each block's exact signature. Concatenating
+            # text but keeping only the first signature corrupted multi-
+            # block interleaved thinking on Opus 4.7 — the signature is
+            # derived from the EXACT text of its block. Falls back to
+            # the legacy single-block path when thinking_blocks is empty
+            # but resp.thinking is set (older mocks / non-Anthropic).
+            thinking_blocks = getattr(resp, "thinking_blocks", None) or []
+            if thinking_blocks:
+                for tb_text, tb_sig in thinking_blocks:
+                    block_dict: dict = {"type": "thinking", "thinking": tb_text}
+                    if tb_sig:
+                        block_dict["signature"] = tb_sig
+                    assistant_content.append(block_dict)
+            elif resp.thinking:
                 thinking_block: dict = {
                     "type": "thinking", "thinking": resp.thinking,
                 }
@@ -410,6 +420,14 @@ class Agent:
                 ))
                 if _final_matches:
                     final = resp.text[_final_matches[-1].end():].strip()
+                    # May 26 council fix: clear any stale `_final_patch`
+                    # from a previous FINAL attempt. If a prior FINAL was
+                    # rejected (defensive/validate) and the revised
+                    # FINAL has no apply-check (because _patch_validated
+                    # was True), the verifier/return branches would read
+                    # the STALE patch from the earlier FINAL and submit
+                    # it — wrong patch attribution.
+                    self._final_patch = None
 
                     # Wave 8: coding-mode patch self-validation. If the
                     # workdir is a git repo AND the FINAL contains a
@@ -873,9 +891,25 @@ class Agent:
                     self.name, "observation",
                     f"tool={tc.name} -> {output[:500]}",
                 )
-                tool_results.append(
-                    {"type": "tool_result", "tool_use_id": tc.id, "content": output}
+                # May 26 council fix (API audit #4): set `is_error: true`
+                # on tool_results that surface an error. Per Anthropic
+                # docs, this tells Claude the tool failed so it can
+                # recover instead of treating the error string as a
+                # normal output. Our tool registry prefixes errors with
+                # "ERROR: " and the shield emits "BLOCKED by Shield".
+                stripped = (output or "").lstrip()
+                tool_is_error = (
+                    stripped.startswith("ERROR")
+                    or stripped.startswith("BLOCKED by Shield")
                 )
+                tr_block: dict = {
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": output,
+                }
+                if tool_is_error:
+                    tr_block["is_error"] = True
+                tool_results.append(tr_block)
 
             messages.append({"role": "user", "content": tool_results})
 

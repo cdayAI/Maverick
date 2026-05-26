@@ -512,6 +512,18 @@ _FORBIDDEN_PATH_PATTERNS = [
     re.compile(r"(?:^|/)yarn\.lock$"),
     re.compile(r"(?:^|/)Cargo\.lock$"),
     re.compile(r"(?:^|/)go\.sum$"),
+    # May 26 council fix (Princeton-perspective audit): package
+    # metadata + CI + lint config files. Edits to these are reverted
+    # or ignored by the grader's pristine container build. The model
+    # often "fixes" what it thinks is an env issue by tweaking these,
+    # then submits a patch that does nothing useful.
+    re.compile(r"(?:^|/)MANIFEST\.in$"),
+    re.compile(r"(?:^|/)\.github/workflows/"),
+    re.compile(r"(?:^|/)noxfile\.py$"),
+    re.compile(r"(?:^|/)\.pre-commit-config\.ya?ml$"),
+    re.compile(r"(?:^|/)\.flake8$"),
+    re.compile(r"(?:^|/)\.pylintrc$"),
+    re.compile(r"(?:^|/)mypy\.ini$"),
 ]
 
 
@@ -1007,6 +1019,17 @@ def _parse_pytest(out: str) -> tuple[int, int, bool]:
         p = int(m.group("passed") or 0)
         f = int(m.group("failed") or 0)
         e = int(m.group("errored") or 0)
+        # May 26 council fix (test-runner audit #1): pytest emits
+        # "no tests ran in Ns" when the requested node IDs don't
+        # exist (typo, refactor, test_patch reshuffled). The summary
+        # regex matches with all groups = 0, and we'd report
+        # (0, 0, True) — telling the caller "test framework worked
+        # but 0 tests were involved" which is treated as success.
+        # Distinguish: if the summary literal contains "no tests
+        # ran", treat as a runner error (failed=1 forces "not all
+        # pass" so the candidate scores correctly).
+        if "no tests ran" in m.group(0).lower() and p + f + e == 0:
+            return 0, 1, True
         return p, f + e, True
     # Fall back to the LAST "passed/failed/error" tokens in the
     # output — better than the prior first-match behavior.

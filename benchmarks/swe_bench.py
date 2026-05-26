@@ -149,17 +149,26 @@ def _get_shared_llm():
         return _SHARED_LLM
 
 
+class _ResetWorkdirError(RuntimeError):
+    """Raised when the workdir can't be reset to the requested commit.
+
+    May 26 council fix (harness audit #1): the prior best-effort silent-
+    swallow allowed instances to run against whatever tip the previous
+    instance left, producing patches against the wrong tree and silently
+    scoring 0 with outcome="failure". We now raise so the harness can
+    mark the instance error:base_commit_missing and skip the pipeline.
+    """
+
+
 def _reset_workdir(workdir, base_commit: str = "") -> None:
-    """Wave 11: reset workdir to a known clean state between instances.
+    """Reset workdir to a known clean state between instances.
 
-    The harness's sandbox workdir is shared across instances when using
-    LocalBackend (or a mounted volume on Docker). Without this reset,
-    git state from instance N pollutes instance N+1's run — pre-applied
-    edits, untracked files, branch tip drift. Documented as +10-25pp
-    silent score leak in operational-failure research.
+    Raises _ResetWorkdirError if the requested base_commit is missing
+    from the local clone — the agent MUST NOT run against a tree at a
+    different commit.
 
-    Best-effort: failures are logged but not raised so a missing-git
-    workdir (e.g., synthetic dry-run paths) doesn't abort the run.
+    Returns silently (no-op) only when the workdir doesn't exist or
+    isn't a git repo at all (synthetic dry-run paths).
     """
     import subprocess
     from pathlib import Path
@@ -168,10 +177,15 @@ def _reset_workdir(workdir, base_commit: str = "") -> None:
         return
     try:
         if base_commit:
-            subprocess.run(
+            proc = subprocess.run(
                 ["git", "-C", str(workdir_path), "reset", "--hard", base_commit],
                 capture_output=True, timeout=30,
             )
+            if proc.returncode != 0:
+                raise _ResetWorkdirError(
+                    f"git reset --hard {base_commit[:12]} failed: "
+                    f"{proc.stderr.decode('utf-8', 'replace')[:300]}"
+                )
         else:
             subprocess.run(
                 ["git", "-C", str(workdir_path), "reset", "--hard", "HEAD"],
@@ -181,8 +195,6 @@ def _reset_workdir(workdir, base_commit: str = "") -> None:
             ["git", "-C", str(workdir_path), "clean", "-fdx"],
             capture_output=True, timeout=30,
         )
-        # Strip reflog/branches/tags that could leak the gold patch
-        # (Princeton issue #465). Best-effort; failures don't block.
         if os.environ.get("MAVERICK_BENCHMARK_OPAQUE", "1") != "0":
             subprocess.run(
                 ["git", "-C", str(workdir_path), "reflog", "expire",
@@ -193,8 +205,10 @@ def _reset_workdir(workdir, base_commit: str = "") -> None:
                 ["git", "-C", str(workdir_path), "gc", "--prune=now", "--quiet"],
                 capture_output=True, timeout=30,
             )
-    except (subprocess.SubprocessError, OSError):
-        pass
+    except _ResetWorkdirError:
+        raise
+    except (subprocess.SubprocessError, OSError) as e:
+        raise _ResetWorkdirError(f"workdir reset failed: {e}") from e
 
 
 def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:

@@ -97,6 +97,30 @@ _EDITABLE_INSTALL_PATTERN = re.compile(
 )
 
 
+# May 26 council fix (Princeton-perspective audit #1, smoke-batch
+# pylint pip-rabbit-hole): the prompt's Rule 11 ("never run pip
+# install") is aspirational. Enforce here. The grader uses a pristine
+# Docker image with deps pre-installed; any `pip install` from the
+# agent's shell pollutes the LOCAL sandbox (changing test outcomes
+# for subsequent instances when the workdir is shared) but is a
+# no-op for the grader. Block in opaque mode.
+_PACKAGE_INSTALL_PATTERN = re.compile(
+    r"\b(?:"
+    r"pip\s+install"
+    r"|pip3\s+install"
+    r"|python\s+-m\s+pip\s+install"
+    r"|python3\s+-m\s+pip\s+install"
+    r"|conda\s+install"
+    r"|npm\s+(?:install|i|ci|add)"
+    r"|yarn\s+(?:add|install)"
+    r"|apt(?:-get)?\s+install"
+    r"|apk\s+add"
+    r"|brew\s+install"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 # Wave 11: detect pytest / npm test / go test / cargo test invocations
 # so we can raise the per-call timeout from the LocalBackend default
 # of 60 s (way too short for real SWE-bench test suites — Django can
@@ -161,6 +185,24 @@ def shell(sandbox) -> Tool:
                     "description and the code, not from inspecting the answer "
                     "in git history or fetching the upstream PR. "
                     "(Override by setting MAVERICK_BENCHMARK_OPAQUE=0.)"
+                )
+            # May 26 council fix: block ALL package-install commands
+            # in opaque mode. The grader's container has deps already;
+            # any install here just pollutes the local sandbox for
+            # downstream instances. Surface the right framing so the
+            # agent treats ImportError as a code bug, not env issue.
+            if _PACKAGE_INSTALL_PATTERN.search(cmd):
+                return (
+                    "ERROR: package install commands are blocked in "
+                    "benchmark opaque mode. The grader's test container "
+                    "has dependencies pre-installed at the pinned "
+                    "versions for this instance. If you see ImportError "
+                    "or ModuleNotFoundError, treat it as a CODE bug "
+                    "(missing import in production code, wrong module "
+                    "path) — not an environment problem. Do NOT try "
+                    "`pip install` / `npm install` / `apt install`; "
+                    "fix the code instead. "
+                    "(Override: MAVERICK_BENCHMARK_OPAQUE=0.)"
                 )
             if _EDITABLE_INSTALL_PATTERN.search(cmd):
                 # Don't outright refuse -- the agent may legitimately need
