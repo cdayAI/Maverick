@@ -279,7 +279,13 @@ def validate_patch(patch: str, workdir: Path) -> PatchValidation:
 # `printenv` / `env` / `cat $MAVERICK_GOLD_PATCH` inside the agent's
 # sandboxed shell. Subsequent reads in the same instance return the
 # cached value. The harness re-sets the env var per instance.
+#
+# Wave 12 hardening: track `_GOLD_PATCH_POPPED` as an explicit sentinel
+# so empty-string env values (legitimate "no gold" signal) are NOT
+# treated as "not yet read" — the prior `if new is not None` logic
+# misread an empty value as "pop again next time".
 _GOLD_PATCH_CACHE: str = ""
+_GOLD_PATCH_POPPED: bool = False
 
 
 def get_gold_patch() -> str:
@@ -291,18 +297,21 @@ def get_gold_patch() -> str:
     see it. Defensive validator and any other code that needs the gold
     must go through this accessor, NOT os.environ directly.
     """
-    global _GOLD_PATCH_CACHE
+    global _GOLD_PATCH_CACHE, _GOLD_PATCH_POPPED
     import os
     new = os.environ.pop("MAVERICK_GOLD_PATCH", None)
     if new is not None:
+        # Even an empty string is a deliberate signal — record it.
         _GOLD_PATCH_CACHE = new
+        _GOLD_PATCH_POPPED = True
     return _GOLD_PATCH_CACHE
 
 
 def reset_gold_patch_cache() -> None:
     """Test/harness helper: clear the cache between instances."""
-    global _GOLD_PATCH_CACHE
+    global _GOLD_PATCH_CACHE, _GOLD_PATCH_POPPED
     _GOLD_PATCH_CACHE = ""
+    _GOLD_PATCH_POPPED = False
 
 
 # ---- Wave 11: defensive patch validation (grader brittleness rules)
@@ -315,9 +324,19 @@ _FORBIDDEN_PATH_PATTERNS = [
     re.compile(r"(?:^|/)tests?/"),
     re.compile(r"(?:^|/)test_[^/]+\.py$"),
     re.compile(r"(?:^|/)[^/]+_test\.py$"),
+    # Wave 12 hardening: Django convention `tests.py` (no underscore),
+    # plural `*_tests.py`, and bare `mytest.py` / `testfoo.py`.
+    re.compile(r"(?:^|/)tests?\.py$"),
+    re.compile(r"(?:^|/)[^/]+_tests\.py$"),
+    re.compile(r"(?:^|/)test[^/_][^/]*\.py$"),
     re.compile(r"(?:^|/)__tests__/"),
     re.compile(r"\.test\.(?:js|jsx|ts|tsx)$"),
     re.compile(r"\.spec\.(?:js|jsx|ts|tsx|rb)$"),
+    # Wave 12 hardening: JVM family test files outside src/test/.
+    # Maven/Gradle convention is `(Foo)Test.java` / `FooSpec.scala` /
+    # `FooSpec.kt`; some monorepos put them at arbitrary depths.
+    re.compile(r"(?:^|/)\w*Tests?\.(?:java|kt|kts|scala|groovy)$"),
+    re.compile(r"(?:^|/)\w*Spec\.(?:scala|kt|kts|groovy)$"),
     # Dependency LOCK files — version drift here is fatal.
     re.compile(r"(?:^|/)Pipfile(?:\.lock)?$"),
     re.compile(r"(?:^|/)poetry\.lock$"),
@@ -343,7 +362,10 @@ _WARN_PATH_PATTERNS = [
     re.compile(r"(?:^|/)setup\.py$"),
     re.compile(r"(?:^|/)setup\.cfg$"),
     re.compile(r"(?:^|/)pyproject\.toml$"),
-    re.compile(r"(?:^|/)requirements(?:[^/]*)?\.txt$"),
+    # Wave 12 hardening: pip-tools layout uses `requirements/dev.txt`,
+    # `requirements/base.txt`, etc. The original pattern with
+    # `[^/]*` couldn't cross `/`. Also handle `requirements.in`.
+    re.compile(r"(?:^|/)requirements(?:/[^/]+|[^/]*)?\.(?:txt|in)$"),
     re.compile(r"(?:^|/)Cargo\.toml$"),
     re.compile(r"(?:^|/)go\.mod$"),
 ]
@@ -549,16 +571,34 @@ def defensive_validate(patch: str, *, fail_to_pass: list[str] = None,
         ours_text = _substantive(patch)
         theirs_text = _substantive(gold_patch)
         if ours_text and theirs_text:
-            ours_tokens = _TOKEN_RE.findall(ours_text)[:5_000]
-            theirs_tokens = _TOKEN_RE.findall(theirs_text)[:5_000]
+            ours_all = _TOKEN_RE.findall(ours_text)
+            theirs_all = _TOKEN_RE.findall(theirs_text)
+            # Wave 12 hardening (agent 5 #1): SAMPLE tokens uniformly
+            # rather than slicing the head. A bypass attempt that
+            # prepends 5000 lines of noise then verbatim-copies the
+            # gold suffix would zero the ratio under the prior `[:5000]`
+            # truncation. With uniform sampling the gold tokens are
+            # represented regardless of position. Cap at 5000 per side
+            # to keep SequenceMatcher's O(n*m) work bounded.
+            def _sample(tokens: list[str], k: int = 5_000) -> list[str]:
+                if len(tokens) <= k:
+                    return tokens
+                step = len(tokens) / k
+                return [tokens[int(i * step)] for i in range(k)]
+
+            ours_tokens = _sample(ours_all)
+            theirs_tokens = _sample(theirs_all)
             if ours_tokens and theirs_tokens:
                 ratio = SequenceMatcher(
                     None, ours_tokens, theirs_tokens,
                 ).ratio()
-                if ratio > 0.50:
+                # Wave 12 hardening (agent 5 #2): use >=, not >. A 50%
+                # rename produces exactly 0.50 which was slipping
+                # through the strict-greater check.
+                if ratio >= 0.50:
                     result.ok = False
                     result.warnings.append(
-                        f"token-overlap ratio {ratio:.0%} exceeds the 50% "
+                        f"token-overlap ratio {ratio:.0%} meets the 50% "
                         "cheating-detector threshold; reformulate the fix "
                         "in your own structure"
                     )

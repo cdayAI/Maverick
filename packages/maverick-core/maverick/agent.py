@@ -502,6 +502,17 @@ class Agent:
                                 "content": def_check.critique(),
                             })
                             continue
+                        # Wave 12 hardening: when defensive validate
+                        # passes (ok=True) but emitted warnings (WARN
+                        # path — conftest.py / pyproject.toml etc.),
+                        # post the advisory to the blackboard so it
+                        # shows up in trace; we still ACCEPT the patch.
+                        if def_check is not None and def_check.warnings:
+                            bb.post(
+                                self.name, "verify",
+                                f"defensive warnings (accepted anyway): "
+                                f"{def_check.warnings}",
+                            )
                         validation = validate_patch(patch, workdir)
                         if not validation.valid:
                             self._patch_validated = True  # one retry max

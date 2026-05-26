@@ -164,6 +164,193 @@ class TestStrReplaceEditorOpacity:
         assert "def f" in out
 
 
+class TestSymlinkBypass:
+    """Wave 12 hardening: symlink to .git or tests/ must still be
+    blocked by the resolved-path check."""
+
+    def test_symlink_to_dotgit_blocked_in_read_file(self, tmp_path, opaque_mode):
+        import os as _os
+        from maverick.tools.fs import read_file
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        # Create symlink: safe_dir -> .git
+        _os.symlink(".git", tmp_path / "safe_dir")
+
+        class _Sandbox:
+            workdir = tmp_path
+
+        tool = read_file(_Sandbox())
+        out = tool.fn({"path": "safe_dir/HEAD"})
+        assert "ERROR" in out, (
+            "symlink to .git/HEAD must be blocked on resolved path"
+        )
+        assert "ref:" not in out
+
+    def test_symlink_to_tests_blocked_in_view(self, tmp_path, opaque_mode):
+        import os as _os
+        from maverick.tools.str_edit import str_replace_editor
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_foo.py").write_text(
+            "assert expected_value == 42\n"
+        )
+        _os.symlink("tests", tmp_path / "looks_like_src")
+
+        class _Sandbox:
+            workdir = tmp_path
+
+        tool = str_replace_editor(_Sandbox())
+        out = tool.fn({"command": "view", "path": "looks_like_src/test_foo.py"})
+        assert "ERROR" in out
+        assert "expected_value" not in out
+
+
+class TestTestsDirAllFiles:
+    """Wave 12 hardening: ANY file under tests/ is now blocked, not
+    just files matching the test_*.py heuristic."""
+
+    def test_conftest_under_tests_blocked(self, tmp_path, opaque_mode):
+        from maverick.tools.fs import read_file
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "conftest.py").write_text("# expected_value = 42")
+
+        class _Sandbox:
+            workdir = tmp_path
+
+        tool = read_file(_Sandbox())
+        out = tool.fn({"path": "tests/conftest.py"})
+        assert "ERROR" in out
+        assert "expected_value" not in out
+
+    def test_init_under_tests_blocked(self, tmp_path, opaque_mode):
+        from maverick.tools.fs import read_file
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "__init__.py").write_text("EXPECTED = 'gold'")
+
+        class _Sandbox:
+            workdir = tmp_path
+
+        tool = read_file(_Sandbox())
+        out = tool.fn({"path": "tests/__init__.py"})
+        assert "ERROR" in out
+        assert "gold" not in out
+
+
+class TestShellGitFlagsBypass:
+    """Wave 12 hardening (agent 2 #3): git plumbing wasn't blocked
+    when preceded by `-P`, `--git-dir=...`, `-c k=v`, etc."""
+
+    def _shell(self, tmp_path):
+        from maverick.tools.shell import shell
+
+        class _Sandbox:
+            workdir = tmp_path
+            timeout = 5.0
+
+            def exec(self, cmd, timeout=None):
+                from maverick.sandbox.local import ExecResult
+                return ExecResult(stdout="ok", stderr="", exit_code=0)
+
+        return shell(_Sandbox())
+
+    def test_git_dash_p_log_blocked(self, tmp_path, opaque_mode):
+        tool = self._shell(tmp_path)
+        out = tool.fn({"cmd": "git -P log -p HEAD"})
+        assert "blocked" in out.lower()
+
+    def test_git_dash_c_log_blocked(self, tmp_path, opaque_mode):
+        tool = self._shell(tmp_path)
+        out = tool.fn({"cmd": "git -c color.ui=never log -p HEAD"})
+        assert "blocked" in out.lower()
+
+    def test_git_dash_dash_git_dir_blocked(self, tmp_path, opaque_mode):
+        tool = self._shell(tmp_path)
+        out = tool.fn({"cmd": "git --git-dir=/workdir/.git rev-list HEAD"})
+        assert "blocked" in out.lower()
+
+    def test_git_rev_list_blocked(self, tmp_path, opaque_mode):
+        tool = self._shell(tmp_path)
+        out = tool.fn({"cmd": "git rev-list HEAD"})
+        assert "blocked" in out.lower()
+
+    def test_git_show_ref_blocked(self, tmp_path, opaque_mode):
+        tool = self._shell(tmp_path)
+        out = tool.fn({"cmd": "git show-ref"})
+        assert "blocked" in out.lower()
+
+    def test_git_ls_files_blocked(self, tmp_path, opaque_mode):
+        tool = self._shell(tmp_path)
+        out = tool.fn({"cmd": "git ls-files --stage"})
+        assert "blocked" in out.lower()
+
+
+class TestShellAnyUtilityReadsDotGit:
+    """Wave 12 hardening (agent 2 #2): block .git/<sensitive> reads
+    regardless of consuming utility — python, awk, xxd, grep, sed,
+    cp, mv, tar all bypass the prior cat-blocker."""
+
+    def _shell(self, tmp_path):
+        from maverick.tools.shell import shell
+
+        class _Sandbox:
+            workdir = tmp_path
+            timeout = 5.0
+
+            def exec(self, cmd, timeout=None):
+                from maverick.sandbox.local import ExecResult
+                return ExecResult(stdout="ok", stderr="", exit_code=0)
+
+        return shell(_Sandbox())
+
+    def test_python_read_dotgit_blocked(self, tmp_path, opaque_mode):
+        tool = self._shell(tmp_path)
+        out = tool.fn({
+            "cmd": "python -c \"print(open('.git/HEAD').read())\"",
+        })
+        assert "blocked" in out.lower()
+
+    def test_awk_read_dotgit_blocked(self, tmp_path, opaque_mode):
+        tool = self._shell(tmp_path)
+        out = tool.fn({"cmd": "awk 1 .git/HEAD"})
+        assert "blocked" in out.lower()
+
+    def test_grep_dotgit_blocked(self, tmp_path, opaque_mode):
+        tool = self._shell(tmp_path)
+        out = tool.fn({"cmd": "grep -r HEAD .git/refs"})
+        assert "blocked" in out.lower()
+
+    def test_cp_dotgit_blocked(self, tmp_path, opaque_mode):
+        tool = self._shell(tmp_path)
+        out = tool.fn({"cmd": "cp .git/HEAD /tmp/leak"})
+        assert "blocked" in out.lower()
+
+    def test_sed_dotgit_blocked(self, tmp_path, opaque_mode):
+        tool = self._shell(tmp_path)
+        out = tool.fn({"cmd": "sed n .git/refs/heads/main"})
+        assert "blocked" in out.lower()
+
+
+class TestGoldPatchEmptyEnvSentinel:
+    """Wave 12 hardening (agent 2 #5): empty-string MAVERICK_GOLD_PATCH
+    should pop+cache, NOT be treated as 'not yet read'."""
+
+    def test_empty_env_is_popped_and_cached(self, monkeypatch):
+        from maverick.coding_mode import (
+            get_gold_patch,
+            reset_gold_patch_cache,
+        )
+        import os as _os
+        reset_gold_patch_cache()
+        monkeypatch.setenv("MAVERICK_GOLD_PATCH", "")
+        out = get_gold_patch()
+        assert out == ""
+        # Env var must still be popped.
+        assert "MAVERICK_GOLD_PATCH" not in _os.environ
+        # The cache is now "" (empty), but explicitly POPPED.
+        from maverick import coding_mode
+        assert coding_mode._GOLD_PATCH_POPPED is True
+        reset_gold_patch_cache()
+
+
 class TestShellGitInternalsBlocked:
     """F9d: shell-level git plumbing + raw .git filesystem access."""
 
