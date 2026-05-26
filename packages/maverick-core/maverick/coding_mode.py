@@ -156,6 +156,17 @@ def extract_unified_diff(text: str) -> Optional[str]:
     `\\ No newline at end of file` markers without forcing an extra
     newline.
 
+    Wave 12 fix (council F6):
+      - `FINAL:` is now anchored at line start, not substring. Models
+        occasionally write "FINAL: please disregard" mid-prose; the
+        old substring `find` would cut there and miss the real FINAL.
+        Use the LAST line-start FINAL marker (models are told to end
+        their turn with FINAL:, so the trailing one is canonical).
+      - Fences are stripped only around the diff envelope, not inside
+        it. The previous implementation stripped EVERY line starting
+        with ``` which corrupted patches that edit Markdown files
+        containing triple-backtick code fences as context lines.
+
     Returns None on no-valid-diff so callers can hard-reject rather
     than falling back to prose. Call sites in agent.py must NOT use
     `extract_unified_diff(x) or x`.
@@ -165,34 +176,38 @@ def extract_unified_diff(text: str) -> Optional[str]:
     # Normalise CRLF before any other handling. Real-world LLM output
     # mixes line endings; `git apply` rejects CRLF inside hunks.
     work = text.replace("\r\n", "\n").replace("\r", "\n")
-    final_idx = work.find("FINAL:")
-    if final_idx >= 0:
-        work = work[final_idx + len("FINAL:"):]
 
-    # Strip lone ``` fence lines (open + close) but leave inline `\`\`\``
-    # alone -- those may appear inside a Markdown file's diff hunk.
-    cleaned_lines = []
-    for line in work.split("\n"):
-        if line.strip().startswith("```"):
-            continue
-        cleaned_lines.append(line)
-    cleaned = "\n".join(cleaned_lines)
+    # Anchor FINAL: at line start; use the LAST occurrence since the
+    # model is instructed to end its turn with FINAL: ...
+    final_matches = list(re.finditer(r"(?:^|\n)\s*FINAL:\s*\n?", work))
+    if final_matches:
+        work = work[final_matches[-1].end():]
 
     # Find the earliest valid anchor: either `diff --git a/x b/y` or
     # the raw `--- a/...` triple. Whichever comes first wins.
-    git_m = _GIT_DIFF_HEADER.search(cleaned)
-    unified_m = _VALID_DIFF_HEADER.search(cleaned)
+    git_m = _GIT_DIFF_HEADER.search(work)
+    unified_m = _VALID_DIFF_HEADER.search(work)
     starts = [m.start() for m in (git_m, unified_m) if m is not None]
     if not starts:
         return None
     start = min(starts)
-    diff = cleaned[start:]
+    diff = work[start:]
+
+    # Strip ONLY the trailing outer fence (closing ``` of a ```diff
+    # envelope) — never internal fences which may be context lines in
+    # Markdown patches (lines starting with " ```" / "+```" / "-```").
+    # We match exactly ``` plus optional trailing whitespace; a context
+    # line " ```" has a leading space and won't match.
+    lines = diff.rstrip("\n").split("\n")
+    if lines and lines[-1].rstrip() == "```":
+        lines = lines[:-1]
+    diff = "\n".join(lines).rstrip()
 
     # Preserve a final `\ No newline at end of file` marker without
     # forcing an unwanted trailing newline that breaks last-line edits.
-    if diff.rstrip().endswith("\\ No newline at end of file"):
-        return diff.rstrip() + "\n"
-    return diff.rstrip() + "\n"
+    if diff.endswith("\\ No newline at end of file"):
+        return diff + "\n"
+    return diff + "\n"
 
 
 @dataclass
@@ -624,72 +639,145 @@ def _cmd_for(runner: str, ids: list[str]):
     return None
 
 
+# Wave 12: shared ANSI escape stripper. Jest/vitest/mocha colorize
+# their output by default; the harness passes --colors=false but a few
+# reporters honor it incompletely (vitest's UI reporter, jest's
+# verbose). Strip on every parser entry to be safe.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mGKHF]")
+
+
+def _strip_ansi(out: str) -> str:
+    return _ANSI_RE.sub("", out or "")
+
+
 # Each parser: (passed, failed_or_errored, parsed_ok).
 def _parse_pytest(out: str) -> tuple[int, int, bool]:
     # Wave 9 (council B7): anchor to the summary line `===== ... in Ns =====`,
     # not the first occurrence of "N passed" which can match stdout from
     # tests that emit "3 passed" in their own output.
-    m = re.search(
+    # Wave 12 (council F7a): use the LAST `===` summary line when
+    # pytest is re-invoked in the same shell call (e.g. tox).
+    out = _strip_ansi(out)
+    summary_re = re.compile(
         r"=+\s*"
         r"(?:(?P<failed>\d+)\s+failed,?\s*)?"
         r"(?:(?P<errored>\d+)\s+error[s]?,?\s*)?"
         r"(?:(?P<passed>\d+)\s+passed,?\s*)?"
         r"(?:.*?in\s+[\d.]+\s*s)",
-        out, re.IGNORECASE,
+        re.IGNORECASE,
     )
-    if not m:
-        # Fall back to the last "passed/failed/error" tokens in the
-        # output — better than the prior first-match behavior.
-        m_pass = list(re.finditer(r"(\d+)\s+passed", out))
-        m_fail = list(re.finditer(r"(\d+)\s+failed", out))
-        m_err = list(re.finditer(r"(\d+)\s+error[s]?", out))
-        if not (m_pass or m_fail or m_err):
-            return 0, 0, False
-        p = int(m_pass[-1].group(1)) if m_pass else 0
-        f = int(m_fail[-1].group(1)) if m_fail else 0
-        e = int(m_err[-1].group(1)) if m_err else 0
+    matches = list(summary_re.finditer(out))
+    if matches:
+        m = matches[-1]
+        p = int(m.group("passed") or 0)
+        f = int(m.group("failed") or 0)
+        e = int(m.group("errored") or 0)
         return p, f + e, True
-    p = int(m.group("passed") or 0)
-    f = int(m.group("failed") or 0)
-    e = int(m.group("errored") or 0)
+    # Fall back to the LAST "passed/failed/error" tokens in the
+    # output — better than the prior first-match behavior.
+    m_pass = list(re.finditer(r"(\d+)\s+passed", out))
+    m_fail = list(re.finditer(r"(\d+)\s+failed", out))
+    m_err = list(re.finditer(r"(\d+)\s+error[s]?", out))
+    if not (m_pass or m_fail or m_err):
+        return 0, 0, False
+    p = int(m_pass[-1].group(1)) if m_pass else 0
+    f = int(m_fail[-1].group(1)) if m_fail else 0
+    e = int(m_err[-1].group(1)) if m_err else 0
     return p, f + e, True
 
 
 def _parse_jest(out: str) -> tuple[int, int, bool]:
-    m = re.search(
-        r"Tests:\s+(?:(?P<failed>\d+)\s+failed,\s*)?"
+    # Wave 12 (council F7b/c): strip ANSI, accept `todo`, use LAST
+    # match (jest 27+ may emit per-file Tests: lines BEFORE the summary).
+    out = _strip_ansi(out)
+    jest_re = re.compile(
+        r"Tests:\s+"
+        r"(?:(?P<failed>\d+)\s+failed,\s*)?"
         r"(?:(?P<skipped>\d+)\s+skipped,\s*)?"
+        r"(?:(?P<todo>\d+)\s+todo,\s*)?"
         r"(?:(?P<passed>\d+)\s+passed,\s*)?"
         r"(?P<total>\d+)\s+total",
-        out,
     )
-    if not m:
-        return 0, 0, False
-    return int(m.group("passed") or 0), int(m.group("failed") or 0), True
+    matches = list(jest_re.finditer(out))
+    if matches:
+        m = matches[-1]
+        return int(m.group("passed") or 0), int(m.group("failed") or 0), True
+    # beforeAll/beforeEach hook failures don't emit a summary line at
+    # all in some versions — surface as an error so the orchestrator
+    # can route the failure-class hint.
+    if "FAIL" in out and ("beforeAll" in out or "beforeEach" in out):
+        return 0, 1, True
+    return 0, 0, False
+
+
+def _parse_vitest(out: str) -> tuple[int, int, bool]:
+    # Wave 12 (council F7c): vitest summary differs from jest. It uses
+    # pipe-separated counts:
+    #   Tests  3 failed | 5 passed (8)
+    #   Tests  5 passed (5)
+    out = _strip_ansi(out)
+    vitest_re = re.compile(
+        r"Tests\s+"
+        r"(?:(?P<failed>\d+)\s+failed\s*\|\s*)?"
+        r"(?:(?P<skipped>\d+)\s+skipped\s*\|\s*)?"
+        r"(?:(?P<todo>\d+)\s+todo\s*\|\s*)?"
+        r"(?P<passed>\d+)\s+passed",
+    )
+    matches = list(vitest_re.finditer(out))
+    if matches:
+        m = matches[-1]
+        return int(m.group("passed") or 0), int(m.group("failed") or 0), True
+    # Fall back to jest-style for unusual reporter configurations.
+    return _parse_jest(out)
 
 
 def _parse_cargo(out: str) -> tuple[int, int, bool]:
-    m = re.search(r"test result:.*?(\d+)\s+passed;\s*(\d+)\s+failed", out)
-    return (int(m.group(1)), int(m.group(2)), True) if m else (0, 0, False)
+    out = _strip_ansi(out)
+    # Use the LAST summary (one per crate).
+    matches = list(re.finditer(
+        r"test result:.*?(\d+)\s+passed;\s*(\d+)\s+failed", out,
+    ))
+    if matches:
+        m = matches[-1]
+        return int(m.group(1)), int(m.group(2)), True
+    return 0, 0, False
 
 
 def _parse_gotest(out: str) -> tuple[int, int, bool]:
-    p = len(re.findall(r"^--- PASS:", out, re.M))
-    f = len(re.findall(r"^--- FAIL:", out, re.M))
+    # Wave 12 (council F7d): subtests are indented (`    --- PASS:`);
+    # allow leading whitespace. (council F7e): detect build/compile
+    # failures so we don't silently report 0/0 = ok.
+    out = _strip_ansi(out)
+    p = len(re.findall(r"^\s*--- PASS:", out, re.M))
+    f = len(re.findall(r"^\s*--- FAIL:", out, re.M))
+    # Build failures: `FAIL\t...\t[build failed]` or "cannot find package".
+    if (
+        re.search(r"\bFAIL\b.*\[build failed\]", out)
+        or "cannot find package" in out
+        or re.search(r"^\s*\S+\.go:\d+:\d+:", out, re.M) and "PASS" not in out
+    ):
+        # All tests effectively failed due to compile error; bump failed
+        # by 1 minimum so the candidate scores non-OK.
+        return p, max(f, 1), True
     ok = ("PASS" in out) or ("FAIL" in out) or ("ok  " in out)
     return p, f, ok
 
 
 def _parse_rspec(out: str) -> tuple[int, int, bool]:
-    m = re.search(r"(\d+)\s+examples?,\s*(\d+)\s+failures?", out)
-    if not m:
+    out = _strip_ansi(out)
+    matches = list(re.finditer(
+        r"(\d+)\s+examples?,\s*(\d+)\s+failures?", out,
+    ))
+    if not matches:
         return 0, 0, False
+    m = matches[-1]
     total = int(m.group(1))
     failed = int(m.group(2))
     return total - failed, failed, True
 
 
 def _parse_gradle(out: str) -> tuple[int, int, bool]:
+    out = _strip_ansi(out)
     p = len(re.findall(r"\bPASSED\b", out))
     f = len(re.findall(r"\bFAILED\b", out))
     ok = ("BUILD SUCCESSFUL" in out) or ("BUILD FAILED" in out)
@@ -697,9 +785,13 @@ def _parse_gradle(out: str) -> tuple[int, int, bool]:
 
 
 def _parse_maven(out: str) -> tuple[int, int, bool]:
-    m = re.search(r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+)", out)
-    if not m:
+    out = _strip_ansi(out)
+    matches = list(re.finditer(
+        r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+)", out,
+    ))
+    if not matches:
         return 0, 0, False
+    m = matches[-1]
     return (
         int(m.group(1)) - int(m.group(2)) - int(m.group(3)),
         int(m.group(2)) + int(m.group(3)),
@@ -710,7 +802,7 @@ def _parse_maven(out: str) -> tuple[int, int, bool]:
 _PARSERS = {
     "pytest": _parse_pytest,
     "jest":   _parse_jest,
-    "vitest": _parse_jest,
+    "vitest": _parse_vitest,
     "mocha":  _parse_jest,
     "cargo":  _parse_cargo,
     "gotest": _parse_gotest,

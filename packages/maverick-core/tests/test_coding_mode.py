@@ -59,6 +59,70 @@ class TestExtractUnifiedDiff:
         assert extract_unified_diff("") is None
         assert extract_unified_diff(None) is None
 
+    def test_final_marker_anchored_at_line_start(self):
+        """Wave 12: `FINAL:` is line-anchored. A mid-prose "FINAL:"
+        must NOT trigger truncation; only line-start does."""
+        text = (
+            "I'll send the FINAL: response below.\n"
+            "FINAL:\n"
+            "--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-old\n+new\n"
+        )
+        out = extract_unified_diff(text)
+        assert out is not None
+        assert "FINAL:" not in out
+        assert "I'll send" not in out
+        assert "+new" in out
+
+    def test_last_final_marker_wins(self):
+        """Wave 12: multiple FINAL: markers at line start — the LAST
+        is canonical (the model is told to END its turn with FINAL:)."""
+        text = (
+            "FINAL:\n"
+            "scratch that, revising...\n"
+            "FINAL:\n"
+            "--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-old\n+correct\n"
+        )
+        out = extract_unified_diff(text)
+        assert out is not None
+        assert "scratch that" not in out
+        assert "+correct" in out
+
+    def test_internal_markdown_fence_preserved(self):
+        """Wave 12: diffs that edit Markdown files contain triple-
+        backtick context lines (e.g. ` \\`\\`\\`python`). The pre-Wave-12
+        fence stripper nuked every line beginning with ``` and silently
+        corrupted these patches."""
+        text = (
+            "FINAL:\n"
+            "```diff\n"
+            "--- a/README.md\n"
+            "+++ b/README.md\n"
+            "@@ -1,5 +1,5 @@\n"
+            " # Title\n"
+            " \n"
+            " ```python\n"
+            "-old_call()\n"
+            "+new_call()\n"
+            " ```\n"
+            "```\n"
+        )
+        out = extract_unified_diff(text)
+        assert out is not None
+        # Internal fences must survive — they're part of the patch body
+        # (the leading space marks them as context lines in the unified
+        # diff, distinguishing them from the outer ```diff envelope).
+        assert " ```python" in out, (
+            "internal context-line fence was incorrectly stripped"
+        )
+        assert " ```\n" in out, (
+            "internal closing-fence context line was incorrectly stripped"
+        )
+        # The OUTER closing fence (pure ``` with no leading whitespace)
+        # must NOT appear as its own line.
+        assert "```" not in out.split("\n"), (
+            "outer ``` fence still present as a standalone line"
+        )
+
 
 class TestValidatePatch:
     def _init_git_repo(self, tmp_path: Path) -> Path:
