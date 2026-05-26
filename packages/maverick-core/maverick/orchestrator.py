@@ -282,14 +282,14 @@ async def run_goal_best_of_n(
             conversation_id=conversation_id,
         )
 
-    # Wave 10 (D9): per-attempt budget MUST stay below parent cap so
-    # one expensive attempt cannot blow the harness-set dollar/wall
-    # limits. The prior floors (1.50 / 1200s) made per-attempt > parent
-    # for the typical harness Budget(max_dollars=3.0, max_wall_seconds=600).
-    # We split the parent cap evenly across N, with a sensible floor only
-    # for one-shot best-of-N=1 (which short-circuits to run_goal above).
-    per_attempt_dollars = budget.max_dollars / n
-    per_attempt_wall = budget.max_wall_seconds / n
+    # Wave 12 (council F10c): per-attempt budget is RECOMPUTED each
+    # iteration from REMAINING parent budget / REMAINING attempts.
+    # When an early attempt crashes (spending only a fraction of its
+    # quota) or finishes cheaply, the leftover redistributes to
+    # remaining attempts instead of being wasted. The prior code
+    # computed `budget.max_dollars / n` once up-front, so a crashed
+    # attempt 0 left attempts 1..N-1 still capped at the original 1/N
+    # — the (N-1)/N of unspent budget was lost.
     candidates: list[Candidate] = []
 
     # Wave 11: heterogeneous best-of-N. Inter-model diversity beats
@@ -321,6 +321,18 @@ async def run_goal_best_of_n(
         if budget.dollars >= budget.max_dollars * 0.95:
             log.info("best-of-N early break: parent budget 95%% spent")
             break
+
+        # Wave 12 (F10c): redistribute remaining budget across remaining
+        # attempts. After crashes / early-cheap completions, the surviving
+        # attempts get bigger caps instead of leaving budget on the table.
+        remaining_attempts = len(ladder) - i
+        remaining_dollars = max(0.0, budget.max_dollars - budget.dollars)
+        remaining_wall = max(0.0, budget.max_wall_seconds - budget.elapsed())
+        if remaining_dollars <= 0 or remaining_wall <= 0:
+            log.info("best-of-N early break: no budget left for attempt %d", i)
+            break
+        per_attempt_dollars = remaining_dollars / remaining_attempts
+        per_attempt_wall = remaining_wall / remaining_attempts
 
         from .budget import Budget as _Budget
         attempt_budget = _Budget(
