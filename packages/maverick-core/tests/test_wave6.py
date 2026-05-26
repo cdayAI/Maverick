@@ -147,6 +147,48 @@ class TestMCPPinSha256:
         spec = MCPServerSpec(name="x", command="any-command-here")
         _verify_command_pin(spec)  # no raise
 
+    def test_pin_windows_backslash_path_resolves_directly(
+        self, tmp_path, monkeypatch,
+    ):
+        """Wave 11: Windows absolute paths like 'C:\\foo\\mcp-tool' must
+        be recognised as paths (not bare command names) so we don't
+        fruitlessly send them through `shutil.which`."""
+        import hashlib
+        from maverick.mcp_client import MCPServerSpec, _verify_command_pin
+        # Real file at a real path; verify the hash matches via the
+        # "path detected" code path. Force `shutil.which` to never
+        # succeed -- if our heuristic falls through to it on a path-
+        # shaped command, we'd see the same failure Cstep saw on
+        # Windows.
+        exe = tmp_path / "mcp-tool"
+        exe.write_bytes(b"#!/bin/sh\necho ok\n")
+        sha = hashlib.sha256(exe.read_bytes()).hexdigest()
+        monkeypatch.setattr("shutil.which", lambda _: None)
+        # Use a backslash separator anywhere in the command to simulate
+        # a Windows path on a Linux test runner.
+        backslashy = str(exe).replace("/", "\\")
+        spec = MCPServerSpec(name="x", command=backslashy, pin_sha256=sha)
+        # The heuristic detects "\\" -> treats as path -> uses it
+        # directly. We then need the file to actually exist; since the
+        # original tmp_path uses forward slashes, write the file again
+        # at the backslash-form path... which on Linux is literally a
+        # different filename. So we simulate by patching Path.exists.
+        from pathlib import Path
+        monkeypatch.setattr(
+            Path, "exists",
+            lambda self: True if "\\" in str(self) else self.is_file(),
+        )
+        # And patch open() to return the real file's bytes when asked
+        # for the backslash-form path.
+        real_open = open
+
+        def fake_open(p, *a, **kw):
+            if "\\" in str(p):
+                return real_open(exe, *a, **kw)
+            return real_open(p, *a, **kw)
+        monkeypatch.setattr("builtins.open", fake_open)
+        _verify_command_pin(spec)  # no raise -> heuristic worked
+
 
 # ---------- EU AI Act Article 50 disclosure ----------
 
@@ -276,14 +318,19 @@ class TestHooks:
 
     @pytest.mark.asyncio
     async def test_shell_hook_blocks_on_nonzero_exit(self, tmp_path):
-        """A shell command exiting non-zero blocks PreToolUse."""
+        """A shell command exiting non-zero blocks PreToolUse.
+
+        Wave 11: portable across Unix + Windows. Uses a python -c
+        one-liner instead of a #!/bin/sh script (Windows has no
+        /bin/sh interpreter).
+        """
+        import sys
         from maverick import hooks
         from maverick.hooks import HookContext, HookEvent
-        script = tmp_path / "blocker.sh"
-        script.write_text("#!/bin/sh\nexit 1\n")
-        script.chmod(0o755)
+        py = sys.executable
         hooks.register(
-            HookEvent.PRE_TOOL_USE, str(script),
+            HookEvent.PRE_TOOL_USE,
+            f'"{py}" -c "import sys; sys.exit(1)"',
             matcher="dangerous_*",
         )
         allowed = await hooks.dispatch(HookContext(
