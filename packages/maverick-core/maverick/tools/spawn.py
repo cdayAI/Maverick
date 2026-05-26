@@ -4,16 +4,26 @@
 children in parallel via asyncio.gather and returns their findings.
 
 Both respect the swarm's max_depth and the shared budget.
+
+v0.2 (council AI-safety review): added a fan-out anomaly cap. An agent
+asking to spawn 50 siblings burns budget before refusal triggers.
+``MAVERICK_MAX_SWARM_FANOUT`` (default 8) caps the per-call branching
+factor. Excess agents are dropped with a warning posted to the
+blackboard.
 """
 from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING
 
+from .._envparse import env_int
 from . import Tool
 
 if TYPE_CHECKING:
     from ..agent import Agent
+
+
+MAX_SWARM_FANOUT = env_int("MAVERICK_MAX_SWARM_FANOUT", 8)
 
 
 def spawn_subagent_tool(parent: "Agent") -> Tool:
@@ -69,6 +79,17 @@ def spawn_swarm_tool(parent: "Agent") -> Tool:
         if parent.depth + 1 > parent.ctx.max_depth:
             return f"ERROR: max depth {parent.ctx.max_depth} reached"
 
+        # Cap per-call fan-out: an agent asking for 50 siblings on a
+        # trivial sub-goal is almost always confused / under attack, and
+        # the budget shouldn't bear the cost of refusing per-spawn.
+        if len(agents_spec) > MAX_SWARM_FANOUT:
+            parent.ctx.blackboard.post(
+                parent.name, "error",
+                f"swarm fan-out capped: requested {len(agents_spec)}, "
+                f"max {MAX_SWARM_FANOUT}",
+            )
+            agents_spec = agents_spec[:MAX_SWARM_FANOUT]
+
         children = [
             Agent(
                 ctx=parent.ctx,
@@ -88,6 +109,28 @@ def spawn_swarm_tool(parent: "Agent") -> Tool:
         )
 
         results = await asyncio.gather(*(c.run() for c in children), return_exceptions=True)
+
+        # Karpathy SOTA-review item: measure disagreement across the
+        # children's FINAL answers and record it on the blackboard so
+        # the orchestrator can decide whether to spend more compute
+        # (re-spawn with adaptive_fanout) or trust the consensus.
+        finals = [
+            res.final for res in results
+            if not isinstance(res, Exception) and res.final
+        ]
+        if len(finals) > 1:
+            from ..disagreement import answer_entropy
+            entropy = answer_entropy(finals)
+            parent.ctx.blackboard.post(
+                parent.name, "verify",
+                f"swarm disagreement entropy={entropy:.3f} across {len(finals)} answers",
+            )
+            # Stamp on the context so the orchestrator's verify branch
+            # and the donation selector can read it.
+            try:
+                parent.ctx.last_disagreement = entropy  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
         parts: list[str] = []
         for child, res in zip(children, results):

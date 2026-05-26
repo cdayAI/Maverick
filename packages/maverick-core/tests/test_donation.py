@@ -1,0 +1,143 @@
+"""Opt-in trajectory donation pipeline."""
+from __future__ import annotations
+
+import json
+
+
+from maverick import donation
+from maverick.donation import (
+    TrajectoryRecord,
+    clear_outbox,
+    hash_brief,
+    list_pending,
+    should_donate,
+    write_record,
+)
+
+
+class TestSelectionGate:
+    def test_only_success_donated(self):
+        assert should_donate("failure", 0.9, 0.9) is False
+        assert should_donate("blocked", 0.9, 0.9) is False
+        assert should_donate("interrupted", 0.9, 0.9) is False
+
+    def test_low_confidence_rejected(self):
+        assert should_donate("success", 0.5, 0.9) is False
+
+    def test_low_disagreement_rejected(self):
+        """We only want trajectories where the swarm earned its keep
+        (high disagreement = the swarm explored multiple branches)."""
+        assert should_donate("success", 0.9, 0.2) is False
+
+    def test_gold_row_accepted(self):
+        assert should_donate("success", 0.85, 0.75) is True
+
+
+class TestWriteRecord:
+    def test_no_donation_when_disabled(self, tmp_path, monkeypatch):
+        """Default: donate_trajectories=false → never write."""
+        monkeypatch.setattr(donation, "_donations_enabled", lambda: False)
+        rec = TrajectoryRecord(
+            outcome="success", verifier_confidence=0.9,
+            disagreement_entropy=0.9,
+        )
+        path = write_record(rec, outbox=tmp_path)
+        assert path is None
+        assert list(tmp_path.glob("*.json")) == []
+
+    def test_donation_writes_when_enabled(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(donation, "_donations_enabled", lambda: True)
+        monkeypatch.setattr(donation, "_text_donations_enabled", lambda: False)
+        rec = TrajectoryRecord(
+            task_brief_hash="abc123",
+            task_brief_text="plan a trip to Lisbon",
+            outcome="success",
+            verifier_confidence=0.9,
+            disagreement_entropy=0.7,
+            reward=1.0,
+        )
+        path = write_record(rec, outbox=tmp_path)
+        assert path is not None
+        assert path.exists()
+        payload = json.loads(path.read_text())
+        # Text is redacted because donate_text=False.
+        assert payload["task_brief_text"] is None
+        # Metadata is preserved.
+        assert payload["task_brief_hash"] == "abc123"
+        assert payload["outcome"] == "success"
+
+    def test_text_included_when_double_opt_in(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(donation, "_donations_enabled", lambda: True)
+        monkeypatch.setattr(donation, "_text_donations_enabled", lambda: True)
+        rec = TrajectoryRecord(
+            task_brief_hash="abc",
+            task_brief_text="plan a trip to Lisbon",
+            outcome="success",
+            verifier_confidence=0.9,
+            disagreement_entropy=0.7,
+        )
+        path = write_record(rec, outbox=tmp_path)
+        assert path is not None
+        payload = json.loads(path.read_text())
+        assert payload["task_brief_text"] == "plan a trip to Lisbon"
+
+    def test_secret_scrubbing_runs_on_text(self, tmp_path, monkeypatch):
+        """If text donation is on, the scrubber still strips API keys."""
+        monkeypatch.setattr(donation, "_donations_enabled", lambda: True)
+        monkeypatch.setattr(donation, "_text_donations_enabled", lambda: True)
+        rec = TrajectoryRecord(
+            task_brief_hash="abc",
+            task_brief_text="my key is sk-ant-api01-secrettokenvaluexyz1234567890abc",
+            outcome="success",
+            verifier_confidence=0.9,
+            disagreement_entropy=0.7,
+        )
+        path = write_record(rec, outbox=tmp_path)
+        payload = json.loads(path.read_text())
+        assert "sk-ant-api01-secrettokenvaluexyz1234567890abc" not in payload["task_brief_text"]
+        assert "[REDACTED:anthropic_key]" in payload["task_brief_text"]
+
+    def test_selection_gate_blocks_low_quality(self, tmp_path, monkeypatch):
+        """Even with donation enabled, low-disagreement runs don't write."""
+        monkeypatch.setattr(donation, "_donations_enabled", lambda: True)
+        rec = TrajectoryRecord(
+            outcome="success",
+            verifier_confidence=0.9,
+            disagreement_entropy=0.1,  # below threshold
+        )
+        path = write_record(rec, outbox=tmp_path)
+        assert path is None
+
+
+class TestHashBrief:
+    def test_same_brief_same_hash(self):
+        assert hash_brief("foo") == hash_brief("foo")
+
+    def test_whitespace_invariant(self):
+        assert hash_brief("foo") == hash_brief("  foo  ")
+
+    def test_different_briefs_different_hashes(self):
+        assert hash_brief("a") != hash_brief("b")
+
+    def test_short_stable_id(self):
+        h = hash_brief("anything")
+        assert len(h) == 16
+        assert all(c in "0123456789abcdef" for c in h)
+
+
+class TestOutboxHelpers:
+    def test_list_pending_empty(self, tmp_path):
+        assert list_pending(tmp_path) == []
+
+    def test_list_pending_returns_sorted(self, tmp_path):
+        (tmp_path / "b.json").write_text("{}")
+        (tmp_path / "a.json").write_text("{}")
+        out = list_pending(tmp_path)
+        assert [p.name for p in out] == ["a.json", "b.json"]
+
+    def test_clear_outbox(self, tmp_path):
+        (tmp_path / "x.json").write_text("{}")
+        (tmp_path / "y.json").write_text("{}")
+        n = clear_outbox(tmp_path)
+        assert n == 2
+        assert list(tmp_path.glob("*.json")) == []

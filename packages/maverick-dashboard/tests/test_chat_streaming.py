@@ -16,7 +16,9 @@ class TestBearerAuth:
         os.environ.pop("MAVERICK_DASHBOARD_TOKEN", None)
 
     def test_no_token_allows_access(self):
-        resp = client.get("/healthz")
+        # /livez is the cheap always-200 liveness probe; healthz can be
+        # 503 if no LLM key is set, which depends on the test env.
+        resp = client.get("/livez")
         assert resp.status_code == 200
 
     def test_token_blocks_missing_auth(self, monkeypatch):
@@ -39,8 +41,13 @@ class TestBearerAuth:
         assert resp.status_code == 200
 
     def test_healthz_always_open(self, monkeypatch):
+        """healthz/livez must be reachable without auth even when token is set."""
         monkeypatch.setenv("MAVERICK_DASHBOARD_TOKEN", "s3cr3t")
+        # 200 or 503 -- the point is auth-exemption, not the result.
         resp = client.get("/healthz")
+        assert resp.status_code in (200, 503)
+        # /livez is the always-200 cheap probe.
+        resp = client.get("/livez")
         assert resp.status_code == 200
 
     def test_wrong_token_rejected(self, monkeypatch):

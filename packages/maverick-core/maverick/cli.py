@@ -249,9 +249,67 @@ def start(
         max_wall_seconds=max_wall_seconds or 3600.0,
     )
     sandbox = build_sandbox(workdir=workdir, backend=sandbox_backend)
-    result = run_goal_sync(llm, world, bud, goal_id, sandbox=sandbox, max_depth=max_depth)
+
+    # Council UX finding: `maverick start "..."` used to look hung
+    # between "goal created" and the final printout. A background poller
+    # streams goal_events to stderr so the user sees the swarm thinking
+    # in real time. Non-tty output (e.g. piped to a file) skips the
+    # poller so logs aren't littered with progress lines.
+    import threading
+    stop_poll = threading.Event()
+    if not click.get_text_stream("stderr").isatty() or os.environ.get("MAVERICK_NO_PROGRESS"):
+        poller = None
+    else:
+        poller = threading.Thread(
+            target=_stream_progress, args=(world.path, goal_id, stop_poll),
+            daemon=True,
+        )
+        poller.start()
+
+    try:
+        result = run_goal_sync(llm, world, bud, goal_id, sandbox=sandbox, max_depth=max_depth)
+    finally:
+        stop_poll.set()
+        if poller is not None:
+            poller.join(timeout=2.0)
     click.echo("")
     click.echo(result)
+
+
+def _stream_progress(db_path, goal_id: int, stop) -> None:
+    """Poll goal_events and print one line per new entry to stderr.
+
+    Uses a fresh WorldModel so we don't share the connection with the
+    main thread (SQLite WAL handles concurrent reads + one writer).
+    """
+    try:
+        wm = WorldModel(db_path)
+    except Exception:
+        return
+    seen = 0
+    labels = {
+        "plan": "thinking", "finding": "answer", "observation": "result",
+        "error": "error", "verify": "checking", "artifact": "produced",
+    }
+    while not stop.is_set():
+        try:
+            evs = wm.goal_events(goal_id, since_id=seen, limit=200)
+            for e in evs:
+                label = labels.get(e.kind, e.kind)
+                # Strip the hex suffix from agent names for readability.
+                agent = e.agent.split("-")[0] if e.agent else "agent"
+                content = e.content[:200]
+                click.echo(
+                    click.style(f"  [{agent}] ", fg="bright_black")
+                    + click.style(f"{label}: ", fg="cyan")
+                    + content,
+                    err=True,
+                )
+                seen = e.id
+        except Exception:
+            pass
+        if stop.wait(timeout=1.5):
+            return
 
 
 @main.command()
@@ -550,6 +608,280 @@ def skill_info(name: str) -> None:
             return
     click.echo(f"no skill named {name!r}", err=True)
     sys.exit(2)
+
+
+@main.command()
+@click.option("--channel", required=True, help="Channel name (e.g. telegram, sms).")
+@click.option("--user", required=True, help="The channel user_id to erase.")
+@click.option("--yes", is_flag=True, help="Skip confirmation.")
+@click.pass_context
+def erase(ctx, channel: str, user: str, yes: bool) -> None:
+    """GDPR Art. 17 right-to-erasure: delete everything Maverick knows
+    about a given (channel, user_id) — conversations, turns, attachments
+    on disk, and the conversation row itself."""
+    world = WorldModel(ctx.obj["db"])
+    convs = [
+        c for c in world.list_conversations(channel)
+        if c.user_id == user
+    ]
+    if not convs:
+        click.echo(f"no conversation found for {channel}:{user}")
+        return
+    if not yes:
+        click.echo(f"This will erase {len(convs)} conversation(s) for {channel}:{user}.")
+        click.confirm("Proceed?", abort=True)
+
+    # Council security finding: previous version left goals, messages,
+    # episodes, questions, goal_events, attachments-rows, and
+    # processed_messages intact -- a documented Art. 17 violation. Full
+    # cascade now wipes every row referencing goals tied to this user's
+    # conversations, in one transaction so a partial failure rolls back.
+    # Attachment FILE unlinks happen AFTER the DB transaction commits so
+    # we don't leave dangling rows pointing at deleted paths if the DB
+    # write fails.
+
+    # Step 1: gather every goal_id referenced by any turn in any of
+    # these conversations. We use ALL turns (not just recent), so a
+    # conversation with >10k turns doesn't leave orphan attachments.
+    conv_ids = [c.id for c in convs]
+    placeholders = ",".join("?" * len(conv_ids))
+    goal_ids: set[int] = set()
+    for row in world.conn.execute(
+        f"SELECT DISTINCT goal_id FROM turns "
+        f"WHERE conversation_id IN ({placeholders}) AND goal_id IS NOT NULL",
+        conv_ids,
+    ).fetchall():
+        goal_ids.add(row[0])
+
+    # Step 2: collect attachment paths to unlink (after commit).
+    attachment_paths: list[str] = []
+    for gid in goal_ids:
+        for a in world.list_attachments(gid):
+            attachment_paths.append(a.path)
+
+    # Step 3: cascade DELETEs in a single transaction.
+    removed_turns = 0
+    try:
+        world.conn.execute("BEGIN IMMEDIATE")
+        cur = world.conn.execute(
+            f"DELETE FROM turns WHERE conversation_id IN ({placeholders})",
+            conv_ids,
+        )
+        removed_turns = cur.rowcount
+
+        if goal_ids:
+            gph = ",".join("?" * len(goal_ids))
+            gids = list(goal_ids)
+            # Order matters: children before parents (FK now enforced).
+            world.conn.execute(f"DELETE FROM goal_events WHERE goal_id IN ({gph})", gids)
+            world.conn.execute(f"DELETE FROM messages    WHERE goal_id IN ({gph})", gids)
+            world.conn.execute(f"DELETE FROM questions   WHERE goal_id IN ({gph})", gids)
+            world.conn.execute(f"DELETE FROM attachments WHERE goal_id IN ({gph})", gids)
+            world.conn.execute(f"DELETE FROM episodes    WHERE goal_id IN ({gph})", gids)
+            world.conn.execute(
+                f"DELETE FROM processed_messages WHERE goal_id IN ({gph})", gids,
+            )
+            world.conn.execute(f"DELETE FROM goals WHERE id IN ({gph})", gids)
+
+        world.conn.execute(
+            f"DELETE FROM conversations WHERE id IN ({placeholders})", conv_ids,
+        )
+        world.conn.commit()
+    except Exception:
+        world.conn.rollback()
+        raise
+
+    # Step 4: now that DB rows are gone, unlink files. A failure here
+    # only leaks file bytes (no row points at them) -- the metadata is
+    # already erased, which is the part that matters legally.
+    removed_attachments = 0
+    for p in attachment_paths:
+        try:
+            Path(p).unlink(missing_ok=True)
+            removed_attachments += 1
+        except OSError:
+            pass
+
+    click.echo(
+        f"erased {len(convs)} conversation(s), {removed_turns} turn(s), "
+        f"{len(goal_ids)} goal(s) and all linked rows, "
+        f"{removed_attachments} attachment file(s)"
+    )
+
+
+@main.command()
+@click.option("--channel", required=True, help="Channel name.")
+@click.option("--user", required=True, help="The channel user_id to export.")
+@click.option("--output", "-o", type=click.Path(), default=None,
+              help="Write JSON to file (default stdout).")
+@click.pass_context
+def export(ctx, channel: str, user: str, output) -> None:
+    """GDPR Art. 15 right-of-access: dump everything Maverick knows about
+    a given (channel, user_id) as JSON."""
+    import json
+    world = WorldModel(ctx.obj["db"])
+    convs = [
+        c for c in world.list_conversations(channel)
+        if c.user_id == user
+    ]
+    data = {
+        "channel": channel,
+        "user_id": user,
+        "conversations": [],
+    }
+    for c in convs:
+        turns = world.recent_turns(c.id, limit=10_000)
+        conv_data = {
+            "id": c.id,
+            "created_at": c.created_at,
+            "last_seen": c.last_seen,
+            "turns": [
+                {"role": t.role, "content": t.content, "ts": t.ts,
+                 "goal_id": t.goal_id}
+                for t in turns
+            ],
+            "attachments": [],
+        }
+        for t in turns:
+            if t.goal_id is None:
+                continue
+            for a in world.list_attachments(t.goal_id):
+                conv_data["attachments"].append({
+                    "filename": a.filename, "mime": a.mime,
+                    "size_bytes": a.size_bytes, "sha256": a.sha256,
+                    "goal_id": a.goal_id,
+                })
+        data["conversations"].append(conv_data)
+
+    payload = json.dumps(data, indent=2, default=str)
+    if output:
+        Path(output).write_text(payload)
+        click.echo(f"exported to {output}")
+    else:
+        click.echo(payload)
+
+
+@main.command()
+@click.option("--days", default=90, type=int,
+              help="Delete conversations idle longer than N days.")
+@click.option("--events-days", default=30, type=int,
+              help="Delete goal_events older than N days.")
+@click.option("--yes", is_flag=True)
+@click.pass_context
+def gc(ctx, days: int, events_days: int, yes: bool) -> None:
+    """Garbage-collect old conversations and goal_events.
+
+    Tier 1 council finding: retention was "forever" by default; this
+    command (plus the systemd timer in deploy/vps/) enforces a policy.
+    """
+    world = WorldModel(ctx.obj["db"])
+    if not yes:
+        click.echo(
+            f"This will prune conversations idle > {days}d and "
+            f"goal_events older than {events_days}d."
+        )
+        click.confirm("Proceed?", abort=True)
+    convs = world.prune_conversations(idle_for_seconds=days * 24 * 3600)
+    events = world.prune_goal_events(older_than_seconds=events_days * 24 * 3600)
+    # Twilio dedup rows accumulate one-per-webhook forever; reap after
+    # 30 days (the retry window is minutes so this is generous).
+    dedup = world.prune_processed_messages(older_than_seconds=30 * 24 * 3600)
+    click.echo(
+        f"pruned {convs} conversation(s), {events} goal_event row(s), "
+        f"{dedup} processed-message row(s)"
+    )
+
+
+@main.group("donate")
+def donate() -> None:
+    """Opt-in trajectory donation. Default OFF.
+
+    Enable in ~/.maverick/config.toml:
+      [telemetry]
+      donate_trajectories = true
+      donate_text = false  # set true to include task text (off by default)
+    """
+
+
+@donate.command("status")
+def donate_status() -> None:
+    """Show pending records in the outbox (NOT yet uploaded)."""
+    from .donation import _donations_enabled, _text_donations_enabled, list_pending
+    click.echo(f"donate_trajectories: {_donations_enabled()}")
+    click.echo(f"donate_text:         {_text_donations_enabled()}")
+    pending = list_pending()
+    if not pending:
+        click.echo("outbox: empty")
+        return
+    click.echo(f"outbox: {len(pending)} record(s) pending")
+    for p in pending[:10]:
+        click.echo(f"  {p.name}  ({p.stat().st_size} bytes)")
+
+
+@donate.command("clear")
+@click.option("--yes", is_flag=True)
+def donate_clear(yes: bool) -> None:
+    """Delete every pending donation record without uploading."""
+    from .donation import clear_outbox, list_pending
+    pending = list_pending()
+    if not pending:
+        click.echo("outbox: empty (nothing to clear)")
+        return
+    if not yes:
+        click.echo(f"This will delete {len(pending)} pending record(s).")
+        click.confirm("Proceed?", abort=True)
+    n = clear_outbox()
+    click.echo(f"cleared {n} record(s)")
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--run", is_flag=True, help="Spawn a goal per match (default: print only).")
+@click.option("--max-dollars", default=2.0, type=float)
+@click.pass_context
+def watch(ctx, path: str, run: bool, max_dollars: float) -> None:
+    """Scan a file or directory for `# AI: <task>` markers and (optionally)
+    run each as a goal. One-shot scan; for a long-running watcher use
+    `entr` / `watchman` / `fswatch` and pipe to this command."""
+    from .watch_mode import scan_dir, scan_file
+    p = Path(path)
+    matches = scan_file(p) if p.is_file() else scan_dir(p)
+
+    count = 0
+    for m in matches:
+        count += 1
+        click.echo(
+            click.style(f"[{m.path}:{m.line_number}] ", fg="bright_black")
+            + click.style(f"AI{m.marker}", fg="cyan")
+            + f" {m.text}"
+        )
+        if m.follow_lines:
+            for fl in m.follow_lines[:4]:
+                click.echo(f"    {fl}")
+
+        if run:
+            if not os.environ.get("ANTHROPIC_API_KEY"):
+                click.echo("ERROR: ANTHROPIC_API_KEY not set; skipping --run.", err=True)
+                continue
+            world = WorldModel(ctx.obj["db"])
+            llm = LLM(model=ctx.obj["model"])
+            sandbox = build_sandbox(workdir=str(p.parent if p.is_file() else p))
+            title = (m.text or m.follow_lines[0] if m.follow_lines else "").strip()[:80]
+            goal_id = world.create_goal(title or "watch-mode goal", m.to_goal())
+            click.echo(click.style(f"  -> goal #{goal_id}", fg="bright_black"))
+            try:
+                result = run_goal_sync(
+                    llm, world, Budget(max_dollars=max_dollars),
+                    goal_id, sandbox=sandbox, max_depth=2,
+                )
+                click.echo(result)
+            except Exception as e:
+                click.echo(click.style(f"  goal #{goal_id} failed: {e}", fg="red"))
+
+    if count == 0:
+        click.echo(f"no AI markers found in {path}")
+    else:
+        click.echo(f"\nfound {count} marker(s)")
 
 
 if __name__ == "__main__":

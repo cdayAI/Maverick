@@ -16,10 +16,18 @@ import anthropic
 
 from ..budget import Budget
 from ..llm import LLMResponse, ToolCall
+from ..retry import async_retry, sync_retry
 
 
 def _ephemeral(obj: dict) -> dict:
-    return {**obj, "cache_control": {"type": "ephemeral"}}
+    # Anthropic regressed the default cache TTL from 1h to 5m in early
+    # March 2026 (issue #46829 on anthropics/claude-code). For agent
+    # workloads -- where system prompts and tool catalogs are reused
+    # across many turns inside a single goal -- 5m is too short and
+    # forces ~20% extra spend on re-creates. Explicitly set 1h on every
+    # cache control block so we get the discount we expect.
+    ttl = os.environ.get("MAVERICK_ANTHROPIC_CACHE_TTL", "1h")
+    return {**obj, "cache_control": {"type": "ephemeral", "ttl": ttl}}
 
 
 def _cached_system(text: str) -> list[dict]:
@@ -64,7 +72,12 @@ class AnthropicClient:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
         return kwargs
 
-    def _parse_response(self, resp: Any, budget: Optional[Budget]) -> LLMResponse:
+    def _parse_response(
+        self,
+        resp: Any,
+        budget: Optional[Budget],
+        model: Optional[str] = None,
+    ) -> LLMResponse:
         text_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
@@ -82,7 +95,14 @@ class AnthropicClient:
         cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
 
         if budget is not None:
-            budget.record_tokens(usage.input_tokens, usage.output_tokens)
+            # ``usage.input_tokens`` is non-cached input only. Cache reads
+            # and writes are billed separately at different rates.
+            budget.record_tokens(
+                usage.input_tokens, usage.output_tokens,
+                model=model,
+                cache_read_tok=cache_read,
+                cache_write_tok=cache_creation,
+            )
 
         return LLMResponse(
             text="\n".join(text_parts).strip(),
@@ -107,13 +127,20 @@ class AnthropicClient:
     ) -> LLMResponse:
         kwargs = self._build_request(system, messages, tools, max_tokens, thinking_budget, model)
         if on_delta is None:
-            resp = self.client.messages.create(**kwargs)
-            return self._parse_response(resp, budget)
+            resp = sync_retry(lambda: self.client.messages.create(**kwargs))
+            return self._parse_response(resp, budget, model=kwargs.get("model"))
+
+        # Council finding: wrapping the streaming path in sync_retry
+        # would replay every on_delta callback after a mid-stream
+        # failure, so consumers see duplicate prefixes. Streaming is
+        # called from interactive paths (CLI --stream, dashboard chat);
+        # surface the error directly and let the caller retry the
+        # higher-level request without partial output.
         with self.client.messages.stream(**kwargs) as stream:
             for event in stream.text_stream:
                 on_delta(event)
             final = stream.get_final_message()
-        return self._parse_response(final, budget)
+        return self._parse_response(final, budget, model=kwargs.get("model"))
 
     async def complete_async(
         self,
@@ -126,5 +153,5 @@ class AnthropicClient:
         model: Optional[str] = None,
     ) -> LLMResponse:
         kwargs = self._build_request(system, messages, tools, max_tokens, thinking_budget, model)
-        resp = await self.aclient.messages.create(**kwargs)
-        return self._parse_response(resp, budget)
+        resp = await async_retry(lambda: self.aclient.messages.create(**kwargs))
+        return self._parse_response(resp, budget, model=kwargs.get("model"))

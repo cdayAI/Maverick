@@ -19,7 +19,7 @@ from typing import Optional
 
 
 DEFAULT_DB = Path.home() / ".maverick" / "world.db"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 SCHEMA = """
@@ -133,6 +133,18 @@ CREATE TABLE IF NOT EXISTS attachments (
 
 CREATE INDEX IF NOT EXISTS idx_attachments_goal_id ON attachments(goal_id);
 
+-- v0.2 channel idempotency: Twilio / iMessage / other channels retry
+-- webhooks on non-2xx (or slow handlers). Without a dedup key the same
+-- inbound message triggers N goal runs and N API spends.
+CREATE TABLE IF NOT EXISTS processed_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    goal_id INTEGER REFERENCES goals(id),
+    seen_at REAL NOT NULL,
+    UNIQUE(channel, external_id)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content, content='messages', content_rowid='id'
 );
@@ -153,6 +165,7 @@ MIGRATIONS: dict[int, list[str]] = {
     3: [],  # goal_events table is in SCHEMA (idempotent CREATE)
     4: [],  # conversations/turns tables are in SCHEMA (idempotent CREATE)
     5: [],  # attachments table is in SCHEMA (idempotent CREATE)
+    6: [],  # processed_messages table is in SCHEMA (idempotent CREATE)
 }
 
 
@@ -248,17 +261,72 @@ class WorldModel:
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA synchronous = NORMAL")
         self.conn.execute("PRAGMA busy_timeout = 5000")
+        # SQLite default is foreign_keys=OFF; without this, every
+        # `REFERENCES goals(id)` clause is decorative and a delete can
+        # orphan turns/attachments/episodes silently.
+        self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
         self._init_schema_version()
         self._apply_migrations()
         self.conn.commit()
 
+    def reclaim_orphan_goals(self, *, max_age_seconds: float = 60.0) -> int:
+        """Mark goals stuck in 'active' or 'pending' as 'blocked'.
+
+        Called on startup to recover from SIGKILL / OOM / crash mid-run.
+        Without this, a process death between create_goal() and
+        set_goal_status('done'/'blocked') leaves the row 'active' forever
+        and `active_goal()` returns a ghost.
+
+        Council security/integrity finding: previous default was 0,
+        which reclaimed every active row -- including goals running in
+        a sibling process (dashboard restarting while `maverick serve`
+        is mid-goal would flip the live goal to 'blocked'). Default now
+        is 60 seconds: only reclaim goals whose `updated_at` is at
+        least a minute stale. Live goals re-touch updated_at via
+        set_goal_status('active') and via the runner's status writes,
+        so any goal currently being driven won't qualify. Multi-process
+        deployments with very slow turns can raise this via
+        ``MAVERICK_ORPHAN_RECLAIM_SECONDS``.
+
+        Returns rows reclaimed.
+        """
+        import os as _os
+        env_override = _os.environ.get("MAVERICK_ORPHAN_RECLAIM_SECONDS")
+        if env_override is not None:
+            try:
+                max_age_seconds = max(0.0, float(env_override))
+            except ValueError:
+                pass
+        cutoff = time.time() - max_age_seconds
+        cur = self.conn.execute(
+            "UPDATE goals SET status = 'blocked', "
+            "result = COALESCE(result, '') || ' [process restarted mid-run]', "
+            "updated_at = ? "
+            "WHERE status IN ('active', 'pending') AND updated_at < ?",
+            (time.time(), cutoff),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
     def _init_schema_version(self) -> None:
+        # Council finding: two processes opening a brand-new world.db
+        # concurrently both saw 'no row' and both INSERTed with the same
+        # PRIMARY KEY, crashing one of them on IntegrityError. We now
+        # check-then-insert and swallow the IntegrityError if a
+        # concurrent process won the race. (Don't use INSERT OR IGNORE
+        # with a hardcoded VALUES(6) on an existing v1 DB -- it would
+        # create a second row at version=6 alongside the existing v1.)
+        import sqlite3 as _sqlite3
         row = self.conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
-            self.conn.execute(
-                "INSERT INTO schema_version(version) VALUES(?)", (SCHEMA_VERSION,)
-            )
+            try:
+                self.conn.execute(
+                    "INSERT INTO schema_version(version) VALUES(?)", (SCHEMA_VERSION,)
+                )
+            except _sqlite3.IntegrityError:
+                # Another process beat us to it; their row is fine.
+                pass
 
     def _apply_migrations(self) -> None:
         current = self.conn.execute(
@@ -511,6 +579,79 @@ class WorldModel:
                 "SELECT * FROM conversations ORDER BY last_seen DESC"
             ).fetchall()
         return [Conversation(**dict(r)) for r in rows]
+
+    # ----- channel dedup -----
+    def mark_message_processed(
+        self,
+        channel: str,
+        external_id: str,
+        goal_id: Optional[int] = None,
+    ) -> bool:
+        """Record an inbound message as processed; idempotent.
+
+        Returns True on first-write (the caller should run the goal),
+        False on duplicate (the caller should return 200 without
+        re-running). Twilio retries within 15s if the webhook is slow
+        or non-2xx; the same MessageSid arriving twice was producing
+        N goals and N spends before this.
+        """
+        try:
+            self.conn.execute(
+                "INSERT INTO processed_messages(channel, external_id, goal_id, seen_at) "
+                "VALUES(?, ?, ?, ?)",
+                (channel, external_id, goal_id, time.time()),
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def lookup_processed_message(
+        self,
+        channel: str,
+        external_id: str,
+    ) -> Optional[int]:
+        """Return the goal_id for an already-processed message, if any.
+
+        Distinguishes 'no row' (returns None) from 'row exists but goal_id
+        is null' (returns 0). Callers that just need "have we seen this?"
+        should use ``is_processed_message`` to avoid that ambiguity.
+        """
+        row = self.conn.execute(
+            "SELECT goal_id FROM processed_messages "
+            "WHERE channel = ? AND external_id = ?",
+            (channel, external_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return row[0] if row[0] is not None else 0
+
+    def prune_processed_messages(self, older_than_seconds: float = 30 * 24 * 3600) -> int:
+        """Delete dedup rows older than N seconds.
+
+        Twilio's retry window is minutes, not days, so 30 days is
+        generous. Without this, every webhook hit (and every Twilio
+        retry attempt) accumulates a row forever; the table grows
+        unboundedly and the UNIQUE-index INSERT on the hot path
+        eventually slows linearly with channel age. Returns rows
+        removed.
+        """
+        cutoff = time.time() - older_than_seconds
+        cur = self.conn.execute(
+            "DELETE FROM processed_messages WHERE seen_at < ?", (cutoff,),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def is_processed_message(self, channel: str, external_id: str) -> bool:
+        """Returns True iff a row exists for (channel, external_id),
+        regardless of whether goal_id is set."""
+        row = self.conn.execute(
+            "SELECT 1 FROM processed_messages "
+            "WHERE channel = ? AND external_id = ? LIMIT 1",
+            (channel, external_id),
+        ).fetchone()
+        return row is not None
 
     # ----- attachments -----
     def add_attachment(

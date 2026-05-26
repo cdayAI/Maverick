@@ -21,19 +21,21 @@ Usage::
 from __future__ import annotations
 
 import logging
-import os
 import threading
+
+from ._envparse import env_float, env_int
 
 log = logging.getLogger(__name__)
 
 # Process-wide concurrency cap. Override with MAVERICK_MAX_CONCURRENT_GOALS.
-MAX_CONCURRENT_GOALS = int(os.environ.get("MAVERICK_MAX_CONCURRENT_GOALS", "3"))
+# BoundedSemaphore(0) raises ValueError, so clamp to at least 1.
+MAX_CONCURRENT_GOALS = max(1, env_int("MAVERICK_MAX_CONCURRENT_GOALS", 3))
 _run_semaphore = threading.BoundedSemaphore(MAX_CONCURRENT_GOALS)
 
 
-DEFAULT_MAX_DOLLARS = float(os.environ.get("MAVERICK_DEFAULT_MAX_DOLLARS", "2.0"))
-DEFAULT_MAX_WALL_SECONDS = float(os.environ.get("MAVERICK_DEFAULT_MAX_WALL_SECONDS", "1800"))
-DEFAULT_MAX_DEPTH = int(os.environ.get("MAVERICK_DEFAULT_MAX_DEPTH", "3"))
+DEFAULT_MAX_DOLLARS = env_float("MAVERICK_DEFAULT_MAX_DOLLARS", 2.0)
+DEFAULT_MAX_WALL_SECONDS = env_float("MAVERICK_DEFAULT_MAX_WALL_SECONDS", 1800.0)
+DEFAULT_MAX_DEPTH = env_int("MAVERICK_DEFAULT_MAX_DEPTH", 3)
 
 
 def run_goal_in_thread(
@@ -64,11 +66,21 @@ def run_goal_in_thread(
         world = WorldModel(DEFAULT_DB)
         llm = LLM()
         sandbox = build_sandbox()
-        run_goal_sync(
-            llm, world,
-            Budget(max_dollars=max_dollars, max_wall_seconds=max_wall_seconds),
-            goal_id, sandbox=sandbox, max_depth=max_depth,
-        )
+        try:
+            run_goal_sync(
+                llm, world,
+                Budget(max_dollars=max_dollars, max_wall_seconds=max_wall_seconds),
+                goal_id, sandbox=sandbox, max_depth=max_depth,
+            )
+        except Exception:
+            # If the swarm raises an unexpected exception (anything not
+            # caught by run_goal itself), the goal row is still 'active'.
+            # Mark it 'blocked' so the dashboard doesn't show a ghost.
+            log.exception("goal #%s crashed inside run_goal_sync", goal_id)
+            try:
+                world.set_goal_status(goal_id, "blocked", result="internal error")
+            except Exception:  # pragma: no cover
+                log.exception("failed to reclaim goal #%s after crash", goal_id)
     except Exception:
         log.exception("background goal run failed (goal_id=%s)", goal_id)
     finally:

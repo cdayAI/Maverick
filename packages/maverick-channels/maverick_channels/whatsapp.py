@@ -84,6 +84,7 @@ class WhatsAppChannel(Channel):
         request: "Request",
         From: str = Form(...),  # noqa: N803
         Body: str = Form(...),  # noqa: N803
+        MessageSid: str = Form(""),  # noqa: N803 -- Twilio dedup key
     ):
         # Validate Twilio signature so random POSTs can't spoof inbound.
         signature = request.headers.get("X-Twilio-Signature", "")
@@ -94,13 +95,34 @@ class WhatsAppChannel(Channel):
             log.warning("WhatsApp webhook signature invalid; ignoring")
             raise HTTPException(status_code=403, detail="signature invalid")
 
+        # Twilio retries; lookup-then-mark so a handler crash doesn't
+        # permanently lose the message (Twilio retry re-processes it).
+        wm = None
+        if MessageSid:
+            try:
+                from maverick.world_model import DEFAULT_DB, WorldModel
+                wm = WorldModel(DEFAULT_DB)
+                if wm.is_processed_message("whatsapp", MessageSid):
+                    log.info("WhatsApp MessageSid %s already processed; skipping", MessageSid)
+                    return Response(content="", media_type="text/xml")
+            except Exception:  # pragma: no cover
+                log.warning("WhatsApp dedup check failed; processing anyway")
+                wm = None
+
         msg = IncomingMessage(user_id=From, text=Body, channel="whatsapp")
         try:
             reply = await self.handler(msg)
         except Exception as e:  # pragma: no cover
             log.exception("handler error")
             reply = f"⚠ error: {e}"
+            await self.send(From, reply)
+            return Response(content="", media_type="text/xml")
         await self.send(From, reply)
+        if wm is not None and MessageSid:
+            try:
+                wm.mark_message_processed("whatsapp", MessageSid)
+            except Exception:  # pragma: no cover
+                log.warning("WhatsApp dedup mark failed (message processed OK)")
         return Response(content="", media_type="text/xml")
 
     async def start(self) -> None:

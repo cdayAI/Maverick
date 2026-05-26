@@ -4,6 +4,11 @@ Documentation=https://github.com/texasreaper62/maverick
 After=network-online.target
 Wants=network-online.target
 
+# Crash-loop protection: if Maverick crashes 5x in 5 minutes, give up
+# instead of respawning forever and burning API credits on a bad config.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=%i
@@ -14,6 +19,9 @@ Environment=MAVERICK_CONFIG=/home/%i/.maverick/config.toml
 ExecStart=/home/%i/.local/bin/maverick serve
 Restart=on-failure
 RestartSec=5s
+# Give in-flight goals 30s to wind down on stop/restart.
+TimeoutStopSec=30
+KillMode=mixed
 
 # Security hardening.
 NoNewPrivileges=true

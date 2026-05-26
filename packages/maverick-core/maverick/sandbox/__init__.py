@@ -14,18 +14,20 @@ from pathlib import Path
 from typing import Optional, Union
 
 from .docker import DockerBackend
+from .firecracker import FirecrackerBackend
 from .local import ExecResult, LocalBackend
 from .ssh import SSHBackend
 
 __all__ = [
     "LocalBackend",
     "DockerBackend",
+    "FirecrackerBackend",
     "SSHBackend",
     "ExecResult",
     "build_sandbox",
 ]
 
-Sandbox = Union[LocalBackend, DockerBackend, SSHBackend]
+Sandbox = Union[LocalBackend, DockerBackend, FirecrackerBackend, SSHBackend]
 
 
 def build_sandbox(
@@ -57,6 +59,15 @@ def build_sandbox(
     if chosen == "docker":
         image = full_cfg.get("image", "python:3.12-slim")
         return DockerBackend(workdir=wd, image=image, timeout=timeout)
+    if chosen == "firecracker":
+        return FirecrackerBackend(
+            workdir=wd,
+            image=full_cfg.get("image", "ubuntu:24.04-maverick"),
+            timeout=timeout,
+            provider=full_cfg.get("provider", "local"),
+            api_key=full_cfg.get("api_key"),
+            network=full_cfg.get("network", "egress-deny"),
+        )
     if chosen == "ssh":
         host = full_cfg.get("host")
         if not host:

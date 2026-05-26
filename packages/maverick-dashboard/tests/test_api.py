@@ -262,9 +262,62 @@ class TestOpenAPI:
         )
         assert resp.status_code == 401
 
-    def test_healthz_exempt_from_bearer_auth(self, monkeypatch):
-        """Monitors must be able to ping /healthz without a token."""
+    def test_livez_exempt_from_bearer_auth(self, monkeypatch):
+        """Cheap liveness check must work without auth."""
         monkeypatch.setenv("MAVERICK_DASHBOARD_TOKEN", "s3cr3t")
-        resp = client.get("/healthz")
+        resp = client.get("/livez")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
+
+    def test_healthz_deep_probe_returns_checks(self, monkeypatch):
+        """Deep healthz probes DB, LLM key, runner."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+        resp = client.get("/healthz")
+        # Either ok or degraded -- the important property is that the
+        # response includes per-check status.
+        body = resp.json()
+        assert "checks" in body
+        assert "db" in body["checks"]
+        assert "llm_key" in body["checks"]
+        assert "runner" in body["checks"]
+
+    def test_healthz_503_when_no_llm_key(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        resp = client.get("/healthz")
+        assert resp.status_code == 503
+        assert resp.json()["status"] == "degraded"
+        assert "missing" in resp.json()["checks"]["llm_key"]
+
+
+class TestMetrics:
+    def test_healthz_redacts_exception_text_when_token_set(self, tmp_path, monkeypatch):
+        """Wave 4 council security finding: on a VPS with
+        MAVERICK_DASHBOARD_TOKEN set, /healthz must NOT leak the
+        absolute DB path in error messages (it exposes the OS username).
+        """
+        monkeypatch.setenv("MAVERICK_DASHBOARD_TOKEN", "s3cr3t")
+        # Point DEFAULT_DB at an unwritable path so the DB check fails.
+        from maverick import world_model
+        bad_path = tmp_path / "subdir-that-does-not-exist" / "world.db"
+        monkeypatch.setattr(world_model, "DEFAULT_DB", bad_path)
+
+        resp = client.get("/healthz")
+        body = resp.json()
+        db_check = body["checks"]["db"]
+        # Exception class name is fine for debuggability; the absolute
+        # path (revealing OS username) is not.
+        assert "subdir-that-does-not-exist" not in db_check
+        assert str(bad_path) not in db_check
+
+    def test_metrics_prometheus_format(self):
+        resp = client.get("/metrics")
+        assert resp.status_code == 200
+        text = resp.text
+        # Prometheus text format requires HELP + TYPE lines.
+        assert "# HELP maverick_goals_total" in text
+        assert "# TYPE maverick_goals_total counter" in text
+        assert "# HELP maverick_cost_dollars_total" in text
+        assert "# TYPE maverick_concurrent_goals gauge" in text
+        assert "maverick_concurrent_goals" in text
+        assert "maverick_max_concurrent_goals" in text

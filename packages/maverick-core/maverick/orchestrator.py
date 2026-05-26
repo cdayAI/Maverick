@@ -62,6 +62,14 @@ async def run_goal(
     if not goal:
         return f"no such goal: {goal_id}"
 
+    # Bind trace context so every log line emitted in this task is
+    # automatically tagged with goal_id (+ conversation_id when set).
+    try:
+        from .logging_config import set_goal_context
+        set_goal_context(goal_id=goal_id, conversation_id=conversation_id)
+    except Exception:  # pragma: no cover
+        pass
+
     world.set_goal_status(goal_id, "active")
     episode_id = world.start_episode(goal_id)
     blackboard = Blackboard()
@@ -85,13 +93,26 @@ async def run_goal(
         # Multi-turn: if this goal belongs to an ongoing conversation,
         # prepend the recent turn history so the orchestrator has context
         # for follow-up messages on the same channel.
+        # Council finding (Tier 0): persisted turns were re-injected
+        # unscanned, so a `user` message that passed scan_input once
+        # could replay forever as a prompt-injection vector. Re-scan
+        # each turn here and drop any that the shield now flags.
         history_block = ""
         if conversation_id is not None:
             turns = world.recent_turns(conversation_id, limit=10)
-            if turns:
-                history_lines = [
-                    f"  {t.role}: {t.content[:300]}" for t in turns
-                ]
+            history_lines: list[str] = []
+            for t in turns:
+                content = t.content[:300]
+                if shield is not None:
+                    try:
+                        v = shield.scan_input(content) if t.role == "user" else shield.scan_output(content)
+                        if not v.allowed:
+                            history_lines.append(f"  {t.role}: [redacted by Shield]")
+                            continue
+                    except Exception:  # pragma: no cover
+                        pass
+                history_lines.append(f"  {t.role}: {content}")
+            if history_lines:
                 history_block = (
                     "\nPrior conversation (most recent last):\n"
                     + "\n".join(history_lines)
@@ -114,7 +135,13 @@ async def run_goal(
         except BudgetExceeded as e:
             _end_episode_with_spend(world, episode_id, f"budget: {e}", "failure", budget)
             world.set_goal_status(goal_id, "blocked", result=f"budget exceeded: {e}")
-            return f"BUDGET EXCEEDED: {budget.summary()}"
+            # Sentence-style error so a non-engineer can read it.
+            return (
+                f"Stopped: this goal hit your spending or time limit "
+                f"(${budget.dollars:.2f}, {budget.elapsed():.0f}s elapsed).\n"
+                f"Resume with a higher cap: "
+                f"maverick resume #{goal_id} --max-dollars <higher>"
+            )
 
         if result.blocked_on_user:
             _end_episode_with_spend(
@@ -122,19 +149,61 @@ async def run_goal(
             )
             world.set_goal_status(goal_id, "blocked")
             qs = world.open_questions(goal_id)
+            if not qs:
+                return (
+                    "Paused: the assistant said it needs more information, "
+                    "but no question was filed. You can resume with "
+                    f"`maverick resume #{goal_id}` or send a follow-up message."
+                )
+            lines = [f"  #{q.id}: {q.question}" for q in qs]
             return (
-                f"PAUSED: waiting on user. {len(qs)} open question(s).\n"
-                + "\n".join(f"  #{q.id}: {q.question}" for q in qs)
+                f"Paused: waiting for you to answer "
+                f"{len(qs)} question{'s' if len(qs) != 1 else ''}.\n"
+                + "\n".join(lines)
+                + "\n\nAnswer with: maverick answer <id> \"<your answer>\""
             )
 
         if result.error:
             _end_episode_with_spend(world, episode_id, result.error, "failure", budget)
             world.set_goal_status(goal_id, "blocked", result=result.error)
-            return f"FAILED: {result.error}\n[{budget.summary()}]"
+            return (
+                f"Stopped: the assistant ran into an error and couldn't finish.\n"
+                f"Detail: {result.error}\n"
+                f"You can try again with: maverick resume #{goal_id}\n"
+                f"[{budget.summary()}]"
+            )
 
         summary = result.final or "(no answer)"
         _end_episode_with_spend(world, episode_id, summary, "success", budget)
         world.set_goal_status(goal_id, "done", result=summary)
+
+        # Trajectory donation (Karpathy data-engine analog). Default OFF;
+        # only fires when the user opted into [telemetry] donate_trajectories
+        # AND the selection gate (disagreement_high + verifier_confident
+        # + success) passes. Never raises -- a bad donation must never
+        # affect the goal result.
+        try:
+            from .donation import TrajectoryRecord, hash_brief, write_record
+            entropy = getattr(ctx, "last_disagreement", 0.0)
+            record = TrajectoryRecord(
+                task_brief_hash=hash_brief(goal.title + (goal.description or "")),
+                task_brief_text=(goal.title + "\n" + (goal.description or "")),
+                model_id=getattr(llm, "model", ""),
+                tools_used=sorted({e.kind for e in blackboard.entries
+                                   if e.kind == "observation"}),
+                outcome="success",
+                reward=1.0 if result.verifier_confidence >= 0.75 else result.verifier_confidence,
+                verifier_confidence=result.verifier_confidence,
+                verifier_critique=result.verifier_critique,
+                disagreement_entropy=float(entropy or 0.0),
+                wall_seconds=budget.elapsed(),
+                cost_dollars=budget.dollars,
+                tokens_in=budget.input_tokens,
+                tokens_out=budget.output_tokens,
+            )
+            write_record(record)
+        except Exception as e:  # pragma: no cover
+            log.debug("trajectory donation skipped: %s", e)
 
         if conversation_id is not None:
             try:
@@ -154,6 +223,15 @@ async def run_goal(
     finally:
         if mcp_clients:
             await stop_mcp_clients(mcp_clients)
+        # Clear trace context so the next goal on this thread/task
+        # doesn't inherit goal_id / conversation_id from this one
+        # (FastAPI threadpool workers + the CLI chat REPL both reuse
+        # the same execution context across goals).
+        try:
+            from .logging_config import clear_goal_context
+            clear_goal_context()
+        except Exception:  # pragma: no cover
+            pass
 
 
 def run_goal_sync(*args, **kwargs) -> str:

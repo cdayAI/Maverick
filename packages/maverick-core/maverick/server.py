@@ -68,6 +68,17 @@ class Server:
         # row. Every inbound message becomes a 'user' turn; the
         # orchestrator's final answer is appended as 'assistant' turn
         # inside run_goal so future messages have history.
+
+        # EU AI Act Article 50: disclose AI to new channel users on
+        # first turn. `first_turn_disclosure` checks the conversation
+        # row (creates if needed) and returns None on follow-up turns.
+        from .compliance import first_turn_disclosure
+        disclosure = first_turn_disclosure(
+            self.world,
+            channel=msg.channel or "unknown",
+            user_id=msg.user_id,
+        )
+
         conversation = self.world.get_or_create_conversation(
             channel=msg.channel or "unknown",
             user_id=msg.user_id,
@@ -100,6 +111,8 @@ class Server:
             if not verdict.allowed:
                 return f"⚠ Output blocked: {'; '.join(verdict.reasons)}"
 
+        if disclosure is not None:
+            return f"{disclosure}\n\n{result}"
         return result
 
     def add_channel(self, channel) -> None:
@@ -109,6 +122,15 @@ class Server:
         """Run all channels concurrently. One channel crashing logs but doesn't kill others."""
         if not self._channels:
             raise ValueError("no channels registered")
+        # Reclaim any goals stuck in 'active'/'pending' from a prior
+        # crash. Without this, SIGKILL/OOM mid-run leaves ghosts that
+        # show in /goals forever.
+        try:
+            reclaimed = self.world.reclaim_orphan_goals()
+            if reclaimed:
+                log.warning("reclaimed %d orphan goal(s) from prior crash", reclaimed)
+        except Exception:  # pragma: no cover
+            log.exception("orphan goal reclaim failed on serve startup")
         log.info(
             "starting %d channel(s): %s",
             len(self._channels),
@@ -220,6 +242,18 @@ def _wire_imessage(server, cfg):
     ))
 
 
+def _wire_voice(server, cfg):
+    from maverick_channels.voice import VoiceChannel
+    server.add_channel(VoiceChannel(
+        handler=server._handle_message,
+        api_key=cfg.get("api_key") or os.environ.get("VAPI_API_KEY"),
+        phone_number=cfg.get("phone_number"),
+        port=cfg.get("port", 8770),
+        assistant_id=cfg.get("assistant_id"),
+        provider=cfg.get("provider", "vapi"),
+    ))
+
+
 _WIRES = {
     "telegram": _wire_telegram,
     "discord":  _wire_discord,
@@ -230,6 +264,7 @@ _WIRES = {
     "whatsapp": _wire_whatsapp,
     "sms":      _wire_sms,
     "imessage": _wire_imessage,
+    "voice":    _wire_voice,
 }
 
 

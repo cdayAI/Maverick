@@ -6,6 +6,7 @@ without patching the kernel.
 """
 from __future__ import annotations
 
+import secrets as _secrets
 import uuid
 from dataclasses import dataclass
 from typing import Optional
@@ -65,6 +66,9 @@ class AgentResult:
     error: Optional[str] = None
     role: str = ""
     name: str = ""
+    # Verifier signals (only populated on the orchestrator's FINAL).
+    verifier_confidence: float = 1.0
+    verifier_critique: str = ""
 
 
 class Agent:
@@ -148,7 +152,62 @@ class Agent:
                     f"⚠ BLOCKED by Shield ({verdict.severity}): "
                     f"{'; '.join(verdict.reasons)}. The tool was not executed."
                 )
-        return await self.tools.run(name, args)
+
+        # PreToolUse hooks: any registered hook can BLOCK the call by
+        # returning a non-zero exit code (shell hook) or a falsy value
+        # (Python callable). Modeled on Claude Code's hook surface.
+        from .hooks import HookContext, HookEvent, dispatch as _dispatch_hooks
+        pre_ctx = HookContext(
+            event=HookEvent.PRE_TOOL_USE,
+            tool_name=name, tool_args=args,
+            goal_id=self.ctx.goal_id, agent_role=self.role,
+        )
+        if not await _dispatch_hooks(pre_ctx):
+            self.ctx.blackboard.post(
+                self.name, "error",
+                f"tool={name} BLOCKED by PreToolUse hook",
+            )
+            return "⚠ BLOCKED by hook. The tool was not executed."
+
+        output = await self.tools.run(name, args)
+
+        post_ctx = HookContext(
+            event=HookEvent.POST_TOOL_USE,
+            tool_name=name, tool_args=args, tool_result=output,
+            goal_id=self.ctx.goal_id, agent_role=self.role,
+        )
+        await _dispatch_hooks(post_ctx)
+        # Council finding: tool output flowed back to the LLM unscanned,
+        # so a malicious file contents / shell stdout containing
+        # `FINAL: <exfil>` or jailbreak instructions hit the next turn.
+        # Wrap the output in a clearly-delimited block so the agent
+        # treats it as data, and scan it through the shield.
+        if shield is not None:
+            try:
+                out_verdict = shield.scan_output(output)
+                if not out_verdict.allowed:
+                    self.ctx.blackboard.post(
+                        self.name, "error",
+                        f"tool={name} OUTPUT BLOCKED by Shield: "
+                        f"{'; '.join(out_verdict.reasons)}",
+                    )
+                    return (
+                        f"⚠ Tool output BLOCKED by Shield ({out_verdict.severity}): "
+                        f"{'; '.join(out_verdict.reasons)}. Result withheld."
+                    )
+            except Exception:  # pragma: no cover -- shield must never block tools on its own bug
+                pass
+        # Council-of-20 security finding: a literal `</tool_output>` in
+        # `output` (attacker-controlled file contents, shell stdout, MCP
+        # response) escapes the framing and lets following text read as
+        # authoritative LLM context. Use a random per-call nonce so the
+        # close tag is unforgeable. `secrets.token_hex(8)` = 16 hex chars.
+        nonce = _secrets.token_hex(8)
+        return (
+            f"<tool_output tool={name!r} id={nonce}>\n"
+            f"{output}\n"
+            f"</tool_output {nonce}>"
+        )
 
     async def run(self) -> AgentResult:
         bb = self.ctx.blackboard
@@ -181,6 +240,14 @@ class Agent:
         messages: list[dict] = [{"role": "user", "content": first_content}]
 
         for step in range(self.max_steps):
+            # Karpathy SOTA-review item: long-context compaction. Drop
+            # raw tool_result content >2KiB once it's behind the recent
+            # window. The first message (user brief) is always kept.
+            # The compaction cost is O(len(messages)) per turn -- cheap
+            # vs. paying full-price input tokens for a 100k history.
+            from .compaction import compact_messages
+            messages = compact_messages(messages)
+
             try:
                 resp = await self.ctx.llm.complete_async(
                     system=self.system,
@@ -209,11 +276,76 @@ class Agent:
             if resp.text:
                 if resp.text.startswith("FINAL:"):
                     final = resp.text[len("FINAL:") :].strip()
+
+                    # Karpathy SOTA-review item: verifier role exists in
+                    # prompt strings only -- no code actually runs a
+                    # second-pass check. Now we do, but only on the
+                    # orchestrator's FINAL (depth=0) and only once per
+                    # goal. Sub-agents skip verification (their parent
+                    # is the verifier of last resort).
+                    verdict = None
+                    # Only the orchestrator's FINAL is verified. Sub-agents
+                    # answer to their parent; the parent is their verifier.
+                    if (
+                        self.role == "orchestrator"
+                        and self.depth == 0
+                        and not getattr(self, "_already_verified", False)
+                        and self.ctx.goal_id is not None
+                    ):
+                        try:
+                            from .verifier import verify_proposal
+                            verdict = await verify_proposal(
+                                self.brief, final, self.ctx.llm, self.ctx.budget,
+                                proposer_model=self.model,
+                            )
+                        except BudgetExceeded:
+                            verdict = None
+                        except Exception as e:  # pragma: no cover
+                            bb.post(self.name, "error", f"verifier failed: {e}")
+                            verdict = None
+
+                        if verdict is not None and not verdict.accepts:
+                            self._already_verified = True
+                            bb.post(
+                                self.name, "verify",
+                                f"verifier rejected (conf={verdict.confidence:.2f}): "
+                                f"{verdict.critique}",
+                            )
+                            # Hand the critique to the proposer as a
+                            # revision brief. One revision pass max --
+                            # the second attempt is accepted regardless.
+                            issues_block = (
+                                "\n".join(f"  - {i}" for i in verdict.issues)
+                                if verdict.issues else "  (no specific issues listed)"
+                            )
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "A verifier rejected your FINAL answer. "
+                                    "Revise and try again.\n\n"
+                                    f"Verifier confidence: {verdict.confidence:.2f}\n"
+                                    f"Critique: {verdict.critique}\n"
+                                    f"Specific issues:\n{issues_block}\n\n"
+                                    "Address each issue and respond with a "
+                                    "new FINAL: <revised answer>."
+                                ),
+                            })
+                            continue
+                        if verdict is not None:
+                            bb.post(
+                                self.name, "verify",
+                                f"verifier accepted (conf={verdict.confidence:.2f})",
+                            )
+
                     bb.post(self.name, "finding", final)
                     self.ctx.world.append_message(
                         self.ctx.goal_id, f"agent:{self.name}", final
                     )
-                    return AgentResult(final=final, role=self.role, name=self.name)
+                    return AgentResult(
+                        final=final, role=self.role, name=self.name,
+                        verifier_confidence=verdict.confidence if verdict else 1.0,
+                        verifier_critique=verdict.critique if verdict else "",
+                    )
                 bb.post(self.name, "observation", resp.text[:1000])
 
             if not resp.tool_calls:
