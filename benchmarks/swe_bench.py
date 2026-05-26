@@ -78,6 +78,34 @@ def _dry_run_row(instance_id: str, pipeline: str) -> Row:
     )
 
 
+# Wave 12: sanitize patches before they reach the CSV. Three failures
+# in one place: (a) NUL bytes break csv.DictReader on resume → silent
+# re-runs that double-charge; (b) Excel auto-executes cells starting
+# with `=+-@\t\r` and patch lines literally start with `+`/`-` → CSV
+# formula injection when anyone opens RESULTS_SWE.csv in Excel for
+# analysis; (c) other C0 control characters can confuse downstream
+# tooling. Truncation is REMOVED — SWE-bench Pro has no patch-size cap
+# and the prior 50_000-byte slice cut mid-hunk on multi-file refactors.
+def _sanitize_patch_for_csv(diff: str) -> str:
+    if not diff:
+        return ""
+    # Strip NUL and other C0 controls except \t \n \r (which are
+    # legitimately quoted by csv.DictWriter).
+    cleaned = "".join(
+        c for c in diff if c >= " " or c in "\t\n\r"
+    )
+    if not cleaned:
+        return ""
+    # Excel formula-injection: if the first non-whitespace char is one
+    # of the dangerous prefixes, prepend a leading apostrophe. The diff
+    # body's `+`/`-` are fine — they're on per-line basis inside quoted
+    # CSV fields; only the first char of the cell matters.
+    leader = cleaned.lstrip()[:1]
+    if leader in ("=", "+", "-", "@", "\t", "\r"):
+        cleaned = "'" + cleaned
+    return cleaned
+
+
 # Wave 11: hoist LLM() across instances. anthropic.Client holds an
 # httpx connection pool; constructing a fresh LLM per instance leaked
 # ~5-10 MB of RSS per instance and OOM-killed the run around #800-1200
@@ -379,7 +407,14 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
         cost_dollars=total_cost,
         tokens_in=total_in,
         tokens_out=total_out,
-        predicted_patch=diff[:50_000],
+        # Wave 12 fix: SWE-bench Pro grader has no patch-size cap; the
+        # previous [:50_000] silently truncated mid-hunk on multi-file
+        # refactors (Django/pandas instances ~60-100KB). Sanitize NUL
+        # bytes (csv.DictReader fails on them, breaking resume) and
+        # neutralize CSV-formula-injection prefixes (Excel auto-executes
+        # cells starting with =+-@\t\r — patch lines naturally start
+        # with `+`/`-`).
+        predicted_patch=_sanitize_patch_for_csv(diff),
         outcome=last_outcome or ("success" if diff else "no-diff"),
         extra=extra_payload,
     )

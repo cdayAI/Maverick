@@ -459,8 +459,34 @@ def render_diff(workdir: Path) -> str:
     Called after `apply_blocks` succeeds to produce the diff payload for
     the benchmark CSV. Models never hand-write `@@ -N,M +N,M @@` hunk
     headers — git computes them from the actual file deltas.
+
+    Wave 12 fix: `git diff HEAD` does NOT include untracked files. SR
+    blocks that create a new file via empty-SEARCH succeed on disk but
+    were silently absent from the rendered patch (~15% of fix instances
+    on SWE-bench Pro need new files). We now `git add --intent-to-add`
+    every untracked path before running diff so new files show up
+    with a proper `--- /dev/null` hunk.
     """
     import subprocess
+    # Mark untracked files as intent-to-add so `git diff HEAD` produces
+    # their /dev/null hunks. Use --no-color/no-ext-diff for stability.
+    try:
+        ls = subprocess.run(
+            ["git", "-C", str(workdir), "ls-files",
+             "--others", "--exclude-standard"],
+            capture_output=True, timeout=15,
+        )
+        if ls.returncode == 0 and ls.stdout.strip():
+            paths = ls.stdout.decode("utf-8", errors="replace").splitlines()
+            paths = [p for p in paths if p.strip()]
+            if paths:
+                subprocess.run(
+                    ["git", "-C", str(workdir), "add", "--intent-to-add", "--"]
+                    + paths,
+                    capture_output=True, timeout=30,
+                )
+    except (subprocess.SubprocessError, OSError):
+        pass
     try:
         proc = subprocess.run(
             ["git", "-C", str(workdir), "diff",
