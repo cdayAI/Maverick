@@ -343,9 +343,12 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
     instance_wall = float(os.environ.get("MAVERICK_INSTANCE_WALL_SEC", "1500"))
     budget = Budget(max_dollars=instance_cap, max_wall_seconds=instance_wall)
     sandbox = build_sandbox()
-    # Pre-initialize so the post-finally row construction always has a
-    # value, even if the agent raises before episode bookkeeping.
+    # Pre-initialize so the post-finally row construction always has
+    # values, even if the agent raises before episode bookkeeping.
     all_eps: list = []
+    goal_obj = None
+    world_events: list = []
+    result = ""
 
     try:
         if best_of_n > 1:
@@ -360,12 +363,17 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
         # Wave 10 (C6): sum cost across ALL episodes for this goal, not
         # just the most recent one. Best-of-N runs N episodes; prior
         # code reported only eps[0] (one attempt) and lost the other
-        # N-1. Wave 12 hotfix: this read MUST happen BEFORE the finally
-        # block closes the WorldModel SQLite connection — otherwise
-        # the entire harness raises ProgrammingError("Cannot operate
-        # on a closed database") and every instance silently errors
-        # with $0 cost recorded.
+        # N-1. Wave 12 hotfix: all THREE world.* reads (list_episodes,
+        # get_goal, goal_events) MUST happen BEFORE the finally block
+        # closes the WorldModel SQLite connection — otherwise the
+        # harness raises ProgrammingError("Cannot operate on a closed
+        # database") and every instance silently errors with $0 cost.
         all_eps = world.list_episodes(goal_id=gid)
+        goal_obj = world.get_goal(gid)
+        try:
+            world_events = world.goal_events(gid, limit=2000)
+        except Exception:
+            world_events = []
     finally:
         # Wave 10 (D11): restore env so the next instance / process
         # doesn't inherit this instance's test sets.
@@ -393,7 +401,7 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
     # orchestrator's prose. The orchestrator's return value starts with
     # `DONE.\n\n<patch>` in coding mode; extract_unified_diff pulls the
     # actual unified diff. Fallback chain: orchestrator return -> goal.result.
-    goal = world.get_goal(gid)
+    goal = goal_obj  # pre-read before close (Wave 12 hotfix)
     diff = extract_unified_diff(result or "") or extract_unified_diff(
         (goal.result or "") if goal else ""
     ) or ""
@@ -401,10 +409,7 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
     # Wave 11: surface tool-use signals + verifier confidence + trace
     # data for adoption tripwire + forensics. The agent posts these
     # to the blackboard which mirrors into goal_events.
-    try:
-        events = world.goal_events(gid, limit=2000)
-    except Exception:
-        events = []
+    events = world_events  # pre-read before close (Wave 12 hotfix)
     str_replace_used = any(
         "search_replace_used=1" in (e.content or "")
         for e in events
