@@ -174,7 +174,14 @@ async def run_goal(
                 f"[{budget.summary()}]"
             )
 
-        summary = result.final or "(no answer)"
+        # Wave 12: prefer the rendered unified diff (set by the agent's
+        # FINAL handler when SEARCH/REPLACE blocks were applied) over
+        # the raw FINAL text. Without this, extract_unified_diff on
+        # downstream calls (best-of-N selector, harness CSV row) returns
+        # None for SR-only candidates and the patch is silently dropped.
+        # `final` is kept as a fallback for non-coding-mode goals where
+        # the answer is prose.
+        summary = result.final_patch or result.final or "(no answer)"
         _end_episode_with_spend(world, episode_id, summary, "success", budget)
         world.set_goal_status(goal_id, "done", result=summary)
 
@@ -330,10 +337,19 @@ async def run_goal_best_of_n(
             os.environ["MAVERICK_MODEL_OVERRIDE_ORCHESTRATOR"] = per_model
         try:
             try:
+                # Wave 12 fix (council F14, biggest accuracy loss):
+                # Each best-of-N attempt MUST run against a fresh
+                # conversation history. The prior code passed the same
+                # `conversation_id` to every attempt, so attempt 2 read
+                # attempt 1's blackboard posts via the history_block in
+                # run_goal — BoN was effectively BoN=1 with extra
+                # context bloat. Setting `conversation_id=None` (and
+                # `goal_id`-scoped events via `start_episode`) gives
+                # each attempt an independent trajectory.
                 answer = await run_goal(
                     llm, world, attempt_budget, goal_id,
                     sandbox=sandbox, max_depth=max_depth,
-                    conversation_id=conversation_id,
+                    conversation_id=None,
                 )
             except Exception as e:
                 log.warning("best-of-N attempt %d failed: %s", i, e)

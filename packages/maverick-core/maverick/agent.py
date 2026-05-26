@@ -70,6 +70,13 @@ class AgentResult:
     # Verifier signals (only populated on the orchestrator's FINAL).
     verifier_confidence: float = 1.0
     verifier_critique: str = ""
+    # Wave 12: rendered unified diff produced by the FINAL handler
+    # (SEARCH/REPLACE blocks applied + `git diff` rendered, or unified
+    # diff extracted from FINAL). Best-of-N reads this directly instead
+    # of re-extracting from prose at orchestrator.py:364 — the prior
+    # path silently dropped SR-only candidates that produced a perfect
+    # rendered diff but had no `--- a/` substring in `result`.
+    final_patch: Optional[str] = None
 
 
 class Agent:
@@ -676,6 +683,7 @@ class Agent:
                                     final=final, role=self.role, name=self.name,
                                     verifier_confidence=test_result.score,
                                     verifier_critique=test_result.summary(),
+                                    final_patch=getattr(self, "_final_patch", None),
                                 )
                             # Tests failed → revise. Wave 9 (council H2):
                             # do NOT leak raw assertion bodies to the
@@ -723,6 +731,7 @@ class Agent:
                                     final=final, role=self.role, name=self.name,
                                     verifier_confidence=test_result.score,
                                     verifier_critique=test_result.summary(),
+                                    final_patch=getattr(self, "_final_patch", None),
                                 )
                             self._patch_validated = True
                             messages.append({"role": "user", "content": critique})
@@ -781,6 +790,7 @@ class Agent:
                         final=final, role=self.role, name=self.name,
                         verifier_confidence=verdict.confidence if verdict else 1.0,
                         verifier_critique=verdict.critique if verdict else "",
+                        final_patch=getattr(self, "_final_patch", None),
                     )
                 bb.post(self.name, "observation", resp.text[:1000])
 

@@ -122,9 +122,25 @@ class TestSelectBestCandidate:
         c = Candidate(2, "patch c", score=0.7, apply_check_passed=True)
         assert select_best_candidate([a, b, c]) is b
 
-    def test_smaller_patch_wins_ties(self):
-        a = Candidate(0, "longer patch text", score=0.8, apply_check_passed=True)
-        b = Candidate(1, "short", score=0.8, apply_check_passed=True)
+    def test_median_length_wins_ties(self):
+        """Wave 12: among score-tied candidates, prefer the one closest
+        to median patch length (not just the smallest)."""
+        a = Candidate(0, "x" * 5,   score=0.8, apply_check_passed=True)
+        b = Candidate(1, "x" * 50,  score=0.8, apply_check_passed=True)
+        c = Candidate(2, "x" * 500, score=0.8, apply_check_passed=True)
+        # Median length is 50. `b` wins.
+        assert select_best_candidate([a, b, c]) is b
+
+    def test_all_zero_score_picks_last_attempt(self):
+        """Wave 12 (council F1 fix): when ALL scores are 0 (no
+        FAIL_TO_PASS or runner error), prefer the LAST attempt — the
+        BoN ladder is ordered cheap→warm→Opus, so attempt N-1 is the
+        most-thought attempt. Prior behaviour was to pick the SMALLEST
+        patch, which was backwards for new-feature bugs."""
+        a = Candidate(0, "small patch\n", score=0.0, apply_check_passed=True)
+        b = Candidate(1, "longer, more substantive patch\n",
+                       score=0.0, apply_check_passed=True)
+        # b (last attempt) wins despite being longer.
         assert select_best_candidate([a, b]) is b
 
     def test_apply_check_required(self):

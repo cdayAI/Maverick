@@ -946,11 +946,23 @@ class Candidate:
 
 
 def select_best_candidate(candidates: list[Candidate]) -> Optional[Candidate]:
-    """Pick the candidate with the highest test score; tiebreak on
-    apply-check + smaller patch (Occam).
+    """Pick the candidate with the highest test score; tiebreak by
+    proximity to median patch length (Occam, but not "smallest at all
+    costs" — see Wave 12 council finding F1).
 
     Used at the end of a best-of-N orchestrator run. Returns None if
     no candidate is usable.
+
+    Wave 12 fix: when ALL candidates score 0.0 (no FAIL_TO_PASS
+    provided, or runner error), the prior `(-score, len(c.patch))`
+    sort silently picked the SMALLEST patch — backward for any
+    instance whose correct fix is a new feature / multi-file refactor
+    (median Pro patch is ~107 LoC across 4.1 files per arxiv 2509.16941).
+    Now: when all scores are 0, tie-break by ATTEMPT ORDER (the BoN
+    ladder is sorted cheap→expensive→thoughtful, so attempt N-1 is
+    typically the best-thought attempt). On non-zero scores keep the
+    Occam preference but tie-break by absolute distance from the
+    median patch length rather than absolute size.
     """
     if not candidates:
         return None
@@ -963,8 +975,18 @@ def select_best_candidate(candidates: list[Candidate]) -> Optional[Candidate]:
         usable = [c for c in candidates if c.patch.strip()]
     if not usable:
         return None
-    # Higher score first; smaller patch wins ties.
-    usable.sort(key=lambda c: (-c.score, len(c.patch)))
+    all_zero = all(c.score == 0.0 for c in usable)
+    if all_zero:
+        # Prefer the LAST (typically most-thought) attempt that produced
+        # any non-empty patch; ladder ordering is cheap→warm→Opus.
+        usable.sort(key=lambda c: (-c.index, -len(c.patch)))
+        return usable[0]
+    # Higher score first; among ties, prefer the median-length patch
+    # (the "Occam without bias toward no-ops" tie-break).
+    import statistics
+    lengths = [len(c.patch) for c in usable]
+    median_len = statistics.median(lengths) if lengths else 0
+    usable.sort(key=lambda c: (-c.score, abs(len(c.patch) - median_len)))
     return usable[0]
 
 
