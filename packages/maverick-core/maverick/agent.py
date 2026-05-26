@@ -357,9 +357,34 @@ class Agent:
                 bb.post(self.name, "error", f"budget exceeded: {e}")
                 return AgentResult(error=str(e), role=self.role, name=self.name)
 
+            # May 26 smoke fix: when the response contains BOTH a FINAL:
+            # marker AND tool_use blocks, the model is confused. If
+            # FINAL validation fails and we `continue`, the tool_use
+            # blocks get appended to assistant message history with NO
+            # matching tool_result — Anthropic returns HTTP 400 on the
+            # next turn:
+            #   messages.N: tool_use ids were found without tool_result
+            #   blocks immediately after
+            # Drop the tool_use blocks before assembling the assistant
+            # message; the FINAL critique is what we want the model to
+            # respond to, not the orphan tools.
+            if resp.text and resp.tool_calls:
+                import re as _re_final
+                if _re_final.search(r"(?:^|\n)\s*FINAL:", resp.text):
+                    resp.tool_calls = []
+
             assistant_content: list[dict] = []
             if resp.thinking:
-                assistant_content.append({"type": "thinking", "thinking": resp.thinking})
+                # May 26 smoke fix: Anthropic requires `signature` on
+                # thinking blocks when they appear in assistant message
+                # history. Without it, the next API call returns:
+                #   messages.N.content.0.thinking.signature: Field required
+                thinking_block: dict = {
+                    "type": "thinking", "thinking": resp.thinking,
+                }
+                if resp.thinking_signature:
+                    thinking_block["signature"] = resp.thinking_signature
+                assistant_content.append(thinking_block)
             if resp.text:
                 assistant_content.append({"type": "text", "text": resp.text})
             for tc in resp.tool_calls:
@@ -369,8 +394,22 @@ class Agent:
             messages.append({"role": "assistant", "content": assistant_content})
 
             if resp.text:
-                if resp.text.startswith("FINAL:"):
-                    final = resp.text[len("FINAL:") :].strip()
+                # Wave 12 hotfix: the prompt instructs the model to "End
+                # your turn with `FINAL:`" — many models emit a brief
+                # reasoning line BEFORE FINAL: (e.g. "Target: foo.py:bar
+                # — fix is X. FINAL: ..."). The prior `startswith` check
+                # missed those entirely; the SR block went to the
+                # blackboard as a plain observation, was never applied,
+                # and the orchestrator returned the raw SR text as
+                # `final` with `final_patch=None` — silent score loss.
+                # Use the LAST line-anchored FINAL: marker, mirroring
+                # extract_unified_diff's logic.
+                import re as _re
+                _final_matches = list(_re.finditer(
+                    r"(?:^|\n)\s*FINAL:\s*\n?", resp.text,
+                ))
+                if _final_matches:
+                    final = resp.text[_final_matches[-1].end():].strip()
 
                     # Wave 8: coding-mode patch self-validation. If the
                     # workdir is a git repo AND the FINAL contains a
@@ -491,7 +530,17 @@ class Agent:
                         except Exception:
                             def_check = None
                         if def_check is not None and not def_check.ok:
-                            self._patch_validated = True
+                            # May 26 smoke fix: DO NOT set
+                            # `_patch_validated = True` here. The flag
+                            # short-circuits the entire SR-extract-apply
+                            # block on the next iteration, so when the
+                            # agent revises in response to the critique,
+                            # the new SR blocks are silently ignored
+                            # (workdir untouched, no patch produced).
+                            # Fired on pallets/flask-5014 — agent
+                            # produced correct fix, cheating detector
+                            # false-positive rejected it, then the
+                            # agent's revision attempt was no-op'd.
                             bb.post(
                                 self.name, "verify",
                                 f"patch rejected by defensive validator: "
@@ -833,6 +882,30 @@ class Agent:
             if blocked:
                 return AgentResult(blocked_on_user=True, role=self.role, name=self.name)
 
+        # Wave 12 hotfix: when the agent loop exhausts max_steps without
+        # emitting FINAL, the workdir may STILL contain edits made via
+        # `str_replace_editor` (the secondary tool channel). The May 26
+        # smoke surfaced 3/6 instances where the agent edited via the
+        # tool but never produced a FINAL — those instances reported
+        # `no-diff` even though the patch was already on disk.
+        # Salvage that work by rendering the workdir as the final_patch
+        # if there are uncommitted changes.
+        try:
+            from pathlib import Path as _Path
+            from .edit_format import render_diff
+            workdir = _Path(getattr(self.ctx.sandbox, "workdir", "."))
+            if (workdir / ".git").exists():
+                rendered = render_diff(workdir)
+                if rendered and rendered.strip():
+                    return AgentResult(
+                        error=f"hit max_steps={self.max_steps}; "
+                              "captured workdir diff as final_patch",
+                        final_patch=rendered,
+                        role=self.role,
+                        name=self.name,
+                    )
+        except Exception:
+            pass
         return AgentResult(
             error=f"hit max_steps={self.max_steps}",
             role=self.role,

@@ -186,6 +186,20 @@ cheating-detector documentation.
      `--non-interactive` to package managers. Interactive prompts
      hang the sandbox.
 
+ 11. NEVER run `pip install`, `npm install`, `apt install`, or any
+     other package-install command. The test environment is
+     pre-staged — the grader runs your patch in a Docker container
+     where dependencies are already installed at the correct
+     versions. If you see `ImportError` or `ModuleNotFoundError`
+     for a package the project uses, that is almost always a sign
+     of the actual bug you need to fix (e.g. missing import in
+     production code, wrong module path), NOT an environment
+     problem. Do not try to "fix" the environment; fix the code.
+     If the dep is genuinely missing from the test image, that's
+     a grader infrastructure issue that you cannot solve from
+     inside this loop — emit FINAL with whatever fix you have and
+     let the grader fail cleanly.
+
 ═══ CONCRETE GUIDANCE BY FAILURE PATTERN ═══
 
 FROM PRINCETON / OPENAI / SCALE POST-MORTEMS:
@@ -753,7 +767,17 @@ def defensive_validate(patch: str, *, fail_to_pass: list[str] = None,
 
             ours_tokens = _sample(ours_all)
             theirs_tokens = _sample(theirs_all)
-            if ours_tokens and theirs_tokens:
+            # May 26 smoke fix (pallets/flask-5014 false positive):
+            # the cheating detector was rejecting tiny obvious fixes
+            # where any agent would independently produce the same
+            # code (e.g. adding a one-line empty-name guard). Require
+            # a MINIMUM gold patch size before applying the detector
+            # — a 5-token gold patch can't meaningfully signal
+            # cheating because the match is forced. 30 tokens
+            # corresponds to roughly a 5-line non-trivial change.
+            _MIN_GOLD_TOKENS_FOR_CHEATING_CHECK = 30
+            if (ours_tokens and theirs_tokens
+                    and len(theirs_tokens) >= _MIN_GOLD_TOKENS_FOR_CHEATING_CHECK):
                 matcher = SequenceMatcher(
                     None, ours_tokens, theirs_tokens, autojunk=False,
                 )

@@ -309,12 +309,25 @@ class AnthropicClient:
         text_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
+        # May 26 smoke fix: capture the signature from the FIRST
+        # thinking block. Anthropic requires this field on assistant
+        # messages with thinking blocks when they appear in subsequent
+        # request history. We only echo back the concatenated thinking
+        # text + one signature — that's sufficient for adaptive
+        # thinking's single-block-per-turn pattern. (Multi-block thinking
+        # would need per-block signature tracking; we'll handle that if
+        # we see it in practice.)
+        thinking_signature: Optional[str] = None
         for block in resp.content:
             t = getattr(block, "type", None)
             if t == "text":
                 text_parts.append(block.text)
             elif t == "thinking":
                 thinking_parts.append(getattr(block, "thinking", ""))
+                if thinking_signature is None:
+                    sig = getattr(block, "signature", None)
+                    if sig:
+                        thinking_signature = sig
             elif t == "tool_use":
                 tool_calls.append(ToolCall(id=block.id, name=block.name, input=dict(block.input)))
 
@@ -349,9 +362,25 @@ class AnthropicClient:
                 cache_write_ttl=_default_cache_ttl(),
             )
 
+        # Per-turn observability — log model + cache stats so operators
+        # can verify caching is actually engaging on real API calls.
+        # Gated on MAVERICK_LOG_TURNS to keep production logs quiet.
+        # Print direct to stderr so it survives default-level logging
+        # filters (log.info doesn't print by default).
+        if os.environ.get("MAVERICK_LOG_TURNS"):
+            import sys as _sys
+            _sys.stderr.write(
+                f"llm_turn model={model or 'default'} "
+                f"in={in_tok} out={out_tok} "
+                f"cache_read={cache_read} cache_write={cache_creation} "
+                f"stop={resp.stop_reason}\n"
+            )
+            _sys.stderr.flush()
+
         return LLMResponse(
             text="\n".join(text_parts).strip(),
             thinking="\n".join(thinking_parts).strip() or None,
+            thinking_signature=thinking_signature,
             tool_calls=tool_calls,
             stop_reason=resp.stop_reason,
             cache_creation_tokens=cache_creation,

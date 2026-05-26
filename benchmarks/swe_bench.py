@@ -343,6 +343,12 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
     instance_wall = float(os.environ.get("MAVERICK_INSTANCE_WALL_SEC", "1500"))
     budget = Budget(max_dollars=instance_cap, max_wall_seconds=instance_wall)
     sandbox = build_sandbox()
+    # Pre-initialize so the post-finally row construction always has
+    # values, even if the agent raises before episode bookkeeping.
+    all_eps: list = []
+    goal_obj = None
+    world_events: list = []
+    result = ""
 
     try:
         if best_of_n > 1:
@@ -354,6 +360,20 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
             result = run_goal_sync(
                 llm, world, budget, gid, sandbox=sandbox, max_depth=3,
             )
+        # Wave 10 (C6): sum cost across ALL episodes for this goal, not
+        # just the most recent one. Best-of-N runs N episodes; prior
+        # code reported only eps[0] (one attempt) and lost the other
+        # N-1. Wave 12 hotfix: all THREE world.* reads (list_episodes,
+        # get_goal, goal_events) MUST happen BEFORE the finally block
+        # closes the WorldModel SQLite connection — otherwise the
+        # harness raises ProgrammingError("Cannot operate on a closed
+        # database") and every instance silently errors with $0 cost.
+        all_eps = world.list_episodes(goal_id=gid)
+        goal_obj = world.get_goal(gid)
+        try:
+            world_events = world.goal_events(gid, limit=2000)
+        except Exception:
+            world_events = []
     finally:
         # Wave 10 (D11): restore env so the next instance / process
         # doesn't inherit this instance's test sets.
@@ -369,11 +389,6 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
             world.close()
         except Exception:
             pass
-
-    # Wave 10 (C6): sum cost across ALL episodes for this goal, not just
-    # the most recent one. Best-of-N runs N episodes; prior code reported
-    # only eps[0] (one attempt) and lost the other N-1.
-    all_eps = world.list_episodes(goal_id=gid)
     if all_eps:
         total_cost = sum(getattr(e, "cost_dollars", 0.0) or 0.0 for e in all_eps)
         total_in   = sum(getattr(e, "input_tokens", 0) or 0 for e in all_eps)
@@ -386,7 +401,7 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
     # orchestrator's prose. The orchestrator's return value starts with
     # `DONE.\n\n<patch>` in coding mode; extract_unified_diff pulls the
     # actual unified diff. Fallback chain: orchestrator return -> goal.result.
-    goal = world.get_goal(gid)
+    goal = goal_obj  # pre-read before close (Wave 12 hotfix)
     diff = extract_unified_diff(result or "") or extract_unified_diff(
         (goal.result or "") if goal else ""
     ) or ""
@@ -394,10 +409,7 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
     # Wave 11: surface tool-use signals + verifier confidence + trace
     # data for adoption tripwire + forensics. The agent posts these
     # to the blackboard which mirrors into goal_events.
-    try:
-        events = world.goal_events(gid, limit=2000)
-    except Exception:
-        events = []
+    events = world_events  # pre-read before close (Wave 12 hotfix)
     str_replace_used = any(
         "search_replace_used=1" in (e.content or "")
         for e in events
@@ -441,10 +453,23 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
             print(f"warning: trace write failed for {instance_id}: {e}",
                   file=sys.stderr)
 
+    # Wave 12 hotfix: report the orchestrator role's actual model
+    # (resolved via the same role-dispatch the agent loop uses), not
+    # the shared LLM's default. The default is hardcoded to Sonnet,
+    # which makes Opus-brain runs misleadingly show "claude-sonnet-4-6"
+    # in the CSV and breaks downstream cost-per-model attribution.
+    try:
+        from maverick.llm import model_for_role
+        reported_model = model_for_role("orchestrator") or getattr(
+            llm, "model", "",
+        )
+    except Exception:
+        reported_model = getattr(llm, "model", "")
+
     return Row(
         instance_id=instance_id,
         pipeline="maverick",
-        model_id=getattr(llm, "model", ""),
+        model_id=reported_model,
         wall_seconds=time.monotonic() - start,
         cost_dollars=total_cost,
         tokens_in=total_in,
@@ -457,7 +482,17 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
         # cells starting with =+-@\t\r — patch lines naturally start
         # with `+`/`-`).
         predicted_patch=_sanitize_patch_for_csv(diff),
-        outcome=last_outcome or ("success" if diff else "no-diff"),
+        # Wave 12 hotfix: don't override "no-diff" with the episode's
+        # `last_outcome` when the actual extracted diff is empty.
+        # Otherwise we report "success" on instances where the agent's
+        # SR block was never applied/extracted — the score reads "X
+        # successes" but predicted_patch is empty so grading scores 0.
+        # If we have a diff, prefer the episode outcome ("success" or
+        # "failure"); if not, force "no-diff" so the operator sees the
+        # real story.
+        outcome=(last_outcome if diff else "no-diff") or (
+            "success" if diff else "no-diff"
+        ),
         extra=extra_payload,
     )
 
@@ -950,22 +985,26 @@ def main() -> int:
                 write_csv([row], args.out)
                 written += 1
                 total_spend += row.cost_dollars
-                # Wave 12 (F11e) + hardening: consecutive-failure
-                # circuit breaker. A "failure" outcome (pipeline caught
-                # an API error and downgraded to failure) should ALSO
-                # count toward the breaker — only explicitly successful
-                # outcomes reset the counter. Otherwise a pipeline that
-                # swallows errors internally defeats the safety net.
+                # Wave 12 (F11e) + hardening + smoke-day-2 fix:
+                # consecutive-failure circuit breaker. ANY outcome that
+                # isn't an explicit success/dry-run resets the breaker
+                # AND counts toward the failure budget. The May 26
+                # smoke showed 3/6 instances coming back as "no-diff"
+                # — a state where the agent ran (real spend) but
+                # didn't produce a patch. Earlier logic excluded
+                # "no-diff" from the breaker, letting the harness
+                # burn full budget on a degenerate run. Now: only
+                # `success` (or dry-run) resets; everything else
+                # (error/failure/budget/no-diff/empty) counts.
                 outcome_clean = row.outcome.strip().lower()
-                is_failure_class = (
-                    outcome_clean.startswith("error")
-                    or outcome_clean.startswith("failure")
-                    or outcome_clean.startswith("budget")
+                is_good_outcome = (
+                    outcome_clean == "success"
+                    or outcome_clean == "dry-run"
                 )
-                if is_failure_class:
-                    consecutive_failures += 1
-                else:
+                if is_good_outcome:
                     consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
                 if (args.max_consecutive_failures > 0
                         and consecutive_failures >= args.max_consecutive_failures):
                     print(
