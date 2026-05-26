@@ -190,6 +190,117 @@ async def verify_proposal(
     return _parse(resp.text)
 
 
+async def verify_proposal_ensemble(
+    brief: str,
+    proposal: str,
+    llm: LLM,
+    budget: Optional[Budget] = None,
+    *,
+    proposer_model: Optional[str] = None,
+    panel: Optional[list[str]] = None,
+    weighted: bool = True,
+) -> VerifierVerdict:
+    """Run N verifiers across distinct model families and combine.
+
+    Multi-Agent Verification (MAV, arxiv:2502.20379) shows that scaling
+    the *verifier* axis -- multiple verifiers, weighted vote -- is
+    orthogonally additive to scaling the *generator* axis (best-of-N).
+    On agentic tasks MAV-3 beats single-verifier + best-of-8 at the
+    same total compute budget.
+
+    Panel: explicit model list, or None to use a curated cross-family
+    default (Anthropic Sonnet + OpenAI GPT + DeepSeek). Each panel
+    member is excluded if it's the same family as the proposer.
+
+    `weighted=True` uses each verdict's `confidence` as a weight in
+    the final accept-vote; `weighted=False` is plain majority. The
+    combined verdict's `confidence` is the *minimum* confidence across
+    accepting voters (conservative -- one outlier doesn't pull
+    confidence up).
+    """
+    if not proposal or not proposal.strip():
+        return VerifierVerdict.reject("proposal is empty")
+
+    if panel is None:
+        panel = [
+            "anthropic:claude-sonnet-4-6",
+            "openai:gpt-5.4",
+            "openrouter:deepseek-v4-pro",
+        ]
+    # Drop panel members in the proposer's family.
+    if proposer_model:
+        panel = [m for m in panel if not _same_family(proposer_model, m)]
+    if not panel:
+        # Everything got filtered -- fall back to whatever the default
+        # cross-family verifier is for this proposer.
+        cross = _cross_family_fallback(proposer_model or "")
+        panel = [cross] if cross else [model_for_role("verifier")]
+
+    import asyncio
+    user_msg = (
+        f"GOAL BRIEF:\n{brief}\n\n"
+        f"PROPOSED FINAL ANSWER:\n{proposal}\n\n"
+        "Return the verdict JSON."
+    )
+
+    async def _one(model: str) -> VerifierVerdict:
+        try:
+            resp = await llm.complete_async(
+                system=VERIFIER_SYSTEM,
+                messages=[{"role": "user", "content": user_msg}],
+                tools=None,
+                budget=budget,
+                max_tokens=1024,
+                model=model,
+            )
+            return _parse(resp.text)
+        except Exception as e:  # pragma: no cover
+            log.warning("MAV verifier %s failed: %s", model, e)
+            return VerifierVerdict(confidence=0.5, accepts=True,
+                                   critique=f"failed: {e}")
+
+    verdicts = await asyncio.gather(*(_one(m) for m in panel))
+    return _combine(verdicts, weighted=weighted)
+
+
+def _combine(verdicts: list["VerifierVerdict"], *, weighted: bool) -> "VerifierVerdict":
+    """Combine N individual verdicts into one ensemble verdict."""
+    if not verdicts:
+        return VerifierVerdict.reject("no verifiers ran")
+    if len(verdicts) == 1:
+        return verdicts[0]
+
+    if weighted:
+        # Weighted by each voter's own confidence.
+        accept_weight = sum(v.confidence for v in verdicts if v.accepts)
+        reject_weight = sum(v.confidence for v in verdicts if not v.accepts)
+        accepts = accept_weight > reject_weight
+    else:
+        accepts = sum(1 for v in verdicts if v.accepts) > len(verdicts) / 2
+
+    # Conservative: combined confidence = mean of those who AGREE with
+    # the majority. So if 2/3 accept at 0.9 and 1 rejects at 0.4, we
+    # accept at 0.9 (the rejecting voter is overruled but not averaged in).
+    side = [v for v in verdicts if v.accepts == accepts]
+    confidence = sum(v.confidence for v in side) / len(side) if side else 0.0
+
+    # Collect all unique issues + critiques across the panel.
+    issues: list[str] = []
+    seen: set[str] = set()
+    for v in verdicts:
+        for i in v.issues:
+            if i and i not in seen:
+                issues.append(i)
+                seen.add(i)
+    critiques = [v.critique for v in verdicts if v.critique]
+    critique = " | ".join(critiques) if critiques else ""
+
+    return VerifierVerdict(
+        confidence=confidence, accepts=accepts,
+        critique=critique, issues=issues,
+    )
+
+
 def _provider(model: str) -> str:
     """Extract the provider/family slug from a `provider:model-id` spec."""
     if ":" in model:
