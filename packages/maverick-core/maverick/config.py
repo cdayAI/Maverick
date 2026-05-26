@@ -39,7 +39,19 @@ except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore
 
 
-DEFAULT_CONFIG_PATH = Path.home() / ".maverick" / "config.toml"
+# Note: do NOT cache `Path.home()` at module import time. It evaluates
+# eagerly against the import-time HOME env var, and stays stale if HOME
+# is later patched (e.g. by pytest's monkeypatch.setenv("HOME", ...)
+# for test isolation). Resolve dynamically inside config_path() instead.
+DEFAULT_CONFIG_BASENAME = (".maverick", "config.toml")
+
+
+def _default_config_path() -> Path:
+    return Path.home() / DEFAULT_CONFIG_BASENAME[0] / DEFAULT_CONFIG_BASENAME[1]
+
+
+# Back-compat: many call sites still reference the constant.
+DEFAULT_CONFIG_PATH = _default_config_path()
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
@@ -59,7 +71,10 @@ def config_path() -> Path:
     override = os.environ.get("MAVERICK_CONFIG")
     if override:
         return Path(override).expanduser()
-    return DEFAULT_CONFIG_PATH
+    # Resolve dynamically so monkeypatch.setenv("HOME", ...) takes effect
+    # mid-process — the prior `return DEFAULT_CONFIG_PATH` was evaluated
+    # at import time and stayed stale.
+    return _default_config_path()
 
 
 def load_config(path: Optional[Path] = None) -> dict:

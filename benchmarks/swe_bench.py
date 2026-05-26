@@ -453,10 +453,23 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
             print(f"warning: trace write failed for {instance_id}: {e}",
                   file=sys.stderr)
 
+    # Wave 12 hotfix: report the orchestrator role's actual model
+    # (resolved via the same role-dispatch the agent loop uses), not
+    # the shared LLM's default. The default is hardcoded to Sonnet,
+    # which makes Opus-brain runs misleadingly show "claude-sonnet-4-6"
+    # in the CSV and breaks downstream cost-per-model attribution.
+    try:
+        from maverick.llm import model_for_role
+        reported_model = model_for_role("orchestrator") or getattr(
+            llm, "model", "",
+        )
+    except Exception:
+        reported_model = getattr(llm, "model", "")
+
     return Row(
         instance_id=instance_id,
         pipeline="maverick",
-        model_id=getattr(llm, "model", ""),
+        model_id=reported_model,
         wall_seconds=time.monotonic() - start,
         cost_dollars=total_cost,
         tokens_in=total_in,

@@ -227,6 +227,27 @@ async def run_goal(
         except Exception as e:
             skill_note = f"\n\n[skill distill error: {e}]"
 
+        # Wave 12 hotfix: in coding mode the orchestrator's return value
+        # IS the benchmark CSV's `predicted_patch` after extract_unified_diff.
+        # The trailing skill_note + budget summary then pollute the patch
+        # (they sit AFTER the last hunk so `git apply` ignores them, but
+        # stricter graders + downstream tooling don't). When summary is
+        # already a rendered unified diff, return it as-is — log the
+        # bookkeeping to the blackboard instead.
+        is_rendered_diff = bool(
+            result.final_patch
+            and ("diff --git" in summary or "--- a/" in summary)
+        )
+        if is_rendered_diff:
+            try:
+                if skill_note.strip():
+                    blackboard.post("orchestrator", "skill", skill_note.strip())
+                blackboard.post(
+                    "orchestrator", "budget_summary", budget.summary(),
+                )
+            except Exception:
+                pass
+            return summary
         return f"DONE.\n\n{summary}{skill_note}\n\n[{budget.summary()}]"
     finally:
         if mcp_clients:
