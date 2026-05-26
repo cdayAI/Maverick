@@ -400,7 +400,7 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
             tp.mkdir(parents=True, exist_ok=True)
             safe_id = instance_id.replace("/", "_")
             sidecar = tp / f"{safe_id}.jsonl"
-            with sidecar.open("w") as f:
+            with sidecar.open("w", encoding="utf-8") as f:
                 for e in events:
                     f.write(json.dumps(_asdict(e), default=str) + "\n")
         except Exception as e:
@@ -530,7 +530,7 @@ def load_instances(manifest: Path) -> list[dict]:
     harness; the bad line is logged + skipped so the run continues.
     """
     out: list[dict] = []
-    for lineno, raw in enumerate(manifest.read_text().splitlines(), start=1):
+    for lineno, raw in enumerate(manifest.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -552,7 +552,7 @@ def load_instances(manifest: Path) -> list[dict]:
             out.append(obj)
         else:
             brief_path = manifest.parent / f"{line}.txt"
-            brief = brief_path.read_text() if brief_path.exists() else ""
+            brief = brief_path.read_text(encoding="utf-8") if brief_path.exists() else ""
             out.append({"instance_id": line, "brief": brief})
     return out
 
@@ -574,7 +574,7 @@ def write_csv(rows: list[Row], out_path: Path) -> None:
     cols = list(asdict(Row("", "", "")).keys())
     cols.remove("extra")
     new_file = not out_path.exists()
-    with out_path.open("a", newline="") as f:
+    with out_path.open("a", newline="", encoding="utf-8") as f:
         try:
             import fcntl as _fcntl
             _fcntl.flock(f.fileno(), _fcntl.LOCK_EX)
@@ -624,7 +624,7 @@ def already_done(out_path: Path) -> set[tuple[str, str]]:
     done: set[tuple[str, str]] = set()
     error_rows = 0
     try:
-        with out_path.open() as f:
+        with out_path.open(encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 outcome = (row.get("outcome") or "").strip()
                 if outcome.startswith("error:"):

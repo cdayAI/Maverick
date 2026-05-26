@@ -660,7 +660,7 @@ def detect_test_runner(workdir: Path, language: str = "") -> str:
         if hinted in ("jest", "vitest", "mocha"):
             if (workdir / "package.json").exists():
                 try:
-                    pkg = _json.loads((workdir / "package.json").read_text())
+                    pkg = _json.loads((workdir / "package.json").read_text(encoding="utf-8"))
                     test_script = (pkg.get("scripts") or {}).get("test", "").lower()
                     if "vitest" in test_script:
                         return "vitest"
@@ -682,7 +682,7 @@ def detect_test_runner(workdir: Path, language: str = "") -> str:
             continue
         if name == "node":
             try:
-                pkg = _json.loads((workdir / "package.json").read_text())
+                pkg = _json.loads((workdir / "package.json").read_text(encoding="utf-8"))
                 test_script = (pkg.get("scripts") or {}).get("test", "").lower()
                 if "vitest" in test_script:
                     return "vitest"
