@@ -469,7 +469,17 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
         # cells starting with =+-@\t\r — patch lines naturally start
         # with `+`/`-`).
         predicted_patch=_sanitize_patch_for_csv(diff),
-        outcome=last_outcome or ("success" if diff else "no-diff"),
+        # Wave 12 hotfix: don't override "no-diff" with the episode's
+        # `last_outcome` when the actual extracted diff is empty.
+        # Otherwise we report "success" on instances where the agent's
+        # SR block was never applied/extracted — the score reads "X
+        # successes" but predicted_patch is empty so grading scores 0.
+        # If we have a diff, prefer the episode outcome ("success" or
+        # "failure"); if not, force "no-diff" so the operator sees the
+        # real story.
+        outcome=(last_outcome if diff else "no-diff") or (
+            "success" if diff else "no-diff"
+        ),
         extra=extra_payload,
     )
 

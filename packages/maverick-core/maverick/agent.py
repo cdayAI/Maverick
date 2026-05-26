@@ -369,8 +369,22 @@ class Agent:
             messages.append({"role": "assistant", "content": assistant_content})
 
             if resp.text:
-                if resp.text.startswith("FINAL:"):
-                    final = resp.text[len("FINAL:") :].strip()
+                # Wave 12 hotfix: the prompt instructs the model to "End
+                # your turn with `FINAL:`" — many models emit a brief
+                # reasoning line BEFORE FINAL: (e.g. "Target: foo.py:bar
+                # — fix is X. FINAL: ..."). The prior `startswith` check
+                # missed those entirely; the SR block went to the
+                # blackboard as a plain observation, was never applied,
+                # and the orchestrator returned the raw SR text as
+                # `final` with `final_patch=None` — silent score loss.
+                # Use the LAST line-anchored FINAL: marker, mirroring
+                # extract_unified_diff's logic.
+                import re as _re
+                _final_matches = list(_re.finditer(
+                    r"(?:^|\n)\s*FINAL:\s*\n?", resp.text,
+                ))
+                if _final_matches:
+                    final = resp.text[_final_matches[-1].end():].strip()
 
                     # Wave 8: coding-mode patch self-validation. If the
                     # workdir is a git repo AND the FINAL contains a
