@@ -320,6 +320,57 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
     diff = extract_unified_diff(result or "") or extract_unified_diff(
         (goal.result or "") if goal else ""
     ) or ""
+
+    # Wave 11: surface tool-use signals + verifier confidence + trace
+    # data for adoption tripwire + forensics. The agent posts these
+    # to the blackboard which mirrors into goal_events.
+    try:
+        events = world.goal_events(gid, limit=2000)
+    except Exception:
+        events = []
+    str_replace_used = any(
+        "search_replace_used=1" in (e.content or "")
+        for e in events
+    )
+    verifier_events = [
+        e.content for e in events
+        if e.kind == "verify"
+    ]
+    tool_invocations = [
+        e.content for e in events
+        if e.kind == "observation" and (e.content or "").startswith("tool=")
+    ]
+    tool_names = set()
+    for tinv in tool_invocations:
+        if tinv.startswith("tool="):
+            name = tinv.split("=", 1)[1].split(" ", 1)[0].rstrip(",")
+            tool_names.add(name)
+
+    extra_payload: dict = {
+        "goal_id": gid,
+        "run_text": (result or "")[:500],
+        "str_replace_editor_used": bool(str_replace_used),
+        "tool_names": sorted(tool_names),
+        "verify_event_count": len(verifier_events),
+        "num_turns": len(tool_invocations),
+    }
+    # Optional per-instance JSON sidecar for forensics.
+    trace_dir = os.environ.get("MAVERICK_TRACE_DIR")
+    if trace_dir:
+        try:
+            from pathlib import Path as _Path
+            from dataclasses import asdict as _asdict
+            tp = _Path(trace_dir)
+            tp.mkdir(parents=True, exist_ok=True)
+            safe_id = instance_id.replace("/", "_")
+            sidecar = tp / f"{safe_id}.jsonl"
+            with sidecar.open("w") as f:
+                for e in events:
+                    f.write(json.dumps(_asdict(e), default=str) + "\n")
+        except Exception as e:
+            print(f"warning: trace write failed for {instance_id}: {e}",
+                  file=sys.stderr)
+
     return Row(
         instance_id=instance_id,
         pipeline="maverick",
@@ -330,7 +381,7 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
         tokens_out=total_out,
         predicted_patch=diff[:50_000],
         outcome=last_outcome or ("success" if diff else "no-diff"),
-        extra={"goal_id": gid, "run_text": (result or "")[:500]},
+        extra=extra_payload,
     )
 
 

@@ -167,16 +167,57 @@ class Agent:
 
         Caller is responsible for resetting the workdir AFTER capturing
         the patch.
+
+        Wave 11: also runs `ast.parse` on every modified Python file
+        before rendering the diff. SyntaxError gets surfaced via a
+        synthesized ApplySummary so the agent re-emits, instead of
+        submitting a patch that breaks pytest collection (32% of Opus
+        4.1 / 57% of Gemini failures on Pro per Scale's Table 4).
         """
         from pathlib import Path as _Path
-        from .coding_mode import extract_unified_diff
-        from .edit_format import apply_blocks, parse_blocks, render_diff
+        from .coding_mode import (
+            _ast_check_python_files,
+            extract_unified_diff,
+        )
+        from .edit_format import (
+            ApplyResult, SearchReplaceBlock, apply_blocks, parse_blocks,
+            render_diff,
+        )
 
         workdir = _Path(getattr(self.ctx.sandbox, "workdir", "."))
         blocks = parse_blocks(final)
         if blocks:
             summary = apply_blocks(blocks, workdir, atomic=True)
             if not summary.ok:
+                return None, summary
+            touched_paths = sorted(summary.files_touched)
+            syntax_errors = _ast_check_python_files(workdir, touched_paths)
+            if syntax_errors:
+                # Roll back the SR application so the next attempt sees
+                # HEAD, then synthesise a failure summary the caller
+                # can convert into a repair prompt.
+                try:
+                    import subprocess as _sub
+                    _sub.run(
+                        ["git", "-C", str(workdir), "reset", "--hard", "HEAD"],
+                        capture_output=True, timeout=20,
+                    )
+                    _sub.run(
+                        ["git", "-C", str(workdir), "clean", "-fd"],
+                        capture_output=True, timeout=20,
+                    )
+                except Exception:
+                    pass
+                summary.results.append(ApplyResult(
+                    ok=False,
+                    block=SearchReplaceBlock(
+                        path="<syntax check>", search="", replace="",
+                    ),
+                    reason=(
+                        "Python syntax errors after applying: "
+                        + "; ".join(syntax_errors)
+                    ),
+                ))
                 return None, summary
             patch = render_diff(workdir)
             return patch, summary
@@ -417,6 +458,38 @@ class Agent:
                         # Stash the rendered patch so the verifier branch
                         # doesn't have to re-parse.
                         self._final_patch = patch
+                        # Wave 11: defensive validation BEFORE git apply
+                        # --check. Catches grader-fatal patches (test
+                        # files, dep pins, cheating-detector overlap)
+                        # so we ask for revision instead of submitting
+                        # something the grader will silently zero out.
+                        try:
+                            from .coding_mode import defensive_validate
+                            def_check = defensive_validate(
+                                patch,
+                                fail_to_pass=coding_cfg.fail_to_pass,
+                                pass_to_pass=coding_cfg.pass_to_pass,
+                                gold_patch=os.environ.get(
+                                    "MAVERICK_GOLD_PATCH", "",
+                                ),
+                                opaque=(os.environ.get(
+                                    "MAVERICK_BENCHMARK_OPAQUE", "1",
+                                ) != "0"),
+                            )
+                        except Exception:
+                            def_check = None
+                        if def_check is not None and not def_check.ok:
+                            self._patch_validated = True
+                            bb.post(
+                                self.name, "verify",
+                                f"patch rejected by defensive validator: "
+                                f"{def_check.blocked_paths or def_check.warnings}",
+                            )
+                            messages.append({
+                                "role": "user",
+                                "content": def_check.critique(),
+                            })
+                            continue
                         validation = validate_patch(patch, workdir)
                         if not validation.valid:
                             self._patch_validated = True  # one retry max
