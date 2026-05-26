@@ -270,6 +270,24 @@ class WorldModel:
         self._apply_migrations()
         self.conn.commit()
 
+    def close(self) -> None:
+        """Close the underlying SQLite connection.
+
+        Wave 9 fix (council H1): benchmark runs construct ~1865
+        WorldModel instances in one process; without close() the
+        FD count climbs and the host eventually OOMs.
+        """
+        try:
+            self.conn.close()
+        except Exception:  # pragma: no cover
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
     def reclaim_orphan_goals(self, *, max_age_seconds: float = 60.0) -> int:
         """Mark goals stuck in 'active' or 'pending' as 'blocked'.
 
@@ -410,16 +428,32 @@ class WorldModel:
         )
         self.conn.commit()
 
-    def list_episodes(self, limit: int = 50) -> list[EpisodeSpend]:
-        rows = self.conn.execute(
-            "SELECT id, goal_id, started_at, ended_at, outcome, "
-            "COALESCE(cost_dollars, 0) AS cost_dollars, "
-            "COALESCE(input_tokens, 0) AS input_tokens, "
-            "COALESCE(output_tokens, 0) AS output_tokens, "
-            "COALESCE(tool_calls, 0) AS tool_calls "
-            "FROM episodes ORDER BY started_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+    def list_episodes(
+        self,
+        limit: int = 50,
+        goal_id: Optional[int] = None,
+    ) -> list[EpisodeSpend]:
+        if goal_id is not None:
+            rows = self.conn.execute(
+                "SELECT id, goal_id, started_at, ended_at, outcome, "
+                "COALESCE(cost_dollars, 0) AS cost_dollars, "
+                "COALESCE(input_tokens, 0) AS input_tokens, "
+                "COALESCE(output_tokens, 0) AS output_tokens, "
+                "COALESCE(tool_calls, 0) AS tool_calls "
+                "FROM episodes WHERE goal_id = ? "
+                "ORDER BY started_at DESC LIMIT ?",
+                (goal_id, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT id, goal_id, started_at, ended_at, outcome, "
+                "COALESCE(cost_dollars, 0) AS cost_dollars, "
+                "COALESCE(input_tokens, 0) AS input_tokens, "
+                "COALESCE(output_tokens, 0) AS output_tokens, "
+                "COALESCE(tool_calls, 0) AS tool_calls "
+                "FROM episodes ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
         return [EpisodeSpend(**dict(r)) for r in rows]
 
     def total_spend(self) -> dict[str, float]:

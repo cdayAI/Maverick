@@ -79,7 +79,9 @@ def base_registry(
     from .ask_user import ask_user
     from .attachments import list_attachments_tool
     from .fs import list_dir, read_file, write_file
+    from .repo_map import repo_map
     from .shell import shell
+    from .str_edit import str_replace_editor
 
     reg = ToolRegistry()
     reg.register(read_file(sandbox))
@@ -88,6 +90,11 @@ def base_registry(
     reg.register(shell(sandbox))
     reg.register(ask_user(world, goal_id=goal_id))
     reg.register(list_attachments_tool(world, goal_id))
+    reg.register(repo_map(sandbox))
+    # Wave 10 (B1): surgical exact-match editor. OpenHands' biggest
+    # single contribution to SWE-bench scores — eliminates ~30% of
+    # apply-fail failures by side-stepping hand-authored diffs.
+    reg.register(str_replace_editor(sandbox))
 
     if mcp_clients:
         from ..mcp_tools import tools_from_mcp

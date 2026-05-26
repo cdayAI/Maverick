@@ -18,6 +18,8 @@ set -euo pipefail
 
 INSTANCES="${1:-5}"
 PIPELINES_ARG="${2:-default}"
+SEED="${SMOKE_SEED:-20260526}"   # fixed seed so smoke is reproducible
+STRATIFY="${SMOKE_STRATIFY:-1}"  # 1 = stratify by language (Python/JS/Go/...)
 
 MANIFEST="${HOME}/.maverick/swebench-pro/manifest.jsonl"
 WORKDIR="$(mktemp -d -t maverick-swe-XXXXXX)"
@@ -52,7 +54,39 @@ echo "[smoke] pipelines:  ${PIPELINES}"
 echo "[smoke] workdir:    ${WORKDIR}"
 echo
 
-head -n "${INSTANCES}" "${MANIFEST}" > "${SMOKE_MANIFEST}"
+# Random sample with fixed seed, stratified by language (instance_id prefix
+# encodes the repo, and the repo encodes the language). `head -n` would
+# be non-representative because the manifest is repo-sorted.
+python - <<PY
+import json, random, collections, pathlib, re
+random.seed(${SEED})
+rows = [json.loads(l) for l in open("${MANIFEST}")]
+def lang(r):
+    iid = r["instance_id"].lower()
+    # crude but adequate: classify by repo name patterns in SWE-bench Pro
+    if re.search(r"(node|js|ts|react|vue|next|express)", iid): return "js"
+    if re.search(r"(\\bgo\\b|golang)", iid): return "go"
+    if re.search(r"(rust|cargo)", iid): return "rust"
+    if re.search(r"(java|kotlin|gradle|maven)", iid): return "java"
+    return "py"
+buckets = collections.defaultdict(list)
+for r in rows: buckets[lang(r)].append(r)
+for b in buckets.values(): random.shuffle(b)
+# proportional allocation, but guarantee >=1 per non-empty bucket
+n = ${INSTANCES}
+total = sum(len(v) for v in buckets.values())
+alloc = {k: max(1, round(n * len(v)/total)) for k,v in buckets.items() if v}
+# trim to exactly n
+while sum(alloc.values()) > n:
+    k = max(alloc, key=lambda x: alloc[x]); alloc[k] -= 1
+while sum(alloc.values()) < n:
+    k = min(alloc, key=lambda x: alloc[x]); alloc[k] += 1
+picked = []
+for k, m in alloc.items(): picked.extend(buckets[k][:m])
+with open("${SMOKE_MANIFEST}", "w") as f:
+    for r in picked: f.write(json.dumps(r) + chr(10))
+print(f"[smoke] sampled {len(picked)} instances, langs={ {k:alloc[k] for k in alloc} }, seed=${SEED}")
+PY
 
 # ---- producer ----
 echo "[smoke] running producer..."
