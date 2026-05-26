@@ -96,8 +96,15 @@ class TestSandboxExecTimeout:
         from maverick.sandbox import LocalBackend
         # self.timeout would be 0.1s, but the call passes 5s, so a
         # 0.5s sleep completes successfully (no TIMEOUT).
+        # Wave 11: use python -c for cross-platform sleep (Unix `sleep`
+        # is not available on Windows).
         sb = LocalBackend(workdir=tmp_path, timeout=0.1)
-        r = sb.exec("sleep 0.5 && echo done", timeout=5.0)
+        import sys
+        py = sys.executable.replace("\\", "/")  # quote-friendly on Windows
+        r = sb.exec(
+            f'"{py}" -c "import time; time.sleep(0.5); print(\'done\')"',
+            timeout=5.0,
+        )
         assert r.exit_code == 0
         assert "done" in r.stdout
 

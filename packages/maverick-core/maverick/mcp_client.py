@@ -136,13 +136,21 @@ def _validate_subprocess_inputs(spec: "MCPServerSpec") -> None:
 
 def _verify_command_pin(spec: "MCPServerSpec") -> None:
     """If spec.pin_sha256 is set, hash the resolved executable and refuse
-    to spawn on mismatch. Resolution uses shutil.which for argv[0]."""
+    to spawn on mismatch. Resolution uses shutil.which for argv[0].
+
+    Wave 11 fix: detect "argv[0] is a path" via the presence of EITHER
+    forward-slash OR backslash. The prior check (`if "/" not in cmd`)
+    misclassified Windows absolute paths like `C:\\foo\\mcp-tool` as
+    bare command names and tried to look them up on PATH, where they
+    weren't found.
+    """
     if not spec.pin_sha256:
         return
     import hashlib as _hashlib
     import shutil as _shutil
     from pathlib import Path as _Path
-    resolved = _shutil.which(spec.command) if "/" not in spec.command else spec.command
+    looks_like_path = "/" in spec.command or "\\" in spec.command
+    resolved = spec.command if looks_like_path else _shutil.which(spec.command)
     if not resolved or not _Path(resolved).exists():
         raise MCPClientError(
             f"MCP server {spec.name!r}: cannot resolve {spec.command!r} to "
