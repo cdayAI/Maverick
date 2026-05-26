@@ -127,3 +127,52 @@ def test_wall_clock_uses_monotonic_clock():
     elapsed2 = b.elapsed()
     assert elapsed2 >= elapsed1
     assert elapsed1 >= 0.0
+
+
+def test_record_tokens_thread_safe():
+    """Wave 12 (council F12b): concurrent record_tokens calls must not
+    lose updates. Without the lock, `self.dollars += ...` races and
+    silently undercounts (it's a load-then-store, not atomic)."""
+    import threading
+    from maverick.llm import MODEL_SONNET
+
+    b = Budget(
+        max_dollars=1000.0,
+        max_input_tokens=100_000_000,
+        max_output_tokens=100_000_000,
+        max_tool_calls=100_000,
+    )
+
+    def worker():
+        for _ in range(100):
+            b.record_tokens(1000, 100, model=MODEL_SONNET)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # 8 threads × 100 iterations × 1000 input tokens = 800_000 input tokens.
+    assert b.input_tokens == 800_000, (
+        f"input_tokens race detected: expected 800000, got {b.input_tokens}"
+    )
+    # 8 × 100 × 100 = 80_000 output tokens.
+    assert b.output_tokens == 80_000
+
+
+def test_record_tool_call_thread_safe():
+    import threading
+    b = Budget(max_dollars=100.0, max_tool_calls=100_000)
+
+    def worker():
+        for _ in range(500):
+            b.record_tool_call()
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert b.tool_calls == 2_000

@@ -11,6 +11,7 @@ v0.2 cost-correctness fix:
 """
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -111,21 +112,27 @@ class Budget:
         out_tok = int(out_tok or 0)
         cache_read_tok = int(cache_read_tok or 0)
         cache_write_tok = int(cache_write_tok or 0)
-        self.input_tokens += in_tok
-        self.cache_read_tokens += cache_read_tok
-        self.cache_write_tokens += cache_write_tok
-        self.output_tokens += out_tok
+        # Wave 12 (council F12b): make the accumulator atomic so a
+        # future parallel best-of-N (or multi-agent swarm where two
+        # agents share a Budget) can't lose updates. `+=` on float is
+        # NOT atomic in CPython under threads — we'd silently undercount.
+        with self._lock:
+            self.input_tokens += in_tok
+            self.cache_read_tokens += cache_read_tok
+            self.cache_write_tokens += cache_write_tok
+            self.output_tokens += out_tok
 
-        in_rate, out_rate = _lookup_price(model)
-        write_mult = _cache_write_mult_from_ttl(cache_write_ttl)
-        self.dollars += (in_tok / 1_000_000) * in_rate
-        self.dollars += (cache_read_tok / 1_000_000) * in_rate * _CACHE_READ_MULT
-        self.dollars += (cache_write_tok / 1_000_000) * in_rate * write_mult
-        self.dollars += (out_tok / 1_000_000) * out_rate
+            in_rate, out_rate = _lookup_price(model)
+            write_mult = _cache_write_mult_from_ttl(cache_write_ttl)
+            self.dollars += (in_tok / 1_000_000) * in_rate
+            self.dollars += (cache_read_tok / 1_000_000) * in_rate * _CACHE_READ_MULT
+            self.dollars += (cache_write_tok / 1_000_000) * in_rate * write_mult
+            self.dollars += (out_tok / 1_000_000) * out_rate
         self.check()
 
     def record_tool_call(self) -> None:
-        self.tool_calls += 1
+        with self._lock:
+            self.tool_calls += 1
         self.check()
 
     def elapsed(self) -> float:
@@ -140,6 +147,8 @@ class Budget:
 
     def __post_init__(self) -> None:
         self._started_monotonic = time.monotonic()
+        # Wave 12 (F12b): per-instance lock for atomic counter updates.
+        self._lock = threading.Lock()
 
     def check(self) -> None:
         if self.input_tokens > self.max_input_tokens:

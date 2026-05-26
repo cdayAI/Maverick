@@ -33,6 +33,7 @@ import csv
 import json
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -112,14 +113,21 @@ def _sanitize_patch_for_csv(diff: str) -> str:
 # on a 1865-instance Pro sweep. One LLM per process, threadsafe per
 # the Anthropic SDK's documented invariants.
 _SHARED_LLM = None
+# Wave 12 (council F12a): lock around lazy init so two pipeline calls
+# starting near-simultaneously don't double-construct the LLM (which
+# would leak a second httpx pool and stomp on the first's connections).
+_SHARED_LLM_LOCK = threading.Lock()
 
 
 def _get_shared_llm():
     global _SHARED_LLM
-    if _SHARED_LLM is None:
-        from maverick.llm import LLM
-        _SHARED_LLM = LLM()
-    return _SHARED_LLM
+    if _SHARED_LLM is not None:
+        return _SHARED_LLM
+    with _SHARED_LLM_LOCK:
+        if _SHARED_LLM is None:
+            from maverick.llm import LLM
+            _SHARED_LLM = LLM()
+        return _SHARED_LLM
 
 
 def _reset_workdir(workdir, base_commit: str = "") -> None:

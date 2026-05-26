@@ -140,13 +140,22 @@ class LLM:
         self.model = model
         self._anthropic_api_key = api_key  # legacy back-compat
         self._clients: dict[str, Any] = {}
+        # Wave 12 (council F12a): lock the provider cache so two
+        # concurrent calls don't double-init httpx connection pools.
+        import threading as _threading
+        self._clients_lock = _threading.Lock()
 
     def _get_client(self, provider: str):
-        if provider not in self._clients:
-            from .providers import get_provider_client
-            key = self._anthropic_api_key if provider == "anthropic" else None
-            self._clients[provider] = get_provider_client(provider, api_key=key)
-        return self._clients[provider]
+        # Fast-path: read without lock (dict reads are atomic in CPython).
+        if provider in self._clients:
+            return self._clients[provider]
+        with self._clients_lock:
+            # Re-check under the lock in case another thread populated it.
+            if provider not in self._clients:
+                from .providers import get_provider_client
+                key = self._anthropic_api_key if provider == "anthropic" else None
+                self._clients[provider] = get_provider_client(provider, api_key=key)
+            return self._clients[provider]
 
     def complete(
         self,
