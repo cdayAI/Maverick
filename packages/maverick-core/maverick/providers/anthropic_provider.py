@@ -352,13 +352,17 @@ class AnthropicClient:
         # Per-turn observability — log model + cache stats so operators
         # can verify caching is actually engaging on real API calls.
         # Gated on MAVERICK_LOG_TURNS to keep production logs quiet.
+        # Print direct to stderr so it survives default-level logging
+        # filters (log.info doesn't print by default).
         if os.environ.get("MAVERICK_LOG_TURNS"):
-            log.info(
-                "llm_turn model=%s in=%d out=%d cache_read=%d cache_write=%d "
-                "stop=%s",
-                model or "default", in_tok, out_tok, cache_read,
-                cache_creation, resp.stop_reason,
+            import sys as _sys
+            _sys.stderr.write(
+                f"llm_turn model={model or 'default'} "
+                f"in={in_tok} out={out_tok} "
+                f"cache_read={cache_read} cache_write={cache_creation} "
+                f"stop={resp.stop_reason}\n"
             )
+            _sys.stderr.flush()
 
         return LLMResponse(
             text="\n".join(text_parts).strip(),

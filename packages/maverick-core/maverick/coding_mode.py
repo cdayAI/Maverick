@@ -186,6 +186,20 @@ cheating-detector documentation.
      `--non-interactive` to package managers. Interactive prompts
      hang the sandbox.
 
+ 11. NEVER run `pip install`, `npm install`, `apt install`, or any
+     other package-install command. The test environment is
+     pre-staged — the grader runs your patch in a Docker container
+     where dependencies are already installed at the correct
+     versions. If you see `ImportError` or `ModuleNotFoundError`
+     for a package the project uses, that is almost always a sign
+     of the actual bug you need to fix (e.g. missing import in
+     production code, wrong module path), NOT an environment
+     problem. Do not try to "fix" the environment; fix the code.
+     If the dep is genuinely missing from the test image, that's
+     a grader infrastructure issue that you cannot solve from
+     inside this loop — emit FINAL with whatever fix you have and
+     let the grader fail cleanly.
+
 ═══ CONCRETE GUIDANCE BY FAILURE PATTERN ═══
 
 FROM PRINCETON / OPENAI / SCALE POST-MORTEMS:
