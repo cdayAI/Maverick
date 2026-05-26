@@ -165,6 +165,20 @@ async def run_goal(
             )
 
         if result.error:
+            # Wave 12 hotfix: even when the agent loop errored (e.g. hit
+            # max_steps), it may have produced a usable patch via
+            # str_replace_editor before exiting. salvage it.
+            if result.final_patch and (
+                "diff --git" in result.final_patch
+                or "--- a/" in result.final_patch
+            ):
+                _end_episode_with_spend(
+                    world, episode_id, result.final_patch, "success", budget,
+                )
+                world.set_goal_status(
+                    goal_id, "done", result=result.final_patch,
+                )
+                return result.final_patch
             _end_episode_with_spend(world, episode_id, result.error, "failure", budget)
             world.set_goal_status(goal_id, "blocked", result=result.error)
             return (

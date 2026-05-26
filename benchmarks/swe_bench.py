@@ -985,22 +985,26 @@ def main() -> int:
                 write_csv([row], args.out)
                 written += 1
                 total_spend += row.cost_dollars
-                # Wave 12 (F11e) + hardening: consecutive-failure
-                # circuit breaker. A "failure" outcome (pipeline caught
-                # an API error and downgraded to failure) should ALSO
-                # count toward the breaker — only explicitly successful
-                # outcomes reset the counter. Otherwise a pipeline that
-                # swallows errors internally defeats the safety net.
+                # Wave 12 (F11e) + hardening + smoke-day-2 fix:
+                # consecutive-failure circuit breaker. ANY outcome that
+                # isn't an explicit success/dry-run resets the breaker
+                # AND counts toward the failure budget. The May 26
+                # smoke showed 3/6 instances coming back as "no-diff"
+                # — a state where the agent ran (real spend) but
+                # didn't produce a patch. Earlier logic excluded
+                # "no-diff" from the breaker, letting the harness
+                # burn full budget on a degenerate run. Now: only
+                # `success` (or dry-run) resets; everything else
+                # (error/failure/budget/no-diff/empty) counts.
                 outcome_clean = row.outcome.strip().lower()
-                is_failure_class = (
-                    outcome_clean.startswith("error")
-                    or outcome_clean.startswith("failure")
-                    or outcome_clean.startswith("budget")
+                is_good_outcome = (
+                    outcome_clean == "success"
+                    or outcome_clean == "dry-run"
                 )
-                if is_failure_class:
-                    consecutive_failures += 1
-                else:
+                if is_good_outcome:
                     consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
                 if (args.max_consecutive_failures > 0
                         and consecutive_failures >= args.max_consecutive_failures):
                     print(

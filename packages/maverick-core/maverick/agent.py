@@ -847,6 +847,30 @@ class Agent:
             if blocked:
                 return AgentResult(blocked_on_user=True, role=self.role, name=self.name)
 
+        # Wave 12 hotfix: when the agent loop exhausts max_steps without
+        # emitting FINAL, the workdir may STILL contain edits made via
+        # `str_replace_editor` (the secondary tool channel). The May 26
+        # smoke surfaced 3/6 instances where the agent edited via the
+        # tool but never produced a FINAL — those instances reported
+        # `no-diff` even though the patch was already on disk.
+        # Salvage that work by rendering the workdir as the final_patch
+        # if there are uncommitted changes.
+        try:
+            from pathlib import Path as _Path
+            from .edit_format import render_diff
+            workdir = _Path(getattr(self.ctx.sandbox, "workdir", "."))
+            if (workdir / ".git").exists():
+                rendered = render_diff(workdir)
+                if rendered and rendered.strip():
+                    return AgentResult(
+                        error=f"hit max_steps={self.max_steps}; "
+                              "captured workdir diff as final_patch",
+                        final_patch=rendered,
+                        role=self.role,
+                        name=self.name,
+                    )
+        except Exception:
+            pass
         return AgentResult(
             error=f"hit max_steps={self.max_steps}",
             role=self.role,
