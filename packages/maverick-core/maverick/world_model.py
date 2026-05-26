@@ -276,6 +276,12 @@ class WorldModel:
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA synchronous = NORMAL")
         self.conn.execute("PRAGMA busy_timeout = 5000")
+        # May 26 council fix (long-tail audit #4): bound WAL file
+        # growth. Default autocheckpoint=1000 pages is fine, but with
+        # a dashboard reader holding a snapshot lock, autocheckpoint
+        # can stall and the WAL file grows monotonically. Explicit
+        # pragma surfaces the setting + makes intent clear.
+        self.conn.execute("PRAGMA wal_autocheckpoint = 1000")
         # SQLite default is foreign_keys=OFF; without this, every
         # `REFERENCES goals(id)` clause is decorative and a delete can
         # orphan turns/attachments/episodes silently.
@@ -291,8 +297,17 @@ class WorldModel:
         Wave 9 fix (council H1): benchmark runs construct ~1865
         WorldModel instances in one process; without close() the
         FD count climbs and the host eventually OOMs.
+
+        May 26 council fix (long-tail audit #4): checkpoint + truncate
+        the WAL on close so the sidecar file doesn't persist into the
+        next instance's open. Best-effort; close still runs even if
+        checkpoint fails.
         """
         try:
+            try:
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
             self.conn.close()
         except Exception:  # pragma: no cover
             pass

@@ -109,9 +109,11 @@ class TestAgentVerifierIntegration:
 
         # Scripted LLM responses:
         #   1. orchestrator FINAL: "first answer"
-        #   2. verifier rejects
+        #   2. verifier rejects (low confidence)
         #   3. orchestrator (revision) FINAL: "second answer"
-        #   (no second verifier call -- one revision pass max)
+        #   4. verifier accepts (May 26 fix: revised FINALs DO get
+        #      re-verified now; the old "skip re-verify" behavior
+        #      let bogus revisions through with verifier_confidence=1.0)
         fake_llm.scripted = [
             make_llm_response(text="FINAL: first answer"),
             make_llm_response(
@@ -120,6 +122,11 @@ class TestAgentVerifierIntegration:
                      '"issues": ["missing X"]}',
             ),
             make_llm_response(text="FINAL: second answer"),
+            make_llm_response(
+                text='{"confidence": 0.95, "accepts": true, '
+                     '"critique": "second attempt addresses the issues", '
+                     '"issues": []}',
+            ),
         ]
         world = WorldModel(tmp_path / "w.db")
         gid = world.create_goal("test", "")
@@ -132,5 +139,7 @@ class TestAgentVerifierIntegration:
         agent = Agent(ctx=ctx, role="orchestrator", brief="test", depth=0)
         result = await agent.run()
         assert result.final == "second answer"
-        # 3 LLM calls: propose -> verify -> revise
-        assert len(fake_llm.calls) == 3
+        # 4 LLM calls (May 26 fix): propose -> verify -> revise -> re-verify.
+        # Earlier behavior skipped the re-verify, letting bogus revisions
+        # through with verifier_confidence=1.0 fallback.
+        assert len(fake_llm.calls) == 4

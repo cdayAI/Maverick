@@ -32,6 +32,10 @@ class LocalBackend:
         # the default 60s (too short for real pytest on SWE-bench
         # instances). Falls back to self.timeout when unset, preserving
         # behaviour for shell-tool callers that pass no timeout.
+        # May 26 council fix (long-tail audit): `text=True` returns str
+        # on success but TimeoutExpired.stdout is bytes — without
+        # explicit decode the result.stdout types diverge. Pin both
+        # branches to str.
         effective = self.timeout if timeout is None else timeout
         try:
             result = subprocess.run(
@@ -43,13 +47,16 @@ class LocalBackend:
                 timeout=effective,
             )
             return ExecResult(
-                stdout=result.stdout[-8000:],
-                stderr=result.stderr[-2000:],
+                stdout=(result.stdout or "")[-8000:],
+                stderr=(result.stderr or "")[-2000:],
                 exit_code=result.returncode,
             )
         except subprocess.TimeoutExpired as e:
+            raw_out = e.stdout or b""
+            if isinstance(raw_out, bytes):
+                raw_out = raw_out.decode("utf-8", errors="replace")
             return ExecResult(
-                stdout=(e.stdout or b"").decode("utf-8", errors="replace")[-8000:],
+                stdout=raw_out[-8000:],
                 stderr=f"TIMEOUT after {effective}s",
                 exit_code=124,
             )

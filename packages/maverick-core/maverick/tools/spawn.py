@@ -35,12 +35,18 @@ def spawn_subagent_tool(parent: "Agent") -> Tool:
         if parent.depth + 1 > parent.ctx.max_depth:
             return f"ERROR: max depth {parent.ctx.max_depth} reached"
 
+        # May 26 council fix (agent-loop audit #3): inherit max_steps
+        # from the parent. Without this, sub-agents fall back to env
+        # MAVERICK_MAX_STEPS or the 25 default — silently dropping the
+        # operator's intent when the parent was constructed with a
+        # specific max_steps value.
         child = Agent(
             ctx=parent.ctx,
             role=role,
             brief=task,
             depth=parent.depth + 1,
             parent=parent,
+            max_steps=parent.max_steps,
         )
         result = await child.run()
         if result.final:
@@ -97,6 +103,7 @@ def spawn_swarm_tool(parent: "Agent") -> Tool:
                 brief=spec["task"],
                 depth=parent.depth + 1,
                 parent=parent,
+                max_steps=parent.max_steps,
             )
             for spec in agents_spec
         ]

@@ -366,9 +366,17 @@ def extract_unified_diff(text: str) -> Optional[str]:
     # Markdown patches (lines starting with " ```" / "+```" / "-```").
     # We match exactly ``` plus optional trailing whitespace; a context
     # line " ```" has a leading space and won't match.
+    # May 26 council fix (SR audit #4): some models emit nested fences
+    # — a ```diff envelope wrapping a diff that itself includes
+    # ```python context lines. The model then closes BOTH fences,
+    # leaving two trailing ``` lines. Strip up to 2 trailing pure
+    # fence lines (capped to prevent eating diff context).
     lines = diff.rstrip("\n").split("\n")
-    if lines and lines[-1].rstrip() == "```":
-        lines = lines[:-1]
+    for _ in range(2):
+        if lines and lines[-1].rstrip() == "```":
+            lines = lines[:-1]
+        else:
+            break
     diff = "\n".join(lines).rstrip()
 
     # Preserve a final `\ No newline at end of file` marker without
@@ -512,6 +520,18 @@ _FORBIDDEN_PATH_PATTERNS = [
     re.compile(r"(?:^|/)yarn\.lock$"),
     re.compile(r"(?:^|/)Cargo\.lock$"),
     re.compile(r"(?:^|/)go\.sum$"),
+    # May 26 council fix (Princeton-perspective audit): package
+    # metadata + CI + lint config files. Edits to these are reverted
+    # or ignored by the grader's pristine container build. The model
+    # often "fixes" what it thinks is an env issue by tweaking these,
+    # then submits a patch that does nothing useful.
+    re.compile(r"(?:^|/)MANIFEST\.in$"),
+    re.compile(r"(?:^|/)\.github/workflows/"),
+    re.compile(r"(?:^|/)noxfile\.py$"),
+    re.compile(r"(?:^|/)\.pre-commit-config\.ya?ml$"),
+    re.compile(r"(?:^|/)\.flake8$"),
+    re.compile(r"(?:^|/)\.pylintrc$"),
+    re.compile(r"(?:^|/)mypy\.ini$"),
 ]
 
 
@@ -778,27 +798,48 @@ def defensive_validate(patch: str, *, fail_to_pass: list[str] = None,
             _MIN_GOLD_TOKENS_FOR_CHEATING_CHECK = 30
             if (ours_tokens and theirs_tokens
                     and len(theirs_tokens) >= _MIN_GOLD_TOKENS_FOR_CHEATING_CHECK):
+                # Signal 1: longest contiguous matching block. Verbatim
+                # copies produce one long block. Trivial bypass: insert
+                # `_=None;` between every 5-6 gold tokens to break the
+                # contiguous run.
                 matcher = SequenceMatcher(
                     None, ours_tokens, theirs_tokens, autojunk=False,
                 )
-                # Use the LONGEST contiguous matching block, not the
-                # sum of all matches. Verbatim copies produce one long
-                # block (entire gold appears contiguously); legitimate
-                # different fixes share only scattered short keyword
-                # runs (def / return / class). Block-size / gold_len
-                # signals "what fraction of gold appears as a
-                # continuous verbatim run in ours" — the actual
-                # cheating signal.
                 blocks = matcher.get_matching_blocks()
                 longest = max((b.size for b in blocks), default=0)
                 gold_fraction = longest / max(1, len(theirs_tokens))
-                if gold_fraction >= 0.50:
+
+                # Signal 2 (May 26 council fix, Princeton-perspective
+                # audit #5): n-gram Jaccard. Closes the splice-bypass
+                # of signal 1 by working at the 3-gram-set level —
+                # inserting noise between gold tokens breaks the
+                # CONTIGUOUS run but preserves the 3-gram overlap.
+                # Threshold 0.35 calibrated against Scale's published
+                # Nov-2025 cheating-detector methodology.
+                def _ngrams(seq: list[str], n: int = 3) -> set:
+                    if len(seq) < n:
+                        return set()
+                    return {tuple(seq[i:i + n]) for i in range(len(seq) - n + 1)}
+                ours_ngrams = _ngrams(ours_tokens)
+                theirs_ngrams = _ngrams(theirs_tokens)
+                if theirs_ngrams:
+                    jaccard = len(ours_ngrams & theirs_ngrams) / len(
+                        ours_ngrams | theirs_ngrams
+                    )
+                else:
+                    jaccard = 0.0
+
+                if gold_fraction >= 0.50 or jaccard >= 0.35:
                     result.ok = False
+                    metric = (
+                        f"longest verbatim run = {gold_fraction:.0%}"
+                        if gold_fraction >= 0.50
+                        else f"3-gram Jaccard overlap = {jaccard:.0%}"
+                    )
                     result.warnings.append(
-                        f"longest verbatim run = {gold_fraction:.0%} of "
-                        "the gold patch tokens — exceeds the 50% "
-                        "cheating-detector threshold; reformulate the "
-                        "fix in your own structure"
+                        f"{metric} of gold patch — cheating-detector "
+                        "threshold exceeded; reformulate in your own "
+                        "structure"
                     )
                     result.fn_risk = "high"
 
@@ -818,6 +859,16 @@ class TestRunResult:
 
     @property
     def all_pass(self) -> bool:
+        # May 26 council fix (agent-loop audit #1): when both totals
+        # are 0 AND skipped/error are unset, the math evaluates True
+        # (`0 == 0 AND 0 == 0`) and the verifier reports "all pass"
+        # for a candidate that didn't actually run any tests. Best-of-N
+        # selector then picks that candidate over real-test winners.
+        # Require at least ONE test to have been involved.
+        if self.fail_to_pass_total + self.pass_to_pass_total == 0:
+            return False
+        if self.skipped:
+            return False
         return (
             self.fail_to_pass_passing == self.fail_to_pass_total
             and self.pass_to_pass_passing == self.pass_to_pass_total
@@ -914,6 +965,15 @@ def detect_test_runner(workdir: Path, language: str = "") -> str:
                 if name == hinted or (name == "node" and hinted in ("jest", "vitest", "mocha")):
                     if any((workdir / f).exists() for f in files):
                         return hinted
+        # May 26 council fix (test-runner audit #3): when the
+        # language hint is set but its expected markers are missing,
+        # the OLD code fell through to the generic loop — which picks
+        # pytest first if any `pyproject.toml` / `setup.py` exists
+        # (common in JS repos that ship `pre-commit` config). A Java
+        # repo hinted "java" but missing `pom.xml` would get classed
+        # as pytest. Trust the hint: return unsupported instead of
+        # falling back to a wrong runner.
+        return "unsupported"
 
     for name, files in _RUNNER_MARKERS:
         if not any((workdir / f).exists() for f in files):
@@ -1007,6 +1067,17 @@ def _parse_pytest(out: str) -> tuple[int, int, bool]:
         p = int(m.group("passed") or 0)
         f = int(m.group("failed") or 0)
         e = int(m.group("errored") or 0)
+        # May 26 council fix (test-runner audit #1): pytest emits
+        # "no tests ran in Ns" when the requested node IDs don't
+        # exist (typo, refactor, test_patch reshuffled). The summary
+        # regex matches with all groups = 0, and we'd report
+        # (0, 0, True) — telling the caller "test framework worked
+        # but 0 tests were involved" which is treated as success.
+        # Distinguish: if the summary literal contains "no tests
+        # ran", treat as a runner error (failed=1 forces "not all
+        # pass" so the candidate scores correctly).
+        if "no tests ran" in m.group(0).lower() and p + f + e == 0:
+            return 0, 1, True
         return p, f + e, True
     # Fall back to the LAST "passed/failed/error" tokens in the
     # output — better than the prior first-match behavior.
@@ -1121,9 +1192,19 @@ def _parse_rspec(out: str) -> tuple[int, int, bool]:
 
 
 def _parse_gradle(out: str) -> tuple[int, int, bool]:
+    # May 26 council fix (test-runner audit #4): the old bare-word
+    # `\bPASSED\b` / `\bFAILED\b` matched any prose line containing
+    # those words — `println("PASSED for user X")`, gradle task
+    # banners (`> Task :compileTestJava PASSED`), etc. — inflating
+    # counts arbitrarily. Anchor on gradle's test-report format:
+    # `ClassName > methodName PASSED` (or FAILED / SKIPPED).
     out = _strip_ansi(out)
-    p = len(re.findall(r"\bPASSED\b", out))
-    f = len(re.findall(r"\bFAILED\b", out))
+    p = len(re.findall(r"^\S.*?\s>\s.*?\sPASSED\s*$", out, re.M))
+    f = len(re.findall(r"^\S.*?\s>\s.*?\sFAILED\s*$", out, re.M))
+    # Detect compile / build failures: BUILD FAILED with no tests is
+    # a real failure regardless of the PASSED/FAILED line counts.
+    if "BUILD FAILED" in out and p == 0 and f == 0:
+        return 0, 1, True
     ok = ("BUILD SUCCESSFUL" in out) or ("BUILD FAILED" in out)
     return p, f, ok
 
@@ -1168,7 +1249,16 @@ _FAILURE_PATTERNS = [
     ("NameError",        re.compile(r"\bNameError\b")),
     ("KeyError",         re.compile(r"\bKeyError\b")),
     ("ValueError",       re.compile(r"\bValueError\b")),
-    ("AssertionError",   re.compile(r"\bAssertionError\b|\bassert\s")),
+    # May 26 council fix (test-runner audit #5): the old `\bassert\s`
+    # branch matched any prose containing "assert " — log messages,
+    # docstrings, pytest's `>       assert x == y` traceback lines,
+    # etc. — flipping TypeError-class failures into AssertionError
+    # mis-classifications. Match only the actual exception name OR
+    # a clear assert expression with a comparison operator.
+    ("AssertionError",   re.compile(
+        r"\bAssertionError\b|^\s*assert\s+\S+\s*(?:[=!<>]|is\s|not\s|in\s)",
+        re.M,
+    )),
     ("SyntaxError",      re.compile(r"\bSyntaxError\b|invalid syntax")),
     ("IndentationError", re.compile(r"\bIndentationError\b")),
     ("Timeout",          re.compile(r"\bTIMEOUT\b|exit 124|TimeoutExpired")),
@@ -1311,16 +1401,31 @@ def run_failing_tests(
         cmds = cmd if isinstance(cmd, list) else [cmd]
         passed = failed = 0
         chunks: list[str] = []
-        for c in cmds:
+        # May 26 council fix (test-runner audit #2): for runners that
+        # use one-cmd-per-id (cargo), the original `len(test_ids) -
+        # passed - failed` math conflated already-counted tests across
+        # prior chunks. A parse failure mid-stream charged the
+        # un-executed later ids as failures with bogus math. Track
+        # per-chunk progress: when a chunk's parse fails, mark JUST
+        # the failed chunk's expected tests (1 for cargo) as failed
+        # so already-counted ids aren't double-charged.
+        for chunk_idx, c in enumerate(cmds):
             try:
                 r = sandbox.exec(c)
             except Exception as e:  # pragma: no cover
-                return passed, len(test_ids) - passed, f"sandbox exec failed: {e}"
+                # Remaining un-run ids: len(cmds) - chunk_idx for
+                # cargo (1 id per chunk), or 1 for pytest-style
+                # (all ids in one cmd).
+                unrun = len(cmds) - chunk_idx if len(cmds) > 1 else (
+                    len(test_ids) - passed - failed
+                )
+                return passed, failed + max(unrun, 0), f"sandbox exec failed: {e}"
             out = (r.stdout or "") + "\n" + (r.stderr or "")
             p, f, ok = parse(out)
             chunks.append(out[-1000:])
             if not ok:
-                return passed, failed + (len(test_ids) - passed - failed), "\n".join(chunks)
+                unrun = len(cmds) - chunk_idx if len(cmds) > 1 else 1
+                return passed, failed + max(unrun, 0), "\n".join(chunks)
             passed += p
             failed += f
         return passed, failed, "\n".join(chunks)
@@ -1360,11 +1465,16 @@ def from_env() -> CodingModeConfig:
         cfg.best_of_n = int(os.environ.get("MAVERICK_BEST_OF_N", "1"))
     except ValueError:
         cfg.best_of_n = 1
+    # May 26 council fix (long-tail audit #5): strip per-entry. A
+    # pathological manifest with `"a||  ||b"` would yield `["a", "  ",
+    # "b"]` — the whitespace-only ID gets forwarded to pytest as
+    # `tests/foo.py::  ` which hangs the collector for the per-test
+    # timeout, burning ~5min per affected instance.
     cfg.fail_to_pass = [
-        t for t in os.environ.get("MAVERICK_FAIL_TO_PASS", "").split("||") if t
+        t.strip() for t in os.environ.get("MAVERICK_FAIL_TO_PASS", "").split("||") if t.strip()
     ]
     cfg.pass_to_pass = [
-        t for t in os.environ.get("MAVERICK_PASS_TO_PASS", "").split("||") if t
+        t.strip() for t in os.environ.get("MAVERICK_PASS_TO_PASS", "").split("||") if t.strip()
     ]
     cfg.language = os.environ.get("MAVERICK_LANGUAGE", "").strip()
     return cfg

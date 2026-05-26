@@ -165,9 +165,12 @@ def test_adv_shell_blocks_github_curl(tmp_path, monkeypatch):
 # ---- Bonus: pip install -e blocked in opaque mode (Karpathy bug) ----
 
 def test_adv_shell_blocks_pip_install_e(tmp_path, monkeypatch):
-    """`pip install -e .` in opaque mode creates a worktree-vs-original
-    install conflict that silently fails tests even on correct patches.
-    Wave 11 blocks it with a hint to use non-editable install instead."""
+    """May 26 council fix: ALL package-install commands are blocked
+    in opaque mode (not just `-e`). The prior Wave 11 fix only
+    blocked `pip install -e` but `pip install <pkg>` could still
+    pollute the local sandbox between instances. The grader's
+    container has dependencies pre-installed; agent installs are
+    a no-op for grading but persistent contamination locally."""
     from maverick.tools.shell import shell
 
     class _FakeSandbox:
@@ -181,10 +184,14 @@ def test_adv_shell_blocks_pip_install_e(tmp_path, monkeypatch):
     monkeypatch.setenv("MAVERICK_BENCHMARK_OPAQUE", "1")
     monkeypatch.setenv("MAVERICK_CODING_MODE", "1")
     tool = shell(_FakeSandbox())
-    out = tool.fn({"cmd": "pip install -e ."})
-    assert "blocked" in out.lower()
-    assert "editable" in out.lower()
-    # Non-editable install allowed.
+    # Both editable and non-editable installs are blocked.
+    for cmd in ("pip install -e .", "pip install requests", "npm install"):
+        out = tool.fn({"cmd": cmd})
+        assert "blocked" in out.lower(), (
+            f"expected {cmd!r} to be blocked; got {out[:200]}"
+        )
+    # Override env: install allowed when opaque mode is off.
+    monkeypatch.setenv("MAVERICK_BENCHMARK_OPAQUE", "0")
     out = tool.fn({"cmd": "pip install ."})
     assert "ran:" in out
 

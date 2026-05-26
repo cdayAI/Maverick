@@ -149,17 +149,26 @@ def _get_shared_llm():
         return _SHARED_LLM
 
 
+class _ResetWorkdirError(RuntimeError):
+    """Raised when the workdir can't be reset to the requested commit.
+
+    May 26 council fix (harness audit #1): the prior best-effort silent-
+    swallow allowed instances to run against whatever tip the previous
+    instance left, producing patches against the wrong tree and silently
+    scoring 0 with outcome="failure". We now raise so the harness can
+    mark the instance error:base_commit_missing and skip the pipeline.
+    """
+
+
 def _reset_workdir(workdir, base_commit: str = "") -> None:
-    """Wave 11: reset workdir to a known clean state between instances.
+    """Reset workdir to a known clean state between instances.
 
-    The harness's sandbox workdir is shared across instances when using
-    LocalBackend (or a mounted volume on Docker). Without this reset,
-    git state from instance N pollutes instance N+1's run — pre-applied
-    edits, untracked files, branch tip drift. Documented as +10-25pp
-    silent score leak in operational-failure research.
+    Raises _ResetWorkdirError if the requested base_commit is missing
+    from the local clone — the agent MUST NOT run against a tree at a
+    different commit.
 
-    Best-effort: failures are logged but not raised so a missing-git
-    workdir (e.g., synthetic dry-run paths) doesn't abort the run.
+    Returns silently (no-op) only when the workdir doesn't exist or
+    isn't a git repo at all (synthetic dry-run paths).
     """
     import subprocess
     from pathlib import Path
@@ -168,10 +177,15 @@ def _reset_workdir(workdir, base_commit: str = "") -> None:
         return
     try:
         if base_commit:
-            subprocess.run(
+            proc = subprocess.run(
                 ["git", "-C", str(workdir_path), "reset", "--hard", base_commit],
                 capture_output=True, timeout=30,
             )
+            if proc.returncode != 0:
+                raise _ResetWorkdirError(
+                    f"git reset --hard {base_commit[:12]} failed: "
+                    f"{proc.stderr.decode('utf-8', 'replace')[:300]}"
+                )
         else:
             subprocess.run(
                 ["git", "-C", str(workdir_path), "reset", "--hard", "HEAD"],
@@ -181,20 +195,26 @@ def _reset_workdir(workdir, base_commit: str = "") -> None:
             ["git", "-C", str(workdir_path), "clean", "-fdx"],
             capture_output=True, timeout=30,
         )
-        # Strip reflog/branches/tags that could leak the gold patch
-        # (Princeton issue #465). Best-effort; failures don't block.
-        if os.environ.get("MAVERICK_BENCHMARK_OPAQUE", "1") != "0":
-            subprocess.run(
-                ["git", "-C", str(workdir_path), "reflog", "expire",
-                 "--expire=all", "--all"],
-                capture_output=True, timeout=15,
-            )
-            subprocess.run(
-                ["git", "-C", str(workdir_path), "gc", "--prune=now", "--quiet"],
-                capture_output=True, timeout=30,
-            )
-    except (subprocess.SubprocessError, OSError):
-        pass
+        # May 26 council fix (long-tail audit #3): always run reflog
+        # expire + gc, not just in opaque mode. In non-opaque dev runs,
+        # the reflog accumulates a new entry per `reset --hard` (one per
+        # instance). Across 1865 Verified instances on a shared workdir
+        # the orphaned-objects pile observed >5GB. Cheap to run (sub-
+        # second on a clean tree) and not security-sensitive.
+        # Timeout bumped to 120s for large repos (sympy can exceed 30s).
+        subprocess.run(
+            ["git", "-C", str(workdir_path), "reflog", "expire",
+             "--expire=all", "--all"],
+            capture_output=True, timeout=30,
+        )
+        subprocess.run(
+            ["git", "-C", str(workdir_path), "gc", "--prune=now", "--quiet"],
+            capture_output=True, timeout=120,
+        )
+    except _ResetWorkdirError:
+        raise
+    except (subprocess.SubprocessError, OSError) as e:
+        raise _ResetWorkdirError(f"workdir reset failed: {e}") from e
 
 
 def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
@@ -242,11 +262,17 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
     # Wave 10: snapshot prior env so we can restore on exit and not leak
     # one instance's test sets into the next instance (or into a
     # follow-on non-bench process sharing the same shell).
-    _env_keys = (
-        "MAVERICK_FAIL_TO_PASS", "MAVERICK_PASS_TO_PASS", "MAVERICK_LANGUAGE",
-        "MAVERICK_BASE_COMMIT", "MAVERICK_GOLD_PATCH",
-    )
-    _prior_env = {k: os.environ.get(k) for k in _env_keys}
+    # May 26 council fix (harness audit #2): capture ALL MAVERICK_*
+    # env vars. The five-key whitelist missed env vars the agent loop
+    # mutated (MAVERICK_TEMPERATURE from BoN, MAVERICK_MODEL_OVERRIDE_*),
+    # which then leaked into the next instance.
+    _prior_env = {
+        k: v for k, v in os.environ.items()
+        if k.startswith("MAVERICK_")
+    }
+    # Pop the gold patch BEFORE assignment so empty manifests don't
+    # leak a stale value from the prior instance.
+    os.environ.pop("MAVERICK_GOLD_PATCH", None)
     os.environ["MAVERICK_FAIL_TO_PASS"] = "||".join(kwargs.get("fail_to_pass") or [])
     os.environ["MAVERICK_PASS_TO_PASS"] = "||".join(kwargs.get("pass_to_pass") or [])
     os.environ["MAVERICK_LANGUAGE"] = str(kwargs.get("language") or "")
@@ -375,8 +401,14 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
         except Exception:
             world_events = []
     finally:
-        # Wave 10 (D11): restore env so the next instance / process
-        # doesn't inherit this instance's test sets.
+        # Wave 10 (D11) + May 26 council fix (harness audit #2): restore
+        # env to the EXACT pre-instance state. Drop any MAVERICK_* var
+        # the agent loop added that wasn't in the prior snapshot — that
+        # was the leak channel for BoN temperature / model overrides
+        # bleeding across instances.
+        for k in [k for k in os.environ if k.startswith("MAVERICK_")]:
+            if k not in _prior_env:
+                os.environ.pop(k, None)
         for k, v in _prior_env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -393,9 +425,34 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
         total_cost = sum(getattr(e, "cost_dollars", 0.0) or 0.0 for e in all_eps)
         total_in   = sum(getattr(e, "input_tokens", 0) or 0 for e in all_eps)
         total_out  = sum(getattr(e, "output_tokens", 0) or 0 for e in all_eps)
-        last_outcome = all_eps[0].outcome
+        # May 26 council fix (harness audit #4): on best-of-N runs,
+        # `all_eps[0]` is the LAST-started episode (list_episodes
+        # orders started_at DESC). With asyncio.gather BoN, started_at
+        # ordering of N coroutines is non-deterministic — we'd report
+        # an arbitrary attempt's outcome rather than the winning one.
+        # Prefer a successful episode if any exist; fall back to most
+        # recent if none succeeded.
+        _successes = [
+            e for e in all_eps
+            if (getattr(e, "outcome", "") or "").lower().startswith("success")
+        ]
+        last_outcome = (
+            _successes[0].outcome if _successes else all_eps[0].outcome
+        )
     else:
         total_cost, total_in, total_out, last_outcome = 0.0, 0, 0, ""
+
+    # May 26 council fix (harness audit #3): Budget.check() is post-hoc
+    # — a single fat API call (cache write surcharge or 100k-token tool
+    # result) can blow the cap by 30-50% AFTER the record completes.
+    # Surface that as a distinct outcome so the operator sees overruns
+    # instead of them blending into "success". The 1.1× headroom
+    # accounts for normal cache-write surcharge variance.
+    if total_cost > instance_cap * 1.1 and last_outcome:
+        last_outcome = (
+            f"budget-overrun(${total_cost:.2f}>${instance_cap:.2f}):"
+            f" {last_outcome}"
+        )
 
     # Wave 10 (C1): predicted_patch must be the EXTRACTED diff, not the
     # orchestrator's prose. The orchestrator's return value starts with
@@ -918,6 +975,27 @@ def main() -> int:
     # parallel harness processes don't redo each other's work even
     # though both started with the same manifest.
     if args.num_workers > 1:
+        # May 26 council fix (harness audit #5): refuse to resume if
+        # num_workers changed since the last run. The sharding hash
+        # would re-bucket every instance, silently orphaning the ones
+        # that prior workers already processed.
+        prior_meta_path = args.out.parent / "run_meta.json"
+        if prior_meta_path.exists() and not args.no_resume:
+            try:
+                prior_meta = json.loads(prior_meta_path.read_text(encoding="utf-8"))
+                prior_nw = (prior_meta.get("cli_args") or {}).get("num_workers")
+                if prior_nw is not None and int(prior_nw) != args.num_workers:
+                    print(
+                        f"REFUSING RESUME: prior run used num_workers="
+                        f"{prior_nw}, this run uses {args.num_workers}. "
+                        f"Re-sharding would orphan instances completed by "
+                        f"the prior shard. Either match num_workers, "
+                        f"pass --no-resume, or delete {prior_meta_path}.",
+                        file=sys.stderr,
+                    )
+                    return 6
+            except (OSError, ValueError, KeyError):
+                pass
         import hashlib
         instances = [
             inst for inst in instances

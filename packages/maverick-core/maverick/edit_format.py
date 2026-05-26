@@ -200,8 +200,16 @@ def _normalise_indent(s: str) -> tuple[str, list[str]]:
     leads = [re.match(r"^[ \t]*", ln).group(0) for ln in lines]
     if not any(leads):
         return s, leads
-    # Find the minimum non-empty indent and strip it from all lines.
-    nonempty = [lead for lead in leads if lead and any(c.strip() for c in s.split("\n")[leads.index(lead)])]
+    # May 26 council fix (SR audit #2): the old version used
+    # `leads.index(lead)` which returns the FIRST index of that lead
+    # value. With two lines sharing the same indent (common: two
+    # consecutive same-level statements), the wrong source line gets
+    # checked. A blank-line-then-code pair could wrongly drop a real
+    # lead, shifting REPLACE alignment. Iterate by index instead.
+    nonempty = [
+        lead for i, lead in enumerate(leads)
+        if lead and lines[i].strip()
+    ]
     if not nonempty:
         return s, leads
     common = min(nonempty, key=len)
@@ -287,6 +295,10 @@ def _find_with_fuzzy(content: str, needle: str) -> tuple[Optional[int], Optional
                         return start, end, "ws_collapse"
 
     # 5. Levenshtein ≥ 0.9 — last-resort fuzzy window.
+    # May 26 council fix (SR audit #3): scan ALL windows scoring near
+    # the best. If 2+ windows are within 0.02 of the top ratio, the
+    # match is ambiguous — silently picking the first by `>` (current
+    # code) lands the edit at the wrong place.
     needle_lines = needle.count("\n") + 1
     content_lines = content.split("\n")
     best_ratio = 0.0
@@ -299,6 +311,15 @@ def _find_with_fuzzy(content: str, needle: str) -> tuple[Optional[int], Optional
             best_start = sum(len(ln) + 1 for ln in content_lines[:i])
             best_end = sum(len(ln) + 1 for ln in content_lines[:i + needle_lines])
     if best_ratio >= 0.9 and best_start >= 0:
+        # Ambiguity guard: count windows within 0.02 of the best.
+        near_count = 0
+        for i in range(0, max(0, len(content_lines) - needle_lines + 1)):
+            window = "\n".join(content_lines[i:i + needle_lines])
+            r = difflib.SequenceMatcher(None, window, needle).ratio()
+            if r >= best_ratio - 0.02:
+                near_count += 1
+                if near_count >= 2:
+                    return None, None, "ambiguous"
         return best_start, best_end, "levenshtein"
 
     return None, None, ""
@@ -313,6 +334,19 @@ def _apply_one(block: SearchReplaceBlock, workdir: Path) -> ApplyResult:
         return ApplyResult(
             ok=False, block=block,
             reason=f"path {block.path!r} escapes the workspace",
+        )
+
+    # May 26 council fix (SR audit #5): reject absolute paths + `..`
+    # segments at apply time. The block parser doesn't filter these;
+    # `Path(workdir) / "/etc/passwd"` evaluates to /etc/passwd and the
+    # relative_to check above DOES catch it via ValueError. But for
+    # extra defense, surface a clearer error than the generic ValueError
+    # message would produce.
+    if Path(block.path).is_absolute() or ".." in Path(block.path).parts:
+        return ApplyResult(
+            ok=False, block=block,
+            reason=f"path {block.path!r} contains absolute or parent "
+                   "traversal; use workspace-relative paths only",
         )
 
     # New-file case: empty SEARCH = create file.
@@ -360,6 +394,16 @@ def _apply_one(block: SearchReplaceBlock, workdir: Path) -> ApplyResult:
         )
 
     start, end, kind = _find_with_fuzzy(content_lf, needle_lf)
+    if start is None and kind == "ambiguous":
+        # May 26 council fix (SR audit #3): fuzzy ladder hit 2+
+        # near-tied windows. Refuse to guess; ask the model for
+        # more context.
+        return ApplyResult(
+            ok=False, block=block,
+            reason="SEARCH block matched 2+ locations via fuzzy fallback; "
+                   "add more surrounding lines or use exact byte-for-byte "
+                   "SEARCH to disambiguate",
+        )
     if start is None:
         # Provide a near-miss context to help the model re-author.
         # Find the closest line and snip ±5 lines around it.
@@ -391,8 +435,24 @@ def _apply_one(block: SearchReplaceBlock, workdir: Path) -> ApplyResult:
         new_content_lf.replace("\n", original_eol)
         if original_eol == "\r\n" else new_content_lf
     )
+    # May 26 council fix (Princeton-perspective audit #4): preserve
+    # the file's executable bit. `Path.write_text()` uses the default
+    # umask (0o644) which drops mode 0o755 from `bin/foo.py` and
+    # similar shipped scripts. The grader's `git apply` against a
+    # clean checkout would then see `old mode 100755 / new mode
+    # 100644` in our rendered diff and reject.
+    try:
+        mode = target.stat().st_mode
+    except OSError:
+        mode = None
     try:
         target.write_text(new_content, encoding="utf-8")
+        if mode is not None:
+            import os as _os
+            try:
+                _os.chmod(target, mode)
+            except OSError:
+                pass
     except (PermissionError, OSError) as e:
         return ApplyResult(ok=False, block=block, reason=str(e))
 
@@ -500,7 +560,21 @@ def render_diff(workdir: Path) -> str:
             capture_output=True, timeout=30,
         )
         if proc.returncode == 0:
-            return proc.stdout.decode("utf-8", errors="replace")
+            raw = proc.stdout.decode("utf-8", errors="replace")
+            # May 26 smoke fix (grader audit): SWE-bench's evaluator
+            # tries `git apply --verbose` first; that command rejects
+            # patches with mixed line endings. If our agent edited a
+            # file that originally had CRLF line endings (or if any
+            # editor / Python file write injected CR), the rendered
+            # diff has CRLF inside hunks and stage 1 of the grader
+            # fails. Stage 2 (`--reject`) may apply hunks at wrong
+            # offsets. Stage 3 (`patch --fuzz=5`) may silently mis-
+            # apply. Normalize CRLF → LF in the rendered diff so the
+            # grader's strict apply succeeds. The actual files on
+            # disk in the agent's workdir keep whatever line endings
+            # were there; only the predicted_patch CSV cell is
+            # normalized.
+            return raw.replace("\r\n", "\n").replace("\r", "\n")
     except (subprocess.SubprocessError, OSError):
         pass
     return ""
