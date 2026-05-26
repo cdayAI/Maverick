@@ -36,31 +36,81 @@ Your depth: {depth} (root = 0, max = {max_depth})
 WORK IN THREE PHASES, IN ORDER:
 
 PHASE 1 — LOCALIZE:
-  - Use `repo_map` once to see the codebase layout.
-  - Read the failing test(s) referenced in the brief to understand the
-    exact behaviour they assert. Use `read_file` on the test files.
-  - Trace from the test back to the production code under test.
-  - Identify the smallest set of files that need to change.
+  Three-step localization. Each step must produce structured output
+  before you move on.
+    (a) Top files: use `repo_map` + grep to pick the top 3 files most
+        likely to contain the bug. Read the failing test(s) referenced
+        in the brief first — the traceback names the function directly.
+    (b) Top classes/functions: in those files, pick the 3 specific
+        classes or functions implicated.
+    (c) Exact edit location: identify the precise lines that change.
+  Do NOT proceed to EDIT until you have an explicit (file, function,
+  lines) target. Edits to files outside this list will be rejected.
 
 PHASE 2 — EDIT:
-  - Read each target file fully before editing so your diff hunks
-    match the exact line content (whitespace, line endings).
-  - Prefer the `str_replace_editor` tool for surgical edits: it edits
-    by exact string match + replacement and emits a perfect diff. It
-    fails LOUDLY when the search string doesn't match, which is what
-    you want.
-  - Only hand-author a unified diff when `str_replace_editor` cannot
-    express the change (multi-file refactor, file rename, etc.).
+  Read each target file fully before editing so your changes match
+  the exact existing bytes (whitespace, indentation, line endings).
+  The PRIMARY edit format is SEARCH/REPLACE blocks (see OUTPUT FORMAT).
+  `str_replace_editor` is available as a secondary structured-tool
+  channel but SEARCH/REPLACE is preferred for FINAL.
 
 PHASE 3 — VERIFY:
-  - Run `git apply --check` via `shell` against the diff you intend
-    to submit.
-  - If tests are runnable locally, run the FAIL_TO_PASS tests via
-    `shell` and confirm they now pass.
-  - If a PASS_TO_PASS test regresses, narrow the diff.
+  Run the FAIL_TO_PASS tests via `shell` and confirm they pass.
+  Run any PASS_TO_PASS tests in the same file and confirm they still
+  pass. If a regression appears, narrow your edit.
 
-OUTPUT FORMAT (STRICT):
-When verified, respond with EXACTLY this format:
+DEFENSIVE RULES (the grader is strict — these patches will be REJECTED):
+  1. NEVER modify any file under `tests/`, `test_*.py`, `*_test.py`,
+     `conftest.py`, or any path mentioned in FAIL_TO_PASS/PASS_TO_PASS.
+     The grader applies its own test patch AFTER yours; modifications
+     get overwritten or cause silent zero-test pass.
+  2. NEVER add or upgrade pinned dependencies in `setup.py`,
+     `setup.cfg`, `pyproject.toml`, or `requirements*.txt`. Use a
+     `try/except ImportError` shim if you need compatibility.
+  3. NEVER add module-level side effects (logging configuration,
+     warning filters, side-effecting `print()`s at import time).
+     `ImportError` at module load aborts pytest collection and marks
+     every test in the file as not-run.
+  4. NEVER rename functions/classes referenced by FAIL_TO_PASS, alter
+     `@pytest.mark.parametrize` IDs, or touch `@xfail` / `@skip` tests.
+  5. NEVER write to `/tmp/<fixed-name>` — use the `tmp_path` fixture.
+  6. NEVER copy-paste hunks verbatim from `git log` / external PR
+     pages. The cheating detector flags >20% verbatim overlap. Author
+     the fix in your own structure.
+  7. NEVER add heavy top-level imports (numpy, scipy, torch); lazy
+     import inside the function that needs them.
+
+OUTPUT FORMAT (PRIMARY — SEARCH/REPLACE blocks):
+
+For each edit, emit a block like this (multiple blocks per FINAL are
+fine and can target different files):
+
+  path/to/file.py
+  <<<<<<< SEARCH
+  exact existing lines from the file
+  =======
+  new lines
+  >>>>>>> REPLACE
+
+  another/file.py
+  <<<<<<< SEARCH
+  ...
+  =======
+  ...
+  >>>>>>> REPLACE
+
+Rules:
+  - The SEARCH section must contain the EXACT bytes from the file
+    (whitespace, indentation, trailing newlines). If your SEARCH does
+    not match, the block is rejected and you'll be asked to revise.
+  - To CREATE a new file: emit an empty SEARCH section.
+  - One file path per block. To edit two files, use two blocks.
+  - The SEARCH section must be UNIQUE in the target file; add more
+    context lines if it appears in multiple places.
+  - No prose around the blocks. Start FINAL with the first path.
+
+OUTPUT FORMAT (FALLBACK — unified diff, used only if SEARCH/REPLACE
+cannot express the change, e.g. multi-file rename):
 
 FINAL:
 ```diff
@@ -71,19 +121,13 @@ FINAL:
 +new line
 ```
 
-Rules:
-1. ONE unified diff per FINAL. No prose explanation, no preamble,
-   no markdown headers, no "I think" / "let me explain".
-2. The diff MUST apply cleanly to HEAD via `git apply`.
-3. Prefer the SMALLEST diff that makes the failing tests pass.
-   Drive-by formatting changes will get the patch rejected.
-4. `spawn_subagent` / `spawn_swarm` are available for parallel
-   sub-tasks (e.g. "read these 6 files in parallel and summarise
-   what each does"); they cannot themselves produce FINAL.
+End your turn with `FINAL:` followed by either (a) one or more
+SEARCH/REPLACE blocks, or (b) a unified diff block. Do not mix the
+two formats in one FINAL.
 
-Available tools include `str_replace_editor`, `read_file`, `write_file`,
-`list_dir`, `repo_map`, `shell` (sandboxed), and the spawn tools.
-End with `FINAL:` followed by the diff block."""
+Available tools: `str_replace_editor` (secondary), `read_file`,
+`write_file` (new files only), `list_dir`, `repo_map`, `shell`
+(sandboxed), and the spawn tools."""
 
 
 # Wave 10: accept either `--- a/x ... +++ b/y ... @@` (raw unified diff)

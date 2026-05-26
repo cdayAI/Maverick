@@ -157,6 +157,31 @@ class Agent:
             return 8000
         return None
 
+    def _extract_and_apply_patch(self, final: str):
+        """Wave 11: unify SEARCH/REPLACE and unified-diff extraction.
+
+        Returns (patch_str_or_None, sr_summary_or_None). The patch is
+        the rendered unified diff (suitable for `git apply --check` /
+        the CSV). The `sr_summary` is the ApplySummary when blocks
+        were applied to disk, None when only a unified diff was found.
+
+        Caller is responsible for resetting the workdir AFTER capturing
+        the patch.
+        """
+        from pathlib import Path as _Path
+        from .coding_mode import extract_unified_diff
+        from .edit_format import apply_blocks, parse_blocks, render_diff
+
+        workdir = _Path(getattr(self.ctx.sandbox, "workdir", "."))
+        blocks = parse_blocks(final)
+        if blocks:
+            summary = apply_blocks(blocks, workdir, atomic=True)
+            if not summary.ok:
+                return None, summary
+            patch = render_diff(workdir)
+            return patch, summary
+        return extract_unified_diff(final), None
+
     async def _run_tool(self, name: str, args: dict) -> str:
         shield = self.ctx.shield
         if shield is not None:
@@ -306,7 +331,6 @@ class Agent:
                     try:
                         from .coding_mode import (
                             from_env as _cm_from_env,
-                            extract_unified_diff,
                             validate_patch,
                         )
                         coding_cfg = _cm_from_env()
@@ -318,30 +342,81 @@ class Agent:
                             and not getattr(self, "_patch_validated", False)):
                         from pathlib import Path as _Path
                         workdir = _Path(getattr(self.ctx.sandbox, "workdir", "."))
-                        # Wave 10 (D3): extract_unified_diff returns None
-                        # on no-valid-diff; treat that as a validation
-                        # failure instead of falling back to prose +
-                        # feeding it to git apply.
-                        patch = extract_unified_diff(final)
+                        # Wave 11: prefer SEARCH/REPLACE over unified-diff.
+                        from .edit_format import repair_prompt_for_failure
+                        patch, sr_summary = self._extract_and_apply_patch(final)
+                        # Reset workdir AFTER capturing the diff so the
+                        # verifier branch (and downstream evaluators) see
+                        # HEAD when they re-apply.
+                        if sr_summary is not None:
+                            try:
+                                import subprocess as _sub
+                                _sub.run(
+                                    ["git", "-C", str(workdir),
+                                     "reset", "--hard", "HEAD"],
+                                    capture_output=True, timeout=20,
+                                )
+                                _sub.run(
+                                    ["git", "-C", str(workdir), "clean", "-fd"],
+                                    capture_output=True, timeout=20,
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                self.ctx.blackboard.post(
+                                    self.name, "tool_signal",
+                                    "search_replace_used=1",
+                                )
+                            except Exception:
+                                pass
+                        if patch is None and sr_summary is not None:
+                            self._patch_validated = True
+                            bb.post(
+                                self.name, "verify",
+                                f"SEARCH/REPLACE apply failed: "
+                                f"{sr_summary.summary_text()}",
+                            )
+                            first_fail = next(
+                                (r for r in sr_summary.results if not r.ok),
+                                None,
+                            )
+                            critique = (
+                                "Your FINAL SEARCH/REPLACE block(s) did "
+                                "not apply.\n\n" + sr_summary.summary_text()
+                            )
+                            if first_fail is not None:
+                                critique += "\n\n" + repair_prompt_for_failure(
+                                    first_fail,
+                                )
+                            messages.append({"role": "user", "content": critique})
+                            continue
                         if patch is None:
                             self._patch_validated = True
                             bb.post(
                                 self.name, "verify",
-                                "no valid unified diff in FINAL; asking for revision",
+                                "no valid SEARCH/REPLACE or unified diff in "
+                                "FINAL; asking for revision",
                             )
                             messages.append({
                                 "role": "user",
                                 "content": (
-                                    "Your FINAL did not contain a valid unified "
-                                    "diff. Required format:\n\n"
-                                    "FINAL:\n```diff\n--- a/path/file.py\n"
-                                    "+++ b/path/file.py\n@@ -N,M +N,M @@\n"
-                                    "-old\n+new\n```\n\n"
-                                    "Respond with a new FINAL: containing only "
-                                    "the unified diff."
+                                    "Your FINAL did not contain valid edits. "
+                                    "Use SEARCH/REPLACE format (preferred):\n\n"
+                                    "path/to/file.py\n"
+                                    "<<<<<<< SEARCH\n"
+                                    "<exact existing lines>\n"
+                                    "=======\n"
+                                    "<new lines>\n"
+                                    ">>>>>>> REPLACE\n\n"
+                                    "Multiple blocks allowed, each can target "
+                                    "a different file. Or as a fallback, a "
+                                    "unified diff in ```diff fences."
                                 ),
                             })
                             continue
+                        # Stash the rendered patch so the verifier branch
+                        # doesn't have to re-parse.
+                        self._final_patch = patch
                         validation = validate_patch(patch, workdir)
                         if not validation.valid:
                             self._patch_validated = True  # one retry max
@@ -357,9 +432,9 @@ class Agent:
                                     f"Reason: {validation.reason}\n\n"
                                     f"git stderr:\n{validation.git_apply_stderr}\n\n"
                                     "Re-examine the exact line content via "
-                                    "`read_file`, fix the diff hunks, and "
-                                    "respond with a new FINAL: containing "
-                                    "only the unified diff."
+                                    "`read_file`, fix the edits, and respond "
+                                    "with a new FINAL using SEARCH/REPLACE "
+                                    "blocks (preferred) or a unified diff."
                                 ),
                             })
                             continue
@@ -389,9 +464,29 @@ class Agent:
                             from .coding_mode import run_failing_tests
                             import subprocess as _subprocess
                             workdir = _Path(getattr(self.ctx.sandbox, "workdir", "."))
-                            # Wave 10 (D3): extract_unified_diff returns None
-                            # on no-valid-diff. Don't feed prose to git apply.
-                            patch = extract_unified_diff(final)
+                            # Wave 11: reuse the patch produced by the
+                            # validate branch above (SEARCH/REPLACE or
+                            # unified-diff). If the validate branch was
+                            # skipped (e.g. require_apply_check=False),
+                            # extract here.
+                            patch = getattr(self, "_final_patch", None)
+                            if patch is None:
+                                patch, _ = self._extract_and_apply_patch(final)
+                                if patch is not None:
+                                    # We applied to disk; reset for the
+                                    # verifier's own apply.
+                                    try:
+                                        _subprocess.run(
+                                            ["git", "-C", str(workdir),
+                                             "reset", "--hard", "HEAD"],
+                                            capture_output=True, timeout=20,
+                                        )
+                                        _subprocess.run(
+                                            ["git", "-C", str(workdir), "clean", "-fd"],
+                                            capture_output=True, timeout=20,
+                                        )
+                                    except Exception:
+                                        pass
                             if patch is None:
                                 if not getattr(self, "_patch_validated", False):
                                     self._patch_validated = True
@@ -402,13 +497,10 @@ class Agent:
                                     messages.append({
                                         "role": "user",
                                         "content": (
-                                            "Your FINAL did not contain a valid "
-                                            "unified diff. Respond with a new "
-                                            "FINAL: containing ONLY the diff in "
-                                            "this exact format:\n\n"
-                                            "FINAL:\n```diff\n--- a/path/file.py\n"
-                                            "+++ b/path/file.py\n@@ ... @@\n"
-                                            "-old\n+new\n```"
+                                            "Your FINAL did not contain valid "
+                                            "edits. Use SEARCH/REPLACE blocks "
+                                            "(preferred) or a unified diff in "
+                                            "```diff fences."
                                         ),
                                     })
                                     continue
