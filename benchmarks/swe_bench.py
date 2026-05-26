@@ -256,11 +256,17 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
     # Wave 10: snapshot prior env so we can restore on exit and not leak
     # one instance's test sets into the next instance (or into a
     # follow-on non-bench process sharing the same shell).
-    _env_keys = (
-        "MAVERICK_FAIL_TO_PASS", "MAVERICK_PASS_TO_PASS", "MAVERICK_LANGUAGE",
-        "MAVERICK_BASE_COMMIT", "MAVERICK_GOLD_PATCH",
-    )
-    _prior_env = {k: os.environ.get(k) for k in _env_keys}
+    # May 26 council fix (harness audit #2): capture ALL MAVERICK_*
+    # env vars. The five-key whitelist missed env vars the agent loop
+    # mutated (MAVERICK_TEMPERATURE from BoN, MAVERICK_MODEL_OVERRIDE_*),
+    # which then leaked into the next instance.
+    _prior_env = {
+        k: v for k, v in os.environ.items()
+        if k.startswith("MAVERICK_")
+    }
+    # Pop the gold patch BEFORE assignment so empty manifests don't
+    # leak a stale value from the prior instance.
+    os.environ.pop("MAVERICK_GOLD_PATCH", None)
     os.environ["MAVERICK_FAIL_TO_PASS"] = "||".join(kwargs.get("fail_to_pass") or [])
     os.environ["MAVERICK_PASS_TO_PASS"] = "||".join(kwargs.get("pass_to_pass") or [])
     os.environ["MAVERICK_LANGUAGE"] = str(kwargs.get("language") or "")
@@ -389,8 +395,14 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
         except Exception:
             world_events = []
     finally:
-        # Wave 10 (D11): restore env so the next instance / process
-        # doesn't inherit this instance's test sets.
+        # Wave 10 (D11) + May 26 council fix (harness audit #2): restore
+        # env to the EXACT pre-instance state. Drop any MAVERICK_* var
+        # the agent loop added that wasn't in the prior snapshot — that
+        # was the leak channel for BoN temperature / model overrides
+        # bleeding across instances.
+        for k in [k for k in os.environ if k.startswith("MAVERICK_")]:
+            if k not in _prior_env:
+                os.environ.pop(k, None)
         for k, v in _prior_env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -407,7 +419,20 @@ def run_maverick(instance_id: str, brief: str, **kwargs) -> Row:
         total_cost = sum(getattr(e, "cost_dollars", 0.0) or 0.0 for e in all_eps)
         total_in   = sum(getattr(e, "input_tokens", 0) or 0 for e in all_eps)
         total_out  = sum(getattr(e, "output_tokens", 0) or 0 for e in all_eps)
-        last_outcome = all_eps[0].outcome
+        # May 26 council fix (harness audit #4): on best-of-N runs,
+        # `all_eps[0]` is the LAST-started episode (list_episodes
+        # orders started_at DESC). With asyncio.gather BoN, started_at
+        # ordering of N coroutines is non-deterministic — we'd report
+        # an arbitrary attempt's outcome rather than the winning one.
+        # Prefer a successful episode if any exist; fall back to most
+        # recent if none succeeded.
+        _successes = [
+            e for e in all_eps
+            if (getattr(e, "outcome", "") or "").lower().startswith("success")
+        ]
+        last_outcome = (
+            _successes[0].outcome if _successes else all_eps[0].outcome
+        )
     else:
         total_cost, total_in, total_out, last_outcome = 0.0, 0, 0, ""
 

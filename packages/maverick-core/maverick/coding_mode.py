@@ -926,6 +926,15 @@ def detect_test_runner(workdir: Path, language: str = "") -> str:
                 if name == hinted or (name == "node" and hinted in ("jest", "vitest", "mocha")):
                     if any((workdir / f).exists() for f in files):
                         return hinted
+        # May 26 council fix (test-runner audit #3): when the
+        # language hint is set but its expected markers are missing,
+        # the OLD code fell through to the generic loop — which picks
+        # pytest first if any `pyproject.toml` / `setup.py` exists
+        # (common in JS repos that ship `pre-commit` config). A Java
+        # repo hinted "java" but missing `pom.xml` would get classed
+        # as pytest. Trust the hint: return unsupported instead of
+        # falling back to a wrong runner.
+        return "unsupported"
 
     for name, files in _RUNNER_MARKERS:
         if not any((workdir / f).exists() for f in files):
@@ -1144,9 +1153,19 @@ def _parse_rspec(out: str) -> tuple[int, int, bool]:
 
 
 def _parse_gradle(out: str) -> tuple[int, int, bool]:
+    # May 26 council fix (test-runner audit #4): the old bare-word
+    # `\bPASSED\b` / `\bFAILED\b` matched any prose line containing
+    # those words — `println("PASSED for user X")`, gradle task
+    # banners (`> Task :compileTestJava PASSED`), etc. — inflating
+    # counts arbitrarily. Anchor on gradle's test-report format:
+    # `ClassName > methodName PASSED` (or FAILED / SKIPPED).
     out = _strip_ansi(out)
-    p = len(re.findall(r"\bPASSED\b", out))
-    f = len(re.findall(r"\bFAILED\b", out))
+    p = len(re.findall(r"^\S.*?\s>\s.*?\sPASSED\s*$", out, re.M))
+    f = len(re.findall(r"^\S.*?\s>\s.*?\sFAILED\s*$", out, re.M))
+    # Detect compile / build failures: BUILD FAILED with no tests is
+    # a real failure regardless of the PASSED/FAILED line counts.
+    if "BUILD FAILED" in out and p == 0 and f == 0:
+        return 0, 1, True
     ok = ("BUILD SUCCESSFUL" in out) or ("BUILD FAILED" in out)
     return p, f, ok
 
@@ -1191,7 +1210,16 @@ _FAILURE_PATTERNS = [
     ("NameError",        re.compile(r"\bNameError\b")),
     ("KeyError",         re.compile(r"\bKeyError\b")),
     ("ValueError",       re.compile(r"\bValueError\b")),
-    ("AssertionError",   re.compile(r"\bAssertionError\b|\bassert\s")),
+    # May 26 council fix (test-runner audit #5): the old `\bassert\s`
+    # branch matched any prose containing "assert " — log messages,
+    # docstrings, pytest's `>       assert x == y` traceback lines,
+    # etc. — flipping TypeError-class failures into AssertionError
+    # mis-classifications. Match only the actual exception name OR
+    # a clear assert expression with a comparison operator.
+    ("AssertionError",   re.compile(
+        r"\bAssertionError\b|^\s*assert\s+\S+\s*(?:[=!<>]|is\s|not\s|in\s)",
+        re.M,
+    )),
     ("SyntaxError",      re.compile(r"\bSyntaxError\b|invalid syntax")),
     ("IndentationError", re.compile(r"\bIndentationError\b")),
     ("Timeout",          re.compile(r"\bTIMEOUT\b|exit 124|TimeoutExpired")),
@@ -1383,11 +1411,16 @@ def from_env() -> CodingModeConfig:
         cfg.best_of_n = int(os.environ.get("MAVERICK_BEST_OF_N", "1"))
     except ValueError:
         cfg.best_of_n = 1
+    # May 26 council fix (long-tail audit #5): strip per-entry. A
+    # pathological manifest with `"a||  ||b"` would yield `["a", "  ",
+    # "b"]` — the whitespace-only ID gets forwarded to pytest as
+    # `tests/foo.py::  ` which hangs the collector for the per-test
+    # timeout, burning ~5min per affected instance.
     cfg.fail_to_pass = [
-        t for t in os.environ.get("MAVERICK_FAIL_TO_PASS", "").split("||") if t
+        t.strip() for t in os.environ.get("MAVERICK_FAIL_TO_PASS", "").split("||") if t.strip()
     ]
     cfg.pass_to_pass = [
-        t for t in os.environ.get("MAVERICK_PASS_TO_PASS", "").split("||") if t
+        t.strip() for t in os.environ.get("MAVERICK_PASS_TO_PASS", "").split("||") if t.strip()
     ]
     cfg.language = os.environ.get("MAVERICK_LANGUAGE", "").strip()
     return cfg

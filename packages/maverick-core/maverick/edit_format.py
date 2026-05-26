@@ -200,8 +200,16 @@ def _normalise_indent(s: str) -> tuple[str, list[str]]:
     leads = [re.match(r"^[ \t]*", ln).group(0) for ln in lines]
     if not any(leads):
         return s, leads
-    # Find the minimum non-empty indent and strip it from all lines.
-    nonempty = [lead for lead in leads if lead and any(c.strip() for c in s.split("\n")[leads.index(lead)])]
+    # May 26 council fix (SR audit #2): the old version used
+    # `leads.index(lead)` which returns the FIRST index of that lead
+    # value. With two lines sharing the same indent (common: two
+    # consecutive same-level statements), the wrong source line gets
+    # checked. A blank-line-then-code pair could wrongly drop a real
+    # lead, shifting REPLACE alignment. Iterate by index instead.
+    nonempty = [
+        lead for i, lead in enumerate(leads)
+        if lead and lines[i].strip()
+    ]
     if not nonempty:
         return s, leads
     common = min(nonempty, key=len)
@@ -315,6 +323,19 @@ def _apply_one(block: SearchReplaceBlock, workdir: Path) -> ApplyResult:
             reason=f"path {block.path!r} escapes the workspace",
         )
 
+    # May 26 council fix (SR audit #5): reject absolute paths + `..`
+    # segments at apply time. The block parser doesn't filter these;
+    # `Path(workdir) / "/etc/passwd"` evaluates to /etc/passwd and the
+    # relative_to check above DOES catch it via ValueError. But for
+    # extra defense, surface a clearer error than the generic ValueError
+    # message would produce.
+    if Path(block.path).is_absolute() or ".." in Path(block.path).parts:
+        return ApplyResult(
+            ok=False, block=block,
+            reason=f"path {block.path!r} contains absolute or parent "
+                   "traversal; use workspace-relative paths only",
+        )
+
     # New-file case: empty SEARCH = create file.
     if not block.search.strip():
         if target.exists():
@@ -391,8 +412,24 @@ def _apply_one(block: SearchReplaceBlock, workdir: Path) -> ApplyResult:
         new_content_lf.replace("\n", original_eol)
         if original_eol == "\r\n" else new_content_lf
     )
+    # May 26 council fix (Princeton-perspective audit #4): preserve
+    # the file's executable bit. `Path.write_text()` uses the default
+    # umask (0o644) which drops mode 0o755 from `bin/foo.py` and
+    # similar shipped scripts. The grader's `git apply` against a
+    # clean checkout would then see `old mode 100755 / new mode
+    # 100644` in our rendered diff and reject.
+    try:
+        mode = target.stat().st_mode
+    except OSError:
+        mode = None
     try:
         target.write_text(new_content, encoding="utf-8")
+        if mode is not None:
+            import os as _os
+            try:
+                _os.chmod(target, mode)
+            except OSError:
+                pass
     except (PermissionError, OSError) as e:
         return ApplyResult(ok=False, block=block, reason=str(e))
 
