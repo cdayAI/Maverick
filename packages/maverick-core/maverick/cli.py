@@ -792,5 +792,47 @@ def gc(ctx, days: int, events_days: int, yes: bool) -> None:
     )
 
 
+@main.group("donate")
+def donate() -> None:
+    """Opt-in trajectory donation. Default OFF.
+
+    Enable in ~/.maverick/config.toml:
+      [telemetry]
+      donate_trajectories = true
+      donate_text = false  # set true to include task text (off by default)
+    """
+
+
+@donate.command("status")
+def donate_status() -> None:
+    """Show pending records in the outbox (NOT yet uploaded)."""
+    from .donation import _donations_enabled, _text_donations_enabled, list_pending
+    click.echo(f"donate_trajectories: {_donations_enabled()}")
+    click.echo(f"donate_text:         {_text_donations_enabled()}")
+    pending = list_pending()
+    if not pending:
+        click.echo("outbox: empty")
+        return
+    click.echo(f"outbox: {len(pending)} record(s) pending")
+    for p in pending[:10]:
+        click.echo(f"  {p.name}  ({p.stat().st_size} bytes)")
+
+
+@donate.command("clear")
+@click.option("--yes", is_flag=True)
+def donate_clear(yes: bool) -> None:
+    """Delete every pending donation record without uploading."""
+    from .donation import clear_outbox, list_pending
+    pending = list_pending()
+    if not pending:
+        click.echo("outbox: empty (nothing to clear)")
+        return
+    if not yes:
+        click.echo(f"This will delete {len(pending)} pending record(s).")
+        click.confirm("Proceed?", abort=True)
+    n = clear_outbox()
+    click.echo(f"cleared {n} record(s)")
+
+
 if __name__ == "__main__":
     main()

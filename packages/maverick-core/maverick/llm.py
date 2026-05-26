@@ -39,6 +39,7 @@ ROLE_MODELS: dict[str, str] = {
     "writer":          MODEL_SONNET,
     "analyst":         MODEL_SONNET,
     "revisor":         MODEL_OPUS,
+    "verifier":        MODEL_SONNET,
     "summarizer":      MODEL_HAIKU,
     "skill_distiller": MODEL_SONNET,
 }

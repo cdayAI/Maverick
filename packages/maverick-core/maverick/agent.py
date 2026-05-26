@@ -66,6 +66,9 @@ class AgentResult:
     error: Optional[str] = None
     role: str = ""
     name: str = ""
+    # Verifier signals (only populated on the orchestrator's FINAL).
+    verifier_confidence: float = 1.0
+    verifier_critique: str = ""
 
 
 class Agent:
@@ -213,6 +216,14 @@ class Agent:
         messages: list[dict] = [{"role": "user", "content": first_content}]
 
         for step in range(self.max_steps):
+            # Karpathy SOTA-review item: long-context compaction. Drop
+            # raw tool_result content >2KiB once it's behind the recent
+            # window. The first message (user brief) is always kept.
+            # The compaction cost is O(len(messages)) per turn -- cheap
+            # vs. paying full-price input tokens for a 100k history.
+            from .compaction import compact_messages
+            messages = compact_messages(messages)
+
             try:
                 resp = await self.ctx.llm.complete_async(
                     system=self.system,
@@ -241,11 +252,75 @@ class Agent:
             if resp.text:
                 if resp.text.startswith("FINAL:"):
                     final = resp.text[len("FINAL:") :].strip()
+
+                    # Karpathy SOTA-review item: verifier role exists in
+                    # prompt strings only -- no code actually runs a
+                    # second-pass check. Now we do, but only on the
+                    # orchestrator's FINAL (depth=0) and only once per
+                    # goal. Sub-agents skip verification (their parent
+                    # is the verifier of last resort).
+                    verdict = None
+                    # Only the orchestrator's FINAL is verified. Sub-agents
+                    # answer to their parent; the parent is their verifier.
+                    if (
+                        self.role == "orchestrator"
+                        and self.depth == 0
+                        and not getattr(self, "_already_verified", False)
+                        and self.ctx.goal_id is not None
+                    ):
+                        try:
+                            from .verifier import verify_proposal
+                            verdict = await verify_proposal(
+                                self.brief, final, self.ctx.llm, self.ctx.budget,
+                            )
+                        except BudgetExceeded:
+                            verdict = None
+                        except Exception as e:  # pragma: no cover
+                            bb.post(self.name, "error", f"verifier failed: {e}")
+                            verdict = None
+
+                        if verdict is not None and not verdict.accepts:
+                            self._already_verified = True
+                            bb.post(
+                                self.name, "verify",
+                                f"verifier rejected (conf={verdict.confidence:.2f}): "
+                                f"{verdict.critique}",
+                            )
+                            # Hand the critique to the proposer as a
+                            # revision brief. One revision pass max --
+                            # the second attempt is accepted regardless.
+                            issues_block = (
+                                "\n".join(f"  - {i}" for i in verdict.issues)
+                                if verdict.issues else "  (no specific issues listed)"
+                            )
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "A verifier rejected your FINAL answer. "
+                                    "Revise and try again.\n\n"
+                                    f"Verifier confidence: {verdict.confidence:.2f}\n"
+                                    f"Critique: {verdict.critique}\n"
+                                    f"Specific issues:\n{issues_block}\n\n"
+                                    "Address each issue and respond with a "
+                                    "new FINAL: <revised answer>."
+                                ),
+                            })
+                            continue
+                        if verdict is not None:
+                            bb.post(
+                                self.name, "verify",
+                                f"verifier accepted (conf={verdict.confidence:.2f})",
+                            )
+
                     bb.post(self.name, "finding", final)
                     self.ctx.world.append_message(
                         self.ctx.goal_id, f"agent:{self.name}", final
                     )
-                    return AgentResult(final=final, role=self.role, name=self.name)
+                    return AgentResult(
+                        final=final, role=self.role, name=self.name,
+                        verifier_confidence=verdict.confidence if verdict else 1.0,
+                        verifier_critique=verdict.critique if verdict else "",
+                    )
                 bb.post(self.name, "observation", resp.text[:1000])
 
             if not resp.tool_calls:

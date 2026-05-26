@@ -110,6 +110,28 @@ def spawn_swarm_tool(parent: "Agent") -> Tool:
 
         results = await asyncio.gather(*(c.run() for c in children), return_exceptions=True)
 
+        # Karpathy SOTA-review item: measure disagreement across the
+        # children's FINAL answers and record it on the blackboard so
+        # the orchestrator can decide whether to spend more compute
+        # (re-spawn with adaptive_fanout) or trust the consensus.
+        finals = [
+            res.final for res in results
+            if not isinstance(res, Exception) and res.final
+        ]
+        if len(finals) > 1:
+            from ..disagreement import answer_entropy
+            entropy = answer_entropy(finals)
+            parent.ctx.blackboard.post(
+                parent.name, "verify",
+                f"swarm disagreement entropy={entropy:.3f} across {len(finals)} answers",
+            )
+            # Stamp on the context so the orchestrator's verify branch
+            # and the donation selector can read it.
+            try:
+                parent.ctx.last_disagreement = entropy  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
         parts: list[str] = []
         for child, res in zip(children, results):
             if isinstance(res, Exception):

@@ -177,6 +177,34 @@ async def run_goal(
         _end_episode_with_spend(world, episode_id, summary, "success", budget)
         world.set_goal_status(goal_id, "done", result=summary)
 
+        # Trajectory donation (Karpathy data-engine analog). Default OFF;
+        # only fires when the user opted into [telemetry] donate_trajectories
+        # AND the selection gate (disagreement_high + verifier_confident
+        # + success) passes. Never raises -- a bad donation must never
+        # affect the goal result.
+        try:
+            from .donation import TrajectoryRecord, hash_brief, write_record
+            entropy = getattr(ctx, "last_disagreement", 0.0)
+            record = TrajectoryRecord(
+                task_brief_hash=hash_brief(goal.title + (goal.description or "")),
+                task_brief_text=(goal.title + "\n" + (goal.description or "")),
+                model_id=getattr(llm, "model", ""),
+                tools_used=sorted({e.kind for e in blackboard.entries
+                                   if e.kind == "observation"}),
+                outcome="success",
+                reward=1.0 if result.verifier_confidence >= 0.75 else result.verifier_confidence,
+                verifier_confidence=result.verifier_confidence,
+                verifier_critique=result.verifier_critique,
+                disagreement_entropy=float(entropy or 0.0),
+                wall_seconds=budget.elapsed(),
+                cost_dollars=budget.dollars,
+                tokens_in=budget.input_tokens,
+                tokens_out=budget.output_tokens,
+            )
+            write_record(record)
+        except Exception as e:  # pragma: no cover
+            log.debug("trajectory donation skipped: %s", e)
+
         if conversation_id is not None:
             try:
                 world.append_turn(conversation_id, "assistant", summary, goal_id=goal_id)

@@ -26,6 +26,10 @@ from maverick.world_model import WorldModel
 async def test_simple_final_answer_marks_goal_done(tmp_path: Path, fake_llm, make_llm_response):
     fake_llm.scripted = [
         make_llm_response(text="FINAL: the answer is 42"),
+        # Wave 5: verifier runs on orchestrator's FINAL. Accept the answer.
+        make_llm_response(
+            text='{"confidence": 0.95, "accepts": true, "critique": "ok", "issues": []}',
+        ),
         # Skill distiller is called after FINAL; give it something terminal too.
         make_llm_response(text="FINAL: (no skill)"),
     ]
@@ -89,6 +93,10 @@ async def test_blackboard_posts_mirror_into_goal_events(tmp_path: Path, fake_llm
     """Live progress streaming depends on this."""
     fake_llm.scripted = [
         make_llm_response(text="FINAL: done"),
+        # Wave 5 verifier call on orchestrator FINAL.
+        make_llm_response(
+            text='{"confidence": 0.95, "accepts": true, "critique": "ok", "issues": []}',
+        ),
         make_llm_response(text="FINAL: (no skill)"),
     ]
     world = WorldModel(path=tmp_path / "world.db")
