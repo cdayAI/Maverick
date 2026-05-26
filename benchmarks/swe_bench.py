@@ -600,18 +600,28 @@ def write_csv(rows: list[Row], out_path: Path) -> None:
 
 def already_done(out_path: Path) -> set[tuple[str, str]]:
     """Read out_path and return the set of (instance_id, pipeline) pairs
-    already written. Used by main() to skip on resume.
+    already written AND that succeeded. Used by main() to skip on resume.
 
     Wave 10 (D12): csv.Error during read no longer silently empties the
     set; instead we log a visible warning so a partial-write race or
     corrupt CSV doesn't trigger a SILENT re-run that double-charges.
+
+    Wave 12 (council F11b): rows whose `outcome` starts with "error:"
+    are NOT marked done. The agent errored (sandbox crash, API
+    outage, etc) without producing a real patch — resuming should
+    retry these, not skip them.
     """
     if not out_path.exists():
         return set()
     done: set[tuple[str, str]] = set()
+    error_rows = 0
     try:
         with out_path.open() as f:
             for row in csv.DictReader(f):
+                outcome = (row.get("outcome") or "").strip()
+                if outcome.startswith("error:"):
+                    error_rows += 1
+                    continue
                 done.add((row["instance_id"], row["pipeline"]))
     except (OSError, KeyError) as e:
         print(f"warning: could not read resume state from {out_path}: {e}",
@@ -624,10 +634,49 @@ def already_done(out_path: Path) -> set[tuple[str, str]]:
             f"trigger re-runs of partially-written instances.",
             file=sys.stderr,
         )
+    if error_rows:
+        print(
+            f"info: {error_rows} error row(s) found in {out_path} — "
+            "they will be retried (Wave 12: errors no longer mark a "
+            "row as done)",
+            file=sys.stderr,
+        )
     return done
 
 
+# Wave 12 (council F11a): clean-exit flag shared with signal handler.
+# Set on SIGTERM; the main loop checks it after each row write and
+# exits gracefully (last row flushed, partial accounting reported).
+_TERMINATE_REQUESTED: bool = False
+
+
+def _on_sigterm(signum, frame) -> None:  # pragma: no cover (signal)
+    global _TERMINATE_REQUESTED
+    _TERMINATE_REQUESTED = True
+    # Single line, no stdlib calls beyond stdio — signal handlers are
+    # async-signal-safe restricted.
+    try:
+        sys.stderr.write(
+            "\nSIGTERM received; finishing current row + exiting...\n"
+        )
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
 def main() -> int:
+    # Wave 12 (F11a): install SIGTERM handler so cloud schedulers
+    # (kubelet, systemd, AWS Batch) get a clean shutdown instead of
+    # an unflushed CSV. SIGINT (Ctrl-C) is already caught by the
+    # KeyboardInterrupt block.
+    import signal as _signal
+    try:
+        _signal.signal(_signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError):
+        # Some environments (Windows, embedded threads) reject signal
+        # registration; harness still works, just less graceful on TERM.
+        pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--instances", type=Path, required=True,
                     help="manifest of instance IDs (one per line or JSON-per-line)")
@@ -648,6 +697,10 @@ def main() -> int:
     ap.add_argument("--adoption-tripwire", type=float, default=None,
                     help="Abort if SEARCH/REPLACE adoption rate < N (0.0-1.0) "
                     "after the first 25 instances. Sentinel for prompt drift.")
+    ap.add_argument("--max-consecutive-failures", type=int, default=10,
+                    help="Wave 12 (F11e): abort if N consecutive instances "
+                    "error out (likely API outage / quota exhaustion / "
+                    "sandbox crash). 0 to disable.")
     args = ap.parse_args()
 
     if not args.instances.exists():
@@ -688,9 +741,15 @@ def main() -> int:
     # Wave 11: adoption tripwire counters.
     str_replace_uses = 0
     instances_with_str_replace_signal = 0
+    # Wave 12 (F11e): consecutive-failure counter for circuit breaker.
+    consecutive_failures = 0
 
     try:
         for inst in instances:
+            if _TERMINATE_REQUESTED:
+                print("SIGTERM exit: stopping instance iteration",
+                      file=sys.stderr)
+                break
             iid = inst["instance_id"]
             brief = inst.get("brief", "")
             extra = {
@@ -704,6 +763,8 @@ def main() -> int:
                 "interface": inst.get("interface", "") or "",
             }
             for pipeline in pipelines:
+                if _TERMINATE_REQUESTED:
+                    break
                 if (iid, pipeline) in done:
                     skipped += 1
                     continue
@@ -727,6 +788,22 @@ def main() -> int:
                 write_csv([row], args.out)
                 written += 1
                 total_spend += row.cost_dollars
+                # Wave 12 (F11e): consecutive-failure circuit breaker.
+                if row.outcome.startswith("error:"):
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
+                if (args.max_consecutive_failures > 0
+                        and consecutive_failures >= args.max_consecutive_failures):
+                    print(
+                        f"ABORT: {consecutive_failures} consecutive errors "
+                        f"(>={args.max_consecutive_failures}). Likely API "
+                        "outage / quota / sandbox issue — bail before "
+                        "burning through the manifest. Last error: "
+                        f"{row.outcome}",
+                        file=sys.stderr,
+                    )
+                    return 5
                 # Wave 11: track SEARCH/REPLACE adoption via extra signal.
                 if pipeline == "maverick":
                     if row.extra.get("str_replace_editor_used"):
@@ -756,6 +833,11 @@ def main() -> int:
         print(f"\nSIGINT caught; {written} row(s) flushed to {args.out}",
               file=sys.stderr)
         return 130
+
+    if _TERMINATE_REQUESTED:
+        print(f"\nSIGTERM exit: {written} row(s) flushed to {args.out}; "
+              f"total ${total_spend:.2f}", file=sys.stderr)
+        return 143  # 128 + SIGTERM(15)
 
     print(f"\n{written} row(s) appended to {args.out}; "
           f"{skipped} skipped (already done); total ${total_spend:.2f}")
