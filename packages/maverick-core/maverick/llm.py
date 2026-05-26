@@ -67,11 +67,24 @@ MODEL_PRICES: dict[str, tuple[float, float]] = {
     "gpt-5.4-pro":               (10.0, 40.0),
     "gpt-5.4-mini":              (0.50, 2.0),
     "gpt-5.4-nano":              (0.10, 0.40),
-    # OpenRouter / DeepSeek
+    # OpenRouter / DeepSeek (May 26 update: actual DeepSeek API pricing,
+    # not OpenRouter aliases. https://platform.deepseek.com/api-docs/pricing)
+    "deepseek-chat":             (0.27, 1.10),    # V3.2 — cache off
+    "deepseek-reasoner":         (0.55, 2.19),    # R1-line
     "deepseek-v4-pro":           (0.14, 0.55),
     "deepseek-v4-flash":         (0.07, 0.28),
-    # xAI
+    # xAI Grok (May 26: https://docs.x.ai/docs/models#models-and-pricing)
+    "grok-4-latest":             (3.00, 15.00),
+    "grok-4-mini":               (0.30, 0.50),
+    "grok-code-fast":            (0.20, 1.50),
+    "grok-3":                    (3.00, 15.00),
     "grok-4.3":                  (1.25, 2.50),
+    # Moonshot / Kimi (May 26: https://platform.moonshot.ai/pricing)
+    "kimi-k2":                   (0.60, 2.50),
+    "kimi-k1.5":                 (0.20, 2.00),
+    "moonshot-v1-8k":            (0.30, 0.30),
+    "moonshot-v1-32k":           (0.60, 0.60),
+    "moonshot-v1-128k":          (1.20, 1.20),
     # Google
     "gemini-3-pro":              (2.50, 10.0),
     "gemini-3-flash":            (0.15, 0.60),

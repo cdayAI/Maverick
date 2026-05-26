@@ -33,12 +33,52 @@ PROVIDERS: dict[str, dict] = {
     },
     "openai": {
         "status": "ready",
-        "label": "OpenAI",
+        "label": "OpenAI (ChatGPT / GPT)",
         "env": "OPENAI_API_KEY",
         "models": [
-            {"id": "gpt-4o",      "notes": "Multimodal, smart, balanced."},
-            {"id": "gpt-4o-mini", "notes": "Cheaper, fast."},
-            {"id": "o1",          "notes": "Long-form reasoning. Slow but deep."},
+            {"id": "gpt-5.5",       "notes": "Most capable. Tool-use and long reasoning."},
+            {"id": "gpt-5.4",       "notes": "Balanced workhorse."},
+            {"id": "gpt-5.4-mini",  "notes": "Cheaper, fast."},
+            {"id": "gpt-5.4-nano",  "notes": "Tiny, very cheap. Good for summarizer."},
+        ],
+    },
+    "moonshot": {
+        "status": "ready",
+        "label": "Moonshot / Kimi",
+        "env": "MOONSHOT_API_KEY",
+        "models": [
+            {"id": "kimi-k2",          "notes": "Latest Kimi. Strong agentic/code performance."},
+            {"id": "kimi-k1.5",        "notes": "Cheaper, still solid."},
+            {"id": "moonshot-v1-128k", "notes": "128k context window."},
+        ],
+    },
+    "deepseek": {
+        "status": "ready",
+        "label": "DeepSeek",
+        "env": "DEEPSEEK_API_KEY",
+        "models": [
+            {"id": "deepseek-chat",     "notes": "V3.2 chat. Cheap, capable workhorse."},
+            {"id": "deepseek-reasoner", "notes": "R1-line reasoning. Slower, deeper."},
+            {"id": "deepseek-v4-flash", "notes": "Very cheap. Good for summarizer."},
+        ],
+    },
+    "xai": {
+        "status": "ready",
+        "label": "xAI Grok",
+        "env": "XAI_API_KEY",
+        "models": [
+            {"id": "grok-4-latest",  "notes": "Flagship. Reasoning + tools."},
+            {"id": "grok-4-mini",    "notes": "Cheaper sibling."},
+            {"id": "grok-code-fast", "notes": "Code-tuned, low latency."},
+        ],
+    },
+    "gemini": {
+        "status": "ready",
+        "label": "Google Gemini",
+        "env": "GEMINI_API_KEY",
+        "models": [
+            {"id": "gemini-3-pro",   "notes": "Long context, smart."},
+            {"id": "gemini-3-flash", "notes": "Fast and cheap."},
         ],
     },
     "openrouter": {
@@ -60,15 +100,6 @@ PROVIDERS: dict[str, dict] = {
             {"id": "llama3.3:70b",         "notes": "Local, free, requires beefy machine."},
             {"id": "qwen2.5-coder:32b",    "notes": "Local, code-focused."},
             {"id": "phi3:14b",             "notes": "Local, small, fast."},
-        ],
-    },
-    "gemini": {
-        "status": "ready",
-        "label": "Google Gemini",
-        "env": "GEMINI_API_KEY",
-        "models": [
-            {"id": "gemini-2.5-pro",   "notes": "Long context, smart."},
-            {"id": "gemini-2.5-flash", "notes": "Fast and cheap."},
         ],
     },
 }

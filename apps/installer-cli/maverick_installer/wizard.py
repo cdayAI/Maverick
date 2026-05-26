@@ -193,9 +193,56 @@ def _validate_openai_key(key: str) -> tuple[bool, str]:
         return True, f"validation skipped: {type(e).__name__}"
 
 
+def _validate_openai_compat_key(key: str, base_url: str, label: str) -> tuple[bool, str]:
+    """For openai-compatible endpoints (Moonshot, DeepSeek, xAI, Gemini)."""
+    if not key:
+        return False, "empty key"
+    try:
+        from openai import AuthenticationError, OpenAI
+    except ImportError:
+        return True, "openai SDK not installed -- skipping validation"
+    try:
+        client = OpenAI(api_key=key, base_url=base_url)
+        list(client.models.list().data[:1])
+        return True, f"validated against {label}"
+    except AuthenticationError:
+        return False, f"{label} rejected the key"
+    except Exception as e:
+        # Network / route errors are non-fatal -- saving still useful.
+        return True, f"validation skipped: {type(e).__name__}"
+
+
+def _validate_moonshot_key(key: str) -> tuple[bool, str]:
+    return _validate_openai_compat_key(
+        key, "https://api.moonshot.ai/v1", "Moonshot",
+    )
+
+
+def _validate_deepseek_key(key: str) -> tuple[bool, str]:
+    return _validate_openai_compat_key(
+        key, "https://api.deepseek.com/v1", "DeepSeek",
+    )
+
+
+def _validate_xai_key(key: str) -> tuple[bool, str]:
+    return _validate_openai_compat_key(
+        key, "https://api.x.ai/v1", "xAI",
+    )
+
+
+def _validate_gemini_key(key: str) -> tuple[bool, str]:
+    return _validate_openai_compat_key(
+        key, "https://generativelanguage.googleapis.com/v1beta/openai/", "Gemini",
+    )
+
+
 _VALIDATORS = {
     "ANTHROPIC_API_KEY": _validate_anthropic_key,
     "OPENAI_API_KEY":    _validate_openai_key,
+    "MOONSHOT_API_KEY":  _validate_moonshot_key,
+    "DEEPSEEK_API_KEY":  _validate_deepseek_key,
+    "XAI_API_KEY":       _validate_xai_key,
+    "GEMINI_API_KEY":    _validate_gemini_key,
     # Channel tokens validated when 'maverick serve' starts (less time-critical).
 }
 
