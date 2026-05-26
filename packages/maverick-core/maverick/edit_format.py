@@ -295,6 +295,10 @@ def _find_with_fuzzy(content: str, needle: str) -> tuple[Optional[int], Optional
                         return start, end, "ws_collapse"
 
     # 5. Levenshtein ≥ 0.9 — last-resort fuzzy window.
+    # May 26 council fix (SR audit #3): scan ALL windows scoring near
+    # the best. If 2+ windows are within 0.02 of the top ratio, the
+    # match is ambiguous — silently picking the first by `>` (current
+    # code) lands the edit at the wrong place.
     needle_lines = needle.count("\n") + 1
     content_lines = content.split("\n")
     best_ratio = 0.0
@@ -307,6 +311,15 @@ def _find_with_fuzzy(content: str, needle: str) -> tuple[Optional[int], Optional
             best_start = sum(len(ln) + 1 for ln in content_lines[:i])
             best_end = sum(len(ln) + 1 for ln in content_lines[:i + needle_lines])
     if best_ratio >= 0.9 and best_start >= 0:
+        # Ambiguity guard: count windows within 0.02 of the best.
+        near_count = 0
+        for i in range(0, max(0, len(content_lines) - needle_lines + 1)):
+            window = "\n".join(content_lines[i:i + needle_lines])
+            r = difflib.SequenceMatcher(None, window, needle).ratio()
+            if r >= best_ratio - 0.02:
+                near_count += 1
+                if near_count >= 2:
+                    return None, None, "ambiguous"
         return best_start, best_end, "levenshtein"
 
     return None, None, ""
@@ -381,6 +394,16 @@ def _apply_one(block: SearchReplaceBlock, workdir: Path) -> ApplyResult:
         )
 
     start, end, kind = _find_with_fuzzy(content_lf, needle_lf)
+    if start is None and kind == "ambiguous":
+        # May 26 council fix (SR audit #3): fuzzy ladder hit 2+
+        # near-tied windows. Refuse to guess; ask the model for
+        # more context.
+        return ApplyResult(
+            ok=False, block=block,
+            reason="SEARCH block matched 2+ locations via fuzzy fallback; "
+                   "add more surrounding lines or use exact byte-for-byte "
+                   "SEARCH to disambiguate",
+        )
     if start is None:
         # Provide a near-miss context to help the model re-author.
         # Find the closest line and snip ±5 lines around it.

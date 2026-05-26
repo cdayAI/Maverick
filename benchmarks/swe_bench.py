@@ -957,6 +957,27 @@ def main() -> int:
     # parallel harness processes don't redo each other's work even
     # though both started with the same manifest.
     if args.num_workers > 1:
+        # May 26 council fix (harness audit #5): refuse to resume if
+        # num_workers changed since the last run. The sharding hash
+        # would re-bucket every instance, silently orphaning the ones
+        # that prior workers already processed.
+        prior_meta_path = args.out.parent / "run_meta.json"
+        if prior_meta_path.exists() and not args.no_resume:
+            try:
+                prior_meta = json.loads(prior_meta_path.read_text(encoding="utf-8"))
+                prior_nw = (prior_meta.get("cli_args") or {}).get("num_workers")
+                if prior_nw is not None and int(prior_nw) != args.num_workers:
+                    print(
+                        f"REFUSING RESUME: prior run used num_workers="
+                        f"{prior_nw}, this run uses {args.num_workers}. "
+                        f"Re-sharding would orphan instances completed by "
+                        f"the prior shard. Either match num_workers, "
+                        f"pass --no-resume, or delete {prior_meta_path}.",
+                        file=sys.stderr,
+                    )
+                    return 6
+            except (OSError, ValueError, KeyError):
+                pass
         import hashlib
         instances = [
             inst for inst in instances

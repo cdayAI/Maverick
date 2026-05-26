@@ -366,9 +366,17 @@ def extract_unified_diff(text: str) -> Optional[str]:
     # Markdown patches (lines starting with " ```" / "+```" / "-```").
     # We match exactly ``` plus optional trailing whitespace; a context
     # line " ```" has a leading space and won't match.
+    # May 26 council fix (SR audit #4): some models emit nested fences
+    # — a ```diff envelope wrapping a diff that itself includes
+    # ```python context lines. The model then closes BOTH fences,
+    # leaving two trailing ``` lines. Strip up to 2 trailing pure
+    # fence lines (capped to prevent eating diff context).
     lines = diff.rstrip("\n").split("\n")
-    if lines and lines[-1].rstrip() == "```":
-        lines = lines[:-1]
+    for _ in range(2):
+        if lines and lines[-1].rstrip() == "```":
+            lines = lines[:-1]
+        else:
+            break
     diff = "\n".join(lines).rstrip()
 
     # Preserve a final `\ No newline at end of file` marker without
@@ -830,6 +838,16 @@ class TestRunResult:
 
     @property
     def all_pass(self) -> bool:
+        # May 26 council fix (agent-loop audit #1): when both totals
+        # are 0 AND skipped/error are unset, the math evaluates True
+        # (`0 == 0 AND 0 == 0`) and the verifier reports "all pass"
+        # for a candidate that didn't actually run any tests. Best-of-N
+        # selector then picks that candidate over real-test winners.
+        # Require at least ONE test to have been involved.
+        if self.fail_to_pass_total + self.pass_to_pass_total == 0:
+            return False
+        if self.skipped:
+            return False
         return (
             self.fail_to_pass_passing == self.fail_to_pass_total
             and self.pass_to_pass_passing == self.pass_to_pass_total
@@ -1362,16 +1380,31 @@ def run_failing_tests(
         cmds = cmd if isinstance(cmd, list) else [cmd]
         passed = failed = 0
         chunks: list[str] = []
-        for c in cmds:
+        # May 26 council fix (test-runner audit #2): for runners that
+        # use one-cmd-per-id (cargo), the original `len(test_ids) -
+        # passed - failed` math conflated already-counted tests across
+        # prior chunks. A parse failure mid-stream charged the
+        # un-executed later ids as failures with bogus math. Track
+        # per-chunk progress: when a chunk's parse fails, mark JUST
+        # the failed chunk's expected tests (1 for cargo) as failed
+        # so already-counted ids aren't double-charged.
+        for chunk_idx, c in enumerate(cmds):
             try:
                 r = sandbox.exec(c)
             except Exception as e:  # pragma: no cover
-                return passed, len(test_ids) - passed, f"sandbox exec failed: {e}"
+                # Remaining un-run ids: len(cmds) - chunk_idx for
+                # cargo (1 id per chunk), or 1 for pytest-style
+                # (all ids in one cmd).
+                unrun = len(cmds) - chunk_idx if len(cmds) > 1 else (
+                    len(test_ids) - passed - failed
+                )
+                return passed, failed + max(unrun, 0), f"sandbox exec failed: {e}"
             out = (r.stdout or "") + "\n" + (r.stderr or "")
             p, f, ok = parse(out)
             chunks.append(out[-1000:])
             if not ok:
-                return passed, failed + (len(test_ids) - passed - failed), "\n".join(chunks)
+                unrun = len(cmds) - chunk_idx if len(cmds) > 1 else 1
+                return passed, failed + max(unrun, 0), "\n".join(chunks)
             passed += p
             failed += f
         return passed, failed, "\n".join(chunks)

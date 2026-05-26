@@ -428,6 +428,15 @@ class Agent:
                     # the STALE patch from the earlier FINAL and submit
                     # it — wrong patch attribution.
                     self._final_patch = None
+                    # May 26 council fix (agent-loop audit #4): also
+                    # clear `_already_verified` so the revised FINAL
+                    # gets verified afresh. Without this, a rejected
+                    # FINAL's `_already_verified=True` flag would skip
+                    # the verifier on the revised FINAL — and the
+                    # revised version would return with
+                    # `verifier_confidence=1.0` (the fallback when
+                    # verdict is None) regardless of actual quality.
+                    self._already_verified = False
 
                     # Wave 8: coding-mode patch self-validation. If the
                     # workdir is a git repo AND the FINAL contains a
