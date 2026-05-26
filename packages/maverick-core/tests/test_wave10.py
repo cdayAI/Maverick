@@ -365,7 +365,12 @@ class TestLoadInstancesTolerant:
         import importlib.util
         import sys
         from pathlib import Path
-        p = Path("/home/user/Maverick/benchmarks/swe_bench.py")
+        # Resolve relative to this test file so the path is correct in any
+        # checkout location (local dev, CI runner, etc.).
+        # tests/test_wave10.py → packages/maverick-core/tests → repo root → benchmarks/swe_bench.py
+        repo_root = Path(__file__).resolve().parents[3]
+        p = repo_root / "benchmarks" / "swe_bench.py"
+        assert p.exists(), f"benchmarks/swe_bench.py not found at {p}"
         spec = importlib.util.spec_from_file_location("benchmarks_swe_bench", p)
         mod = importlib.util.module_from_spec(spec)
         sys.modules["benchmarks_swe_bench"] = mod
