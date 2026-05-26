@@ -489,6 +489,85 @@ def collect_api_keys(providers: list[str], channel_envs: set[str]) -> dict[str, 
     return keys
 
 
+def collect_browser_sessions(providers: list[str]) -> list[str]:
+    """Capture session cookies for any browser-session providers picked.
+
+    Returns the list of provider keys that successfully got a session
+    stored. The caller writes these into config.toml so the kernel
+    routes the right roles to them.
+    """
+    session_providers = [
+        p for p in providers
+        if catalog.PROVIDERS.get(p, {}).get("session")
+    ]
+    if not session_providers:
+        return []
+
+    console.print()
+    console.print(Panel.fit(
+        "[bold yellow]Browser session capture[/bold yellow]\n\n"
+        "You picked one or more browser-session providers. Maverick will\n"
+        "replay your existing chat session against the provider's web\n"
+        "endpoints to use your consumer subscription quota instead of\n"
+        "paying per API token.\n\n"
+        "[bold]Important caveats:[/bold]\n"
+        "  • Programmatic use of consumer chat may violate the provider's\n"
+        "    ToS. Maverick uses only YOUR session on YOUR account; what\n"
+        "    you do with that is your call.\n"
+        "  • Consumer chat does NOT expose tool-use. Session providers\n"
+        "    only work for non-tool roles (summarizer, writer, analyst).\n"
+        "  • Cookies expire frequently (~1 hour for ChatGPT). When they\n"
+        "    do, re-run: [bold]maverick session import <provider>[/bold]\n"
+        "  • Sessions are stored at ~/.maverick/sessions/ with chmod 600.",
+        border_style="yellow",
+    ))
+
+    captured: list[str] = []
+    for prov in session_providers:
+        if prov == "chatgpt-session":
+            if _capture_chatgpt_session():
+                captured.append(prov)
+        else:
+            console.print(
+                f"[yellow]⚠[/yellow] {prov}: no capture flow implemented "
+                "yet; skipping."
+            )
+    return captured
+
+
+def _capture_chatgpt_session() -> bool:
+    """Walk the user through pasting their chatgpt.com session cookie."""
+    console.print()
+    console.print("[bold]Capturing ChatGPT session[/bold]")
+    console.print(
+        "  1. In Chrome/Firefox/Safari, sign in at https://chatgpt.com\n"
+        "  2. Open DevTools (F12) -> Application -> Cookies -> chatgpt.com\n"
+        "  3. Copy the value of [bold]__Secure-next-auth.session-token[/bold]"
+    )
+    token = _q_text("  Paste session token", default="")
+    if not token.strip():
+        console.print("[yellow]⚠[/yellow] No token entered; skipping ChatGPT session.")
+        return False
+
+    # Try to import + store via the kernel's cookie_store. If the kernel
+    # isn't installed (rare in dev setups), surface that clearly.
+    try:
+        from maverick.session_providers import cookie_store
+    except ImportError:
+        console.print(
+            "[red]✗[/red] maverick-core not installed; can't store session. "
+            "Run: pip install maverick-agent"
+        )
+        return False
+
+    blob = {
+        "cookies": {"__Secure-next-auth.session-token": token.strip()},
+    }
+    path = cookie_store.save_session("chatgpt-session", blob)
+    console.print(f"[green]✓[/green] Saved session to {path} (chmod 600)")
+    return True
+
+
 # ---------- write + verify ----------
 
 def write_config(
@@ -520,6 +599,11 @@ def write_config(
         env_name = info.get("env")
         if env_name:
             lines.append(f'api_key = "${{{env_name}}}"')
+        if info.get("session"):
+            # Browser-session providers store their auth in
+            # ~/.maverick/sessions/<provider>.json (chmod 600), not in
+            # an env var. Mark the kind so the loader can warn early.
+            lines.append('kind = "session"')
         if prov == "ollama":
             lines.append('base_url = "http://localhost:11434"')
         lines.append("")
@@ -609,6 +693,7 @@ def run() -> int:
     budget = pick_budget()
     sandbox = pick_sandbox()
     keys = collect_api_keys(providers, channel_envs)
+    collect_browser_sessions(providers)
 
     console.print()
     if not _q_confirm("Write config and finish?", default=True):

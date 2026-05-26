@@ -190,9 +190,14 @@ class LLM:
         with self._clients_lock:
             # Re-check under the lock in case another thread populated it.
             if provider not in self._clients:
-                from .providers import get_provider_client
-                key = self._anthropic_api_key if provider == "anthropic" else None
-                self._clients[provider] = get_provider_client(provider, api_key=key)
+                from .session_providers import is_session_provider
+                if is_session_provider(provider):
+                    from .session_providers import get_session_client
+                    self._clients[provider] = get_session_client(provider)
+                else:
+                    from .providers import get_provider_client
+                    key = self._anthropic_api_key if provider == "anthropic" else None
+                    self._clients[provider] = get_provider_client(provider, api_key=key)
             return self._clients[provider]
 
     def complete(

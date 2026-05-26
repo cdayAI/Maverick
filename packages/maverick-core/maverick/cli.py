@@ -644,6 +644,65 @@ def skill_info(name: str) -> None:
     sys.exit(2)
 
 
+@main.group()
+def session() -> None:
+    """Manage browser-session credentials for consumer-chat providers."""
+
+
+@session.command("list")
+def session_list() -> None:
+    """List providers with a stored session."""
+    from .session_providers import cookie_store
+    names = cookie_store.list_sessions()
+    if not names:
+        click.echo("No sessions stored.")
+        return
+    for name in names:
+        click.echo(name)
+
+
+@session.command("import")
+@click.argument("provider", type=click.Choice(["chatgpt", "chatgpt-session"]))
+@click.option(
+    "--token", default=None,
+    help="Paste the session cookie value here, or omit to be prompted.",
+)
+def session_import(provider: str, token: str | None) -> None:
+    """Import a session cookie captured from your browser.
+
+    Step 1: Sign in at the provider in your normal browser.
+    Step 2: Open DevTools -> Application -> Cookies.
+    Step 3: Copy the session cookie value and paste it here.
+    """
+    from .session_providers import cookie_store
+    canon = "chatgpt-session"  # only adapter today
+    if token is None:
+        click.echo(
+            "Find your session cookie at chatgpt.com -> DevTools (F12) -> "
+            "Application -> Cookies -> __Secure-next-auth.session-token"
+        )
+        token = click.prompt("Paste session token", hide_input=True)
+    if not token or not token.strip():
+        click.echo("No token entered; aborting.", err=True)
+        sys.exit(2)
+    blob = {"cookies": {"__Secure-next-auth.session-token": token.strip()}}
+    path = cookie_store.save_session(canon, blob)
+    click.echo(f"Saved session to {path} (chmod 600)")
+
+
+@session.command("clear")
+@click.argument("provider")
+def session_clear(provider: str) -> None:
+    """Delete a stored session."""
+    from .session_providers import cookie_store
+    removed = cookie_store.clear_session(provider)
+    if removed:
+        click.echo(f"Cleared session for {provider}")
+    else:
+        click.echo(f"No session stored for {provider}", err=True)
+        sys.exit(1)
+
+
 @main.command()
 @click.option("--channel", required=True, help="Channel name (e.g. telegram, sms).")
 @click.option("--user", required=True, help="The channel user_id to erase.")
