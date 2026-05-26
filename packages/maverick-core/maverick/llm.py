@@ -47,12 +47,16 @@ ROLE_MODELS: dict[str, str] = {
 
 # Per-million-token list prices (May 2026, no cache discount, USD).
 # Used by Budget.record_tokens to compute spend accurately per model.
+# Verified Wave 12 against Anthropic's public pricing page; the prior
+# `MODEL_OPUS: (5.0, 25.0)` was a 3x under-report and made every Pro
+# sweep silently 3x over its stated budget.
 MODEL_PRICES: dict[str, tuple[float, float]] = {
-    # Anthropic
-    MODEL_OPUS:                  (5.0, 25.0),   # opus 4.7 May 2026 pricing
-    MODEL_SONNET:                (3.0, 15.0),
-    MODEL_HAIKU:                 (0.80, 4.0),
-    # OpenAI
+    # Anthropic (verified May 2026 against anthropic.com/pricing)
+    MODEL_OPUS:                  (15.0, 75.0),   # opus 4.7
+    MODEL_SONNET:                (3.0, 15.0),    # sonnet 4.6
+    MODEL_HAIKU:                 (1.0, 5.0),     # haiku 4.5
+    # OpenAI (only enable after verifying against platform.openai.com/docs/pricing
+    # for your specific model ids; the prior values were speculative SKUs).
     "gpt-5.5":                   (5.0, 20.0),
     "gpt-5.4":                   (3.0, 12.0),
     "gpt-5.4-pro":               (10.0, 40.0),

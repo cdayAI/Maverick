@@ -26,8 +26,19 @@ _FALLBACK_PRICE_IN = 3.0
 _FALLBACK_PRICE_OUT = 15.0
 
 # Anthropic cache multipliers (over the list input price).
-_CACHE_READ_MULT = 0.1     # 90% discount on cache reads
-_CACHE_WRITE_MULT = 1.25   # 25% premium on cache writes
+# Two TTLs: 5m default (1.25x write surcharge) and 1h (2.0x write surcharge).
+# Wave 12: prior code collapsed all writes to 1.25x; long-TTL writes were
+# under-billed by ~40%.
+_CACHE_READ_MULT = 0.1     # 90% discount on cache reads (both TTLs)
+_CACHE_WRITE_MULT_5M = 1.25
+_CACHE_WRITE_MULT_1H = 2.0
+
+
+def _cache_write_mult_from_ttl(ttl: Optional[str]) -> float:
+    """Map Anthropic cache TTL string to the write surcharge multiplier."""
+    if ttl and ttl.lower() in ("1h", "60m", "3600s"):
+        return _CACHE_WRITE_MULT_1H
+    return _CACHE_WRITE_MULT_5M
 
 
 def _lookup_price(model: Optional[str]) -> tuple[float, float]:
@@ -76,27 +87,40 @@ class Budget:
         model: Optional[str] = None,
         cache_read_tok: int = 0,
         cache_write_tok: int = 0,
+        cache_write_ttl: Optional[str] = None,
     ) -> None:
         """Add usage from one LLM call.
 
         ``in_tok`` is the number of input tokens billed at full rate
         (i.e. excludes the cache_read_tok and cache_write_tok counts).
-        ``cache_read_tok`` is billed at 0.1x, ``cache_write_tok`` at 1.25x.
+        ``cache_read_tok`` is billed at 0.1x, ``cache_write_tok`` at
+        1.25x (5m TTL) or 2.0x (1h TTL) — pass ``cache_write_ttl="1h"``
+        when caching with a 1h breakpoint.
+
+        Wave 12 nullsafety: ``in_tok``/``out_tok``/cache counts coerce
+        to ``int(... or 0)`` — Anthropic occasionally returns ``None``
+        in ``usage`` on streaming refusals; the prior code raised
+        ``TypeError`` and the instance counted as $0 spent.
 
         Council finding: cache reads/writes accumulate in separate
         counters so ``max_input_tokens`` reflects the BILLABLE input
         budget (non-cached only). Caching is a discount, so heavy
         caching should let you DO more work within the same input cap.
         """
+        in_tok = int(in_tok or 0)
+        out_tok = int(out_tok or 0)
+        cache_read_tok = int(cache_read_tok or 0)
+        cache_write_tok = int(cache_write_tok or 0)
         self.input_tokens += in_tok
         self.cache_read_tokens += cache_read_tok
         self.cache_write_tokens += cache_write_tok
         self.output_tokens += out_tok
 
         in_rate, out_rate = _lookup_price(model)
+        write_mult = _cache_write_mult_from_ttl(cache_write_ttl)
         self.dollars += (in_tok / 1_000_000) * in_rate
         self.dollars += (cache_read_tok / 1_000_000) * in_rate * _CACHE_READ_MULT
-        self.dollars += (cache_write_tok / 1_000_000) * in_rate * _CACHE_WRITE_MULT
+        self.dollars += (cache_write_tok / 1_000_000) * in_rate * write_mult
         self.dollars += (out_tok / 1_000_000) * out_rate
         self.check()
 
@@ -105,7 +129,17 @@ class Budget:
         self.check()
 
     def elapsed(self) -> float:
-        return time.time() - self.started_at
+        # Wave 12: use monotonic so NTP clock-skew doesn't bypass the wall
+        # cap. `started_at` is captured in __post_init__ for monotonic.
+        try:
+            return time.monotonic() - self._started_monotonic
+        except AttributeError:
+            # Legacy path: dataclass instance created before __post_init__
+            # extension landed. Fall back to wall clock.
+            return time.time() - self.started_at
+
+    def __post_init__(self) -> None:
+        self._started_monotonic = time.monotonic()
 
     def check(self) -> None:
         if self.input_tokens > self.max_input_tokens:
