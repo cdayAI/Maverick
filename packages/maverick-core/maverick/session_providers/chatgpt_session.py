@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Optional
 
 from ..budget import Budget
 from ..llm import LLMResponse

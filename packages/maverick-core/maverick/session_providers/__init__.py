@@ -25,7 +25,7 @@ Spec format in config.toml / model_for_role overrides:
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 
 _SESSION_PROVIDERS = {
