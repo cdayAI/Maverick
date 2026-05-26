@@ -56,7 +56,12 @@ def _cached_system(text: str) -> list[dict]:
 def _cached_tools(tools: list[dict]) -> list[dict]:
     if not tools:
         return tools
-    out = [dict(t) for t in tools]
+    # Wave 12 (council F13d): sort tools by name BEFORE sending so the
+    # tool catalog is byte-identical across calls — Anthropic's prompt
+    # cache key includes the tools[] block, and a non-deterministic
+    # order silently busts the cache write. Stable order = predictable
+    # cache hits = 30-50% input cost reduction over the run.
+    out = [dict(t) for t in sorted(tools, key=lambda t: t.get("name", ""))]
     out[-1] = _ephemeral(out[-1])
     return out
 
@@ -95,8 +100,7 @@ def _add_messages_cache_breakpoint(messages: list[dict]) -> list[dict]:
         # cache_control. Anthropic accepts mixed string + block forms.
         new_content = [{"type": "text", "text": content,
                         "cache_control": {"type": "ephemeral",
-                                          "ttl": os.environ.get(
-                                              "MAVERICK_ANTHROPIC_CACHE_TTL", "1h")}}]
+                                          "ttl": _default_cache_ttl()}}]
         new_messages = list(messages)
         new_messages[target_idx] = {**msg, "content": new_content}
         return new_messages
@@ -106,7 +110,7 @@ def _add_messages_cache_breakpoint(messages: list[dict]) -> list[dict]:
         last = new_blocks[-1]
         last["cache_control"] = {
             "type": "ephemeral",
-            "ttl": os.environ.get("MAVERICK_ANTHROPIC_CACHE_TTL", "1h"),
+            "ttl": _default_cache_ttl(),
         }
         new_blocks[-1] = last
         new_messages = list(messages)
@@ -152,6 +156,21 @@ class AnthropicClient:
         if thinking_budget and thinking_budget > 0:
             kwargs["max_tokens"] = max(max_tokens, thinking_budget + 1024)
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+            # Wave 12 (council F13b): enable interleaved thinking so the
+            # model can produce thinking blocks BETWEEN tool calls, not
+            # just once at the start. Without this beta header, complex
+            # multi-step debugging (typical SWE-bench Pro instance) gets
+            # one bulk reasoning pass + a long unreasoned tool sequence,
+            # which costs accuracy in the long tail. The header is
+            # additive — strings can be comma-separated for multiple
+            # betas, but the SDK currently accepts only the single one.
+            extra_headers = kwargs.get("extra_headers", {})
+            beta = extra_headers.get("anthropic-beta", "")
+            betas = [b.strip() for b in beta.split(",") if b.strip()]
+            if "interleaved-thinking-2025-05-14" not in betas:
+                betas.append("interleaved-thinking-2025-05-14")
+            extra_headers["anthropic-beta"] = ",".join(betas)
+            kwargs["extra_headers"] = extra_headers
         # Wave 10 (D1): orchestrator best-of-N sets MAVERICK_TEMPERATURE
         # per attempt to force candidate diversity. Wire it through here
         # so the provider actually honours it -- before this fix the env
@@ -188,15 +207,26 @@ class AnthropicClient:
         usage = resp.usage
         cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
         cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        # Wave 12 (council F13c): nullsafe input/output tokens. Anthropic
+        # SDK can hand back `None` on streaming refusals or partial
+        # responses; `int(None)` raises and we silently log $0 for the
+        # call. record_tokens does its own `int(x or 0)` coercion, but
+        # we belt-and-brace here so the model param is preserved even
+        # if usage is partially missing.
+        in_tok = getattr(usage, "input_tokens", 0) or 0
+        out_tok = getattr(usage, "output_tokens", 0) or 0
 
         if budget is not None:
             # ``usage.input_tokens`` is non-cached input only. Cache reads
             # and writes are billed separately at different rates.
             budget.record_tokens(
-                usage.input_tokens, usage.output_tokens,
+                in_tok, out_tok,
                 model=model,
                 cache_read_tok=cache_read,
                 cache_write_tok=cache_creation,
+                # Wave 12: pass TTL so write surcharge math matches the
+                # actual breakpoint TTL (5m vs 1h).
+                cache_write_ttl=_default_cache_ttl(),
             )
 
         return LLMResponse(
