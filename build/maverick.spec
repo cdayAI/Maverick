@@ -1,11 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files
 
 a = Analysis(
     ['pyinstaller_entry.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=collect_data_files('maverick_dashboard'),
     hiddenimports=[
         'sqlite3',
         '_sqlite3',
