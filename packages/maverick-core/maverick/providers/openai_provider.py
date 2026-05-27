@@ -61,14 +61,19 @@ def _extract_tool_result_text(content: Any) -> str:
 class OpenAIClient:
     DEFAULT_MODEL = "gpt-4o"
 
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_key_env: str = "OPENAI_API_KEY",
+    ):
         try:
             from openai import OpenAI, AsyncOpenAI
         except ImportError as e:
             raise ImportError(
                 "openai SDK not installed. Run: pip install 'maverick[openai]'"
             ) from e
-        key = api_key or os.environ.get("OPENAI_API_KEY")
+        key = api_key or os.environ.get(api_key_env)
         self._sync = OpenAI(api_key=key, base_url=base_url)
         self._async = AsyncOpenAI(api_key=key, base_url=base_url)
 
