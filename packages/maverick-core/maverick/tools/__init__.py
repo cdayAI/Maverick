@@ -144,6 +144,8 @@ def base_registry(
     from .compute import compute
     from .email_tool import email_tool
     from .git_advanced import git_advanced
+    from .jira import jira
+    from .linear import linear
     from .pandas_query import pandas_query
     from .semantic_scholar import semantic_scholar
     reg.register(recall())
@@ -163,6 +165,8 @@ def base_registry(
     reg.register(pandas_query())
     reg.register(git_advanced(sandbox))
     reg.register(calendar_tool())
+    reg.register(linear())
+    reg.register(jira())
 
     # Voice tools (opt-in extra; tool factories raise ImportError only
     # when called without the required API key OR SDK; registering is
