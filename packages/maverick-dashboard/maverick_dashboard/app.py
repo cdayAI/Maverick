@@ -298,11 +298,22 @@ async def metrics() -> PlainTextResponse:
     return PlainTextResponse("\n".join(lines) + "\n")
 
 
+def _is_loopback_host(host: str) -> bool:
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Maverick dashboard")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
+
+    if not _is_loopback_host(args.host) and not os.environ.get("MAVERICK_DASHBOARD_TOKEN"):
+        raise SystemExit(
+            "Refusing to bind dashboard to a non-loopback host without "
+            "MAVERICK_DASHBOARD_TOKEN set."
+        )
+
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
