@@ -161,12 +161,6 @@ class MCPServer:
         - maverick://goals          — list of active/recent goals
         - maverick://skills         — installed skills
         """
-        try:
-            from maverick.world_model import DEFAULT_DB, WorldModel
-            wm = WorldModel(DEFAULT_DB)
-            goals = wm.list_goals()[-20:]
-        except Exception:
-            goals = []
         resources = [
             {
                 "uri": "maverick://goals",
