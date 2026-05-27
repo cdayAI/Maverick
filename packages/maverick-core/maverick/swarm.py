@@ -48,3 +48,5 @@ class SwarmContext:
     use_skills: bool = field(default_factory=_default_use_skills)
     shield: Optional[Any] = None
     mcp_clients: list = field(default_factory=list)
+    channel: Optional[str] = None
+    user_id: Optional[str] = None

@@ -59,6 +59,8 @@ async def run_goal(
     sandbox: Optional[Any] = None,
     max_depth: int = 3,
     conversation_id: Optional[int] = None,
+    channel: Optional[str] = None,
+    user_id: Optional[str] = None,
     orchestrator_model_override: Optional[str] = None,
 ) -> str:
     goal = world.get_goal(goal_id)
@@ -88,6 +90,7 @@ async def run_goal(
             llm=llm, world=world, budget=budget, blackboard=blackboard,
             sandbox=sandbox, goal_id=goal_id, max_depth=max_depth,
             shield=shield, mcp_clients=mcp_clients,
+            channel=channel, user_id=user_id,
         )
 
         facts = world.get_facts()

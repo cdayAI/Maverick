@@ -115,6 +115,49 @@ denied_tools = ["computer", "browser"]
     assert "browser" not in names_after
 
 
+
+
+def test_server_passes_channel_user_to_run_goal(monkeypatch):
+    import maverick.server as server_mod
+
+    class _World:
+        def __init__(self):
+            self._cid = 1
+            self._gid = 1
+        def get_or_create_conversation(self, channel, user_id):
+            class C: pass
+            c = C()
+            c.id = self._cid
+            return c
+        def append_turn(self, conversation_id, role, text):
+            return None
+        def create_goal(self, title, text):
+            return self._gid
+        def set_goal_status(self, *args, **kwargs):
+            return None
+
+    captured = {}
+    async def _fake_run_goal(*args, **kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(server_mod, "run_goal", _fake_run_goal)
+    monkeypatch.setattr(server_mod, "build_sandbox", lambda: object())
+    monkeypatch.setattr("maverick.compliance.first_turn_disclosure", lambda *a, **k: None)
+
+    srv = server_mod.Server(world=_World(), llm=object(), sandbox=object())
+
+    class _Msg:
+        channel = "telegram"
+        user_id = "42"
+        text = "hello"
+
+    import asyncio
+    out = asyncio.run(srv._handle_message(_Msg()))
+    assert out == "ok"
+    assert captured["channel"] == "telegram"
+    assert captured["user_id"] == "telegram:42"
+
 # ---------- file_cache ----------
 
 def test_file_cache_read_round_trip(tmp_path):
