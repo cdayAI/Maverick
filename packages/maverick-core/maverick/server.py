@@ -50,6 +50,7 @@ class Server:
         self._channels: list = []
         self._tasks: list[asyncio.Task] = []
         self._shield = None
+        self._allowed_users_by_channel: dict[str, set[str]] = {}
         try:
             from maverick_shield import Shield
             self._shield = Shield.from_config()
@@ -59,6 +60,12 @@ class Server:
             log.warning("maverick-shield not installed; running without safety scans")
 
     async def _handle_message(self, msg) -> str:
+        channel = msg.channel or "unknown"
+        allowed_users = self._allowed_users_by_channel.get(channel)
+        if allowed_users is not None and str(msg.user_id) not in allowed_users:
+            log.warning("blocked unauthorized %s user_id=%s", channel, msg.user_id)
+            return "⚠ Unauthorized user."
+
         if self._shield is not None:
             verdict = self._shield.scan_input(msg.text)
             if not verdict.allowed:
@@ -75,12 +82,12 @@ class Server:
         from .compliance import first_turn_disclosure
         disclosure = first_turn_disclosure(
             self.world,
-            channel=msg.channel or "unknown",
+            channel=channel,
             user_id=msg.user_id,
         )
 
         conversation = self.world.get_or_create_conversation(
-            channel=msg.channel or "unknown",
+            channel=channel,
             user_id=msg.user_id,
         )
         self.world.append_turn(conversation.id, "user", msg.text)
@@ -117,6 +124,9 @@ class Server:
 
     def add_channel(self, channel) -> None:
         self._channels.append(channel)
+
+    def set_allowed_users(self, channel: str, user_ids: set[str]) -> None:
+        self._allowed_users_by_channel[channel] = user_ids
 
     async def run(self) -> None:
         """Run all channels concurrently. One channel crashing logs but doesn't kill others."""
@@ -157,6 +167,13 @@ class Server:
 def _wire_telegram(server, cfg):
     from maverick_channels.telegram import TelegramChannel
     token = cfg.get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN")
+    allowed = cfg.get("allowed_user_ids") or []
+    allowed_users = {str(u).strip() for u in allowed if str(u).strip()}
+    if not allowed_users:
+        raise RuntimeError(
+            "telegram channel requires non-empty allowed_user_ids for authorization"
+        )
+    server.set_allowed_users("telegram", allowed_users)
     server.add_channel(TelegramChannel(handler=server._handle_message, token=token))
 
 
