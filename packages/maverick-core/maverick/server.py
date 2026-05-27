@@ -93,6 +93,8 @@ class Server:
                 self.llm, self.world, budget, goal_id,
                 sandbox=self.sandbox, max_depth=self.max_depth,
                 conversation_id=conversation.id,
+                channel=msg.channel or "unknown",
+                user_id=f"{msg.channel or 'unknown'}:{msg.user_id}",
             )
         except Exception:
             log.exception("goal #%s run failed", goal_id)

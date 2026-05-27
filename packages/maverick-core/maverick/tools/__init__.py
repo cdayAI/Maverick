@@ -83,6 +83,8 @@ def base_registry(
     enable_computer_use: bool = False,
     enable_browser: bool = False,
     enable_web_search: bool = False,
+    channel: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> ToolRegistry:
     """Build the base tool set (no spawn tools).
 
@@ -186,7 +188,7 @@ def base_registry(
     # untouched.
     try:
         from ..safety.tool_acl import apply_to_registry
-        apply_to_registry(reg)
+        apply_to_registry(reg, channel=channel, user_id=user_id)
     except Exception as e:  # pragma: no cover
         import logging as _logging
         _logging.getLogger(__name__).warning("tool_acl: %s", e)

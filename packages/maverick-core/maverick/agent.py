@@ -118,6 +118,8 @@ class Agent:
             self.ctx.sandbox,
             mcp_clients=self.ctx.mcp_clients,
             goal_id=self.ctx.goal_id,
+            channel=self.ctx.channel,
+            user_id=self.ctx.user_id,
         )
         if self.depth < self.ctx.max_depth:
             reg.register(spawn_subagent_tool(self))
