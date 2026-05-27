@@ -226,6 +226,11 @@ class LLM:
         if on_delta is not None and provider == "anthropic":
             kwargs["on_delta"] = on_delta
         import time as _time
+        try:
+            from .chaos import maybe_fail
+            maybe_fail("llm_call", message=f"chaos: llm_call provider={provider}")
+        except ImportError:
+            pass
         _t0 = _time.time()
         _d0 = budget.dollars if budget else 0.0
         _err = False

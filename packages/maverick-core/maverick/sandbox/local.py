@@ -37,6 +37,12 @@ class LocalBackend:
         # on success but TimeoutExpired.stdout is bytes — without
         # explicit decode the result.stdout types diverge. Pin both
         # branches to str.
+        try:
+            from ..chaos import maybe_fail
+            maybe_fail("sandbox_exec",
+                       message=f"chaos: sandbox_exec on {cmd[:40]!r}")
+        except ImportError:
+            pass
         effective = self.timeout if timeout is None else timeout
         child_env = os.environ.copy()
         for key in (

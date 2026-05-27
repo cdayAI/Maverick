@@ -67,6 +67,12 @@ class ToolRegistry:
         if name not in self._tools:
             return f"ERROR: unknown tool {name!r}"
         try:
+            try:
+                from ..chaos import maybe_fail
+                maybe_fail("tool_dispatch",
+                           message=f"chaos: tool_dispatch on {name!r}")
+            except ImportError:
+                pass
             result = self._tools[name].fn(args)
             if inspect.isawaitable(result):
                 result = await result
@@ -142,6 +148,7 @@ def base_registry(
     from .arxiv import arxiv
     from .calendar_tool import calendar_tool
     from .compute import compute
+    from .diagnose import diagnose
     from .email_tool import email_tool
     from .embeddings import embeddings
     from .file_watcher import file_watcher
@@ -149,6 +156,7 @@ def base_registry(
     from .gitlab import gitlab
     from .jira import jira
     from .linear import linear
+    from .notify import notify_tool
     from .pandas_query import pandas_query
     from .semantic_scholar import semantic_scholar
     from .wikipedia import wikipedia
@@ -175,6 +183,8 @@ def base_registry(
     reg.register(jira())
     reg.register(gitlab())
     reg.register(embeddings())
+    reg.register(notify_tool())
+    reg.register(diagnose())
 
     # Voice tools (opt-in extra; tool factories raise ImportError only
     # when called without the required API key OR SDK; registering is

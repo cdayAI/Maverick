@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Union
 
+from .devcontainer import DevcontainerBackend
 from .docker import DockerBackend
 from .firecracker import FirecrackerBackend
 from .local import ExecResult, LocalBackend
@@ -23,6 +24,7 @@ __all__ = [
     "LocalBackend",
     "DockerBackend",
     "PodmanBackend",
+    "DevcontainerBackend",
     "FirecrackerBackend",
     "SSHBackend",
     "ExecResult",
@@ -30,7 +32,8 @@ __all__ = [
 ]
 
 Sandbox = Union[
-    LocalBackend, DockerBackend, PodmanBackend, FirecrackerBackend, SSHBackend,
+    LocalBackend, DockerBackend, PodmanBackend, DevcontainerBackend,
+    FirecrackerBackend, SSHBackend,
 ]
 
 
@@ -68,6 +71,14 @@ def build_sandbox(
         return PodmanBackend(
             workdir=wd, image=image, timeout=timeout,
             allow_network=bool(full_cfg.get("allow_network", False)),
+        )
+    if chosen == "devcontainer":
+        project_dir = Path(
+            full_cfg.get("project_dir") or workdir or Path.cwd()
+        ).expanduser()
+        return DevcontainerBackend(
+            project_dir=project_dir, timeout=timeout,
+            allow_network=bool(full_cfg.get("allow_network", True)),
         )
     if chosen == "firecracker":
         return FirecrackerBackend(
