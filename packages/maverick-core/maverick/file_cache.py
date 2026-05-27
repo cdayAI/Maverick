@@ -1,0 +1,166 @@
+"""LRU cache for file reads + repo-map lookups.
+
+Saves real money on long runs that re-read the same file repeatedly.
+Two layers:
+
+1. ``read_file_cached(path)`` — content cache keyed by (path, mtime,
+   size). Bounded LRU; default 64 entries totalling ≤ 8 MiB.
+2. ``repo_map_cached(workdir, ...)`` — a per-workdir snapshot of the
+   repo-map output (the dir listing + heuristics). Keyed by workdir
+   path + filesystem signature (mtime of root, listdir hash). Default
+   16 entries.
+
+Cache invalidation:
+  - Read cache: if file mtime / size changes since the cached read,
+    we re-read.
+  - Repo-map cache: if any top-level child's mtime is newer than the
+    cached signature, we rebuild. Cheap probe (one ``os.scandir``).
+
+Thread-safe (RLock). Hot path — keep it dumb.
+"""
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import threading
+from collections import OrderedDict
+from pathlib import Path
+from typing import Callable, Optional
+
+log = logging.getLogger(__name__)
+
+
+# Read cache: max entries + max total bytes.
+_MAX_READ_ENTRIES = 64
+_MAX_READ_BYTES = 8 * 1024 * 1024  # 8 MiB
+
+_read_cache: "OrderedDict[str, tuple[float, int, str]]" = OrderedDict()
+_read_cache_bytes = 0
+_read_lock = threading.RLock()
+
+
+def read_file_cached(
+    path: str | os.PathLike,
+    encoding: str = "utf-8",
+    *,
+    errors: str = "replace",
+) -> Optional[str]:
+    """Return the file contents, served from cache when possible.
+
+    Returns None if the file doesn't exist or can't be read. Errors
+    during decode use ``errors`` (default 'replace').
+    """
+    p = Path(path)
+    try:
+        stat = p.stat()
+    except OSError:
+        return None
+    mtime = stat.st_mtime
+    size = stat.st_size
+    cache_key = str(p.resolve())
+    with _read_lock:
+        cached = _read_cache.get(cache_key)
+        if cached is not None and cached[0] == mtime and cached[1] == size:
+            _read_cache.move_to_end(cache_key)
+            return cached[2]
+    # Cache miss — read from disk.
+    try:
+        text = p.read_text(encoding=encoding, errors=errors)
+    except OSError:
+        return None
+    _put_read(cache_key, mtime, size, text)
+    return text
+
+
+def _put_read(key: str, mtime: float, size: int, text: str) -> None:
+    global _read_cache_bytes
+    with _read_lock:
+        # Evict prior version if present.
+        prior = _read_cache.pop(key, None)
+        if prior is not None:
+            _read_cache_bytes -= len(prior[2])
+        _read_cache[key] = (mtime, size, text)
+        _read_cache_bytes += len(text)
+        # Trim to limits.
+        while (
+            len(_read_cache) > _MAX_READ_ENTRIES
+            or _read_cache_bytes > _MAX_READ_BYTES
+        ):
+            _, evicted = _read_cache.popitem(last=False)
+            _read_cache_bytes -= len(evicted[2])
+
+
+def clear_read_cache() -> None:
+    """Drop everything in the read cache. Mainly useful in tests."""
+    global _read_cache_bytes
+    with _read_lock:
+        _read_cache.clear()
+        _read_cache_bytes = 0
+
+
+def read_cache_stats() -> dict:
+    """For observability: cache size + byte usage."""
+    with _read_lock:
+        return {
+            "entries": len(_read_cache),
+            "bytes": _read_cache_bytes,
+            "max_entries": _MAX_READ_ENTRIES,
+            "max_bytes": _MAX_READ_BYTES,
+        }
+
+
+# ---------- repo_map cache ----------
+
+_MAX_REPO_ENTRIES = 16
+_repo_cache: "OrderedDict[str, tuple[str, str]]" = OrderedDict()
+_repo_lock = threading.RLock()
+
+
+def _workdir_signature(workdir: Path) -> str:
+    """Cheap probe: mtime of root + hash of immediate children's mtimes."""
+    try:
+        with os.scandir(workdir) as it:
+            entries = sorted(
+                (e.name, e.stat().st_mtime)
+                for e in it
+                if not e.name.startswith(".")
+            )
+    except OSError:
+        return ""
+    digest = hashlib.sha256()
+    digest.update(repr(entries).encode())
+    return digest.hexdigest()
+
+
+def repo_map_cached(workdir: str | os.PathLike, builder: Callable[[], str]) -> str:
+    """Return a cached repo-map string for ``workdir``, calling ``builder()``
+    on cache miss or signature change."""
+    p = Path(workdir).resolve()
+    key = str(p)
+    sig = _workdir_signature(p)
+    with _repo_lock:
+        cached = _repo_cache.get(key)
+        if cached is not None and cached[0] == sig:
+            _repo_cache.move_to_end(key)
+            return cached[1]
+    built = builder()
+    with _repo_lock:
+        _repo_cache[key] = (sig, built)
+        while len(_repo_cache) > _MAX_REPO_ENTRIES:
+            _repo_cache.popitem(last=False)
+    return built
+
+
+def clear_repo_cache() -> None:
+    with _repo_lock:
+        _repo_cache.clear()
+
+
+__all__ = [
+    "read_file_cached",
+    "read_cache_stats",
+    "clear_read_cache",
+    "repo_map_cached",
+    "clear_repo_cache",
+]
