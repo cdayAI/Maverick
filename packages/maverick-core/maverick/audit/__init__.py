@@ -19,6 +19,7 @@ the agent running. Audit failures should NEVER crash the swarm.
 """
 from __future__ import annotations
 
+from .erase import delete_user, scrub_user  # noqa: F401
 from .events import AuditEvent, EventKind  # noqa: F401
 from .writer import (  # noqa: F401
     AuditLog,
@@ -33,4 +34,6 @@ __all__ = [
     "AuditLog",
     "default_audit_log",
     "record",
+    "scrub_user",
+    "delete_user",
 ]

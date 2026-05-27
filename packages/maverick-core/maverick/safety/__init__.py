@@ -9,6 +9,11 @@ Currently:
 This package is intentionally lightweight (no fancy ML deps). Heavier
 classifiers live behind optional extras and are loaded on demand.
 """
+from .canaries import (  # noqa: F401
+    SandboxCanaryFired,
+    plant_session_canaries,
+    verify_canaries,
+)
 from .consent import (  # noqa: F401
     ConsentDecision,
     ConsentDenied,
@@ -21,7 +26,7 @@ from .pii_detector import PIIMatch  # noqa: F401
 from .pii_detector import redact as pii_redact  # noqa: F401
 from .pii_detector import scan as pii_scan  # noqa: F401
 from .secret_detector import SecretMatch, redact, scan  # noqa: F401
-from .tool_acl import apply_to_registry, filter_tools  # noqa: F401
+from .tool_acl import apply_to_registry, filter_tools, resolve_lists  # noqa: F401
 
 
 __all__ = [
