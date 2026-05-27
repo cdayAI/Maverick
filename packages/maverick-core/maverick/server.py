@@ -23,7 +23,6 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 from .budget import Budget
 from .config import load_config
