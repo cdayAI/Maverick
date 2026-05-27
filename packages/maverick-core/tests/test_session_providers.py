@@ -302,6 +302,15 @@ def test_chatgpt_session_budget_recorded(tmp_path, monkeypatch):
     assert budget.output_tokens > 0
 
 
+def test_approx_record_budget_propagates_budget_exceeded():
+    from maverick.budget import Budget, BudgetExceeded
+    from maverick.session_providers.base import approx_record_budget
+
+    budget = Budget(max_output_tokens=0, max_dollars=10.0)
+    with pytest.raises(BudgetExceeded, match="output tokens"):
+        approx_record_budget("hello", "world", budget, model="claude-sonnet-4-6")
+
+
 # ---------- LLM facade integration ----------
 
 def test_llm_facade_routes_chatgpt_session(tmp_path, monkeypatch):
