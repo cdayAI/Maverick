@@ -116,6 +116,10 @@ def base_registry(
     from .view_image import view_image
     from .dep_graph import dep_graph
     from .ast_edit import ast_edit
+    from .clipboard import clipboard
+    from .preview_diff import preview_diff
+    from .kv_memory import kv_memory
+    from .arxiv import arxiv
     reg.register(web_search())
     reg.register(recall())
     reg.register(http_fetch())
@@ -123,6 +127,17 @@ def base_registry(
     reg.register(view_image())
     reg.register(dep_graph(sandbox))
     reg.register(ast_edit(sandbox))
+    reg.register(clipboard())
+    reg.register(preview_diff(sandbox))
+    reg.register(kv_memory(world, goal_id))
+    reg.register(arxiv())
+
+    # Voice tools (opt-in extra; tool factories raise ImportError only
+    # when called without the required API key OR SDK; registering is
+    # cheap).
+    from .voice import speak, transcribe_audio
+    reg.register(transcribe_audio())
+    reg.register(speak())
 
     if enable_computer_use:
         from .computer import computer
