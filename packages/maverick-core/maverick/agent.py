@@ -12,6 +12,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional
 
+from ._envparse import env_int
 from .budget import BudgetExceeded
 from .llm import model_for_role
 from .swarm import SwarmContext
@@ -85,6 +86,7 @@ class Agent:
         ctx: SwarmContext,
         role: str,
         brief: str,
+        model_override: Optional[str] = None,
         depth: int = 0,
         parent: Optional["Agent"] = None,
         max_steps: int = 25,
@@ -98,12 +100,17 @@ class Agent:
         # shows "most successful solutions resolve in ~25 rounds; long-
         # tail iteration past that has diminishing returns." Allow ops
         # to override globally via MAVERICK_MAX_STEPS, default 25.
-        self.max_steps = int(os.environ.get("MAVERICK_MAX_STEPS", str(max_steps)))
+        self.max_steps = env_int("MAVERICK_MAX_STEPS", max_steps)
         self.name = f"{role}-{depth}-{uuid.uuid4().hex[:6]}"
 
         self.tools = self._build_tools()
         self.system = self._build_system()
-        self.model = model_for_role(role)
+        self.model = model_override or model_for_role(role)
+        # Tracks whether we've already given one LLM-verifier-driven
+        # revision pass for this agent run. Separate from
+        # `_already_verified` so revised FINALs can be re-verified once
+        # without permitting repeated reject/revise loops.
+        self._verifier_revision_used = False
 
     def _build_tools(self) -> ToolRegistry:
         reg = base_registry(
@@ -230,7 +237,7 @@ class Agent:
                     ),
                 ))
                 return None, summary
-            patch = render_diff(workdir)
+            patch = render_diff(workdir, paths=touched_paths)
             return patch, summary
         return extract_unified_diff(final), None
 
@@ -369,21 +376,40 @@ class Agent:
             # message; the FINAL critique is what we want the model to
             # respond to, not the orphan tools.
             if resp.text and resp.tool_calls:
-                import re as _re_final
-                if _re_final.search(r"(?:^|\n)\s*FINAL:", resp.text):
+                from .coding_mode import has_final_marker as _has_final
+                if _has_final(resp.text):
                     resp.tool_calls = []
 
             assistant_content: list[dict] = []
-            if resp.thinking:
-                # May 26 smoke fix: Anthropic requires `signature` on
-                # thinking blocks when they appear in assistant message
-                # history. Without it, the next API call returns:
-                #   messages.N.content.0.thinking.signature: Field required
+            # May 26 council fix: emit ONE thinking block per original
+            # block, preserving each block's exact signature. Concatenating
+            # text but keeping only the first signature corrupted multi-
+            # block interleaved thinking on Opus 4.7 — the signature is
+            # derived from the EXACT text of its block. Falls back to
+            # the legacy single-block path when thinking_blocks is empty
+            # but resp.thinking is set (older mocks / non-Anthropic).
+            thinking_blocks = getattr(resp, "thinking_blocks", None) or []
+            if thinking_blocks:
+                # May 26 council fix (API audit #2): include the block
+                # EVEN IF the text is empty as long as a signature is
+                # present. Anthropic still requires the signature-bearing
+                # block to be echoed back to maintain continuity. The old
+                # `if resp.thinking:` check at the elif below would drop
+                # empty-text-signature pairs entirely.
+                for tb_text, tb_sig in thinking_blocks:
+                    if not tb_text and not tb_sig:
+                        continue
+                    block_dict: dict = {"type": "thinking", "thinking": tb_text}
+                    if tb_sig:
+                        block_dict["signature"] = tb_sig
+                    assistant_content.append(block_dict)
+            elif resp.thinking or getattr(resp, "thinking_signature", None):
+                sig = getattr(resp, "thinking_signature", None)
                 thinking_block: dict = {
-                    "type": "thinking", "thinking": resp.thinking,
+                    "type": "thinking", "thinking": resp.thinking or "",
                 }
-                if resp.thinking_signature:
-                    thinking_block["signature"] = resp.thinking_signature
+                if sig:
+                    thinking_block["signature"] = sig
                 assistant_content.append(thinking_block)
             if resp.text:
                 assistant_content.append({"type": "text", "text": resp.text})
@@ -402,14 +428,32 @@ class Agent:
                 # blackboard as a plain observation, was never applied,
                 # and the orchestrator returned the raw SR text as
                 # `final` with `final_patch=None` — silent score loss.
-                # Use the LAST line-anchored FINAL: marker, mirroring
-                # extract_unified_diff's logic.
-                import re as _re
-                _final_matches = list(_re.finditer(
-                    r"(?:^|\n)\s*FINAL:\s*\n?", resp.text,
-                ))
-                if _final_matches:
-                    final = resp.text[_final_matches[-1].end():].strip()
+                # Use the LAST line-anchored FINAL: marker OUTSIDE any
+                # fenced code block. Skipping code-block markers
+                # prevents attacker-controlled quoted content (file
+                # bodies, tool output) from redefining the final
+                # answer mid-response.
+                from .coding_mode import find_final_marker_end as _final_end
+                _fe = _final_end(resp.text)
+                if _fe is not None:
+                    final = resp.text[_fe:].strip()
+                    # May 26 council fix: clear any stale `_final_patch`
+                    # from a previous FINAL attempt. If a prior FINAL was
+                    # rejected (defensive/validate) and the revised
+                    # FINAL has no apply-check (because _patch_validated
+                    # was True), the verifier/return branches would read
+                    # the STALE patch from the earlier FINAL and submit
+                    # it — wrong patch attribution.
+                    self._final_patch = None
+                    # May 26 council fix (agent-loop audit #4): also
+                    # clear `_already_verified` so the revised FINAL
+                    # gets verified afresh. Without this, a rejected
+                    # FINAL's `_already_verified=True` flag would skip
+                    # the verifier on the revised FINAL — and the
+                    # revised version would return with
+                    # `verifier_confidence=1.0` (the fallback when
+                    # verdict is None) regardless of actual quality.
+                    self._already_verified = False
 
                     # Wave 8: coding-mode patch self-validation. If the
                     # workdir is a git repo AND the FINAL contains a
@@ -811,7 +855,21 @@ class Agent:
                             verdict = None
 
                         if verdict is not None and not verdict.accepts:
+                            if getattr(self, "_verifier_revision_used", False):
+                                self._already_verified = True
+                                bb.post(
+                                    self.name, "verify",
+                                    "verifier rejected after retry; accepting "
+                                    "second attempt per one-revision cap",
+                                )
+                                return AgentResult(
+                                    final=final, role=self.role, name=self.name,
+                                    verifier_confidence=verdict.confidence,
+                                    verifier_critique=verdict.critique,
+                                    final_patch=getattr(self, "_final_patch", None),
+                                )
                             self._already_verified = True
+                            self._verifier_revision_used = True
                             bb.post(
                                 self.name, "verify",
                                 f"verifier rejected (conf={verdict.confidence:.2f}): "
@@ -873,9 +931,25 @@ class Agent:
                     self.name, "observation",
                     f"tool={tc.name} -> {output[:500]}",
                 )
-                tool_results.append(
-                    {"type": "tool_result", "tool_use_id": tc.id, "content": output}
+                # May 26 council fix (API audit #4): set `is_error: true`
+                # on tool_results that surface an error. Per Anthropic
+                # docs, this tells Claude the tool failed so it can
+                # recover instead of treating the error string as a
+                # normal output. Our tool registry prefixes errors with
+                # "ERROR: " and the shield emits "BLOCKED by Shield".
+                stripped = (output or "").lstrip()
+                tool_is_error = (
+                    stripped.startswith("ERROR")
+                    or stripped.startswith("BLOCKED by Shield")
                 )
+                tr_block: dict = {
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": output,
+                }
+                if tool_is_error:
+                    tr_block["is_error"] = True
+                tool_results.append(tr_block)
 
             messages.append({"role": "user", "content": tool_results})
 

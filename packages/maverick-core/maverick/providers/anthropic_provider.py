@@ -172,7 +172,12 @@ class AnthropicClient:
     DEFAULT_MODEL = "claude-sonnet-4-6"
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
-        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        # May 26 council fix (long-tail audit #1): strip whitespace.
+        # `export ANTHROPIC_API_KEY=$(cat key.txt)` is a common source of
+        # trailing newline; without strip, every API call 401s and the
+        # operator sees "API outage" instead of the real "key has
+        # whitespace" issue.
+        key = (api_key or os.environ.get("ANTHROPIC_API_KEY") or "").strip() or None
         self.client = anthropic.Anthropic(api_key=key)
         self.aclient = anthropic.AsyncAnthropic(api_key=key)
 
@@ -284,6 +289,11 @@ class AnthropicClient:
             # decide via adaptive. This matches the docs' "adaptive is
             # the only supported mode" guidance.
             kwargs["thinking"] = {"type": "adaptive"}
+            # May 26 council fix (API audit #18): adaptive thinking
+            # can spend the entire `max_tokens` budget on thinking and
+            # leave nothing for the tool_use / text output, producing
+            # an empty response. Bump headroom for adaptive runs.
+            kwargs["max_tokens"] = max(max_tokens, 16384)
         _ = is_modern_4x  # documented above; kept for future logic
         # Wave 10 (D1): orchestrator best-of-N sets MAVERICK_TEMPERATURE
         # per attempt to force candidate diversity. Wire it through here
@@ -309,25 +319,23 @@ class AnthropicClient:
         text_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
-        # May 26 smoke fix: capture the signature from the FIRST
-        # thinking block. Anthropic requires this field on assistant
-        # messages with thinking blocks when they appear in subsequent
-        # request history. We only echo back the concatenated thinking
-        # text + one signature — that's sufficient for adaptive
-        # thinking's single-block-per-turn pattern. (Multi-block thinking
-        # would need per-block signature tracking; we'll handle that if
-        # we see it in practice.)
-        thinking_signature: Optional[str] = None
+        # May 26 council fix (API audit #1): preserve PER-BLOCK
+        # signatures. With Opus 4.7 interleaved thinking, a single
+        # turn can emit multiple thinking blocks, each with its own
+        # signature derived from that block's text. Concatenating
+        # text but keeping only the first signature broke the
+        # second turn (Anthropic rejects the assistant message
+        # because the signature doesn't match the text).
+        thinking_blocks: list[tuple[str, Optional[str]]] = []
         for block in resp.content:
             t = getattr(block, "type", None)
             if t == "text":
                 text_parts.append(block.text)
             elif t == "thinking":
-                thinking_parts.append(getattr(block, "thinking", ""))
-                if thinking_signature is None:
-                    sig = getattr(block, "signature", None)
-                    if sig:
-                        thinking_signature = sig
+                text = getattr(block, "thinking", "")
+                sig = getattr(block, "signature", None)
+                thinking_parts.append(text)
+                thinking_blocks.append((text, sig))
             elif t == "tool_use":
                 tool_calls.append(ToolCall(id=block.id, name=block.name, input=dict(block.input)))
 
@@ -380,7 +388,10 @@ class AnthropicClient:
         return LLMResponse(
             text="\n".join(text_parts).strip(),
             thinking="\n".join(thinking_parts).strip() or None,
-            thinking_signature=thinking_signature,
+            thinking_blocks=thinking_blocks,
+            thinking_signature=(
+                thinking_blocks[0][1] if thinking_blocks else None
+            ),
             tool_calls=tool_calls,
             stop_reason=resp.stop_reason,
             cache_creation_tokens=cache_creation,

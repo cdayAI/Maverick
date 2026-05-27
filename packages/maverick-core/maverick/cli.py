@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import click
 from .budget import Budget
 from .llm import DEFAULT_MODEL, LLM
 from .orchestrator import run_goal_sync
+from .secrets import scrub
 from .sandbox import build_sandbox
 from .skills import (
     SKILLS_DIR,
@@ -34,14 +36,18 @@ def main(ctx: click.Context, db: str, model: str) -> None:
 
 
 @main.command()
-def init() -> None:
+@click.option("--fast", is_flag=True,
+              help="Skip every prompt; use recommended defaults.")
+@click.option("--resume", is_flag=True,
+              help="Resume from the last unanswered wizard question.")
+def init(fast: bool, resume: bool) -> None:
     """Run the interactive setup wizard."""
     try:
         from maverick_installer.wizard import run as run_wizard
     except ImportError:
         click.echo("Install: pipx install maverick-installer", err=True)
         sys.exit(2)
-    sys.exit(run_wizard())
+    sys.exit(run_wizard(fast=fast, resume=resume))
 
 
 @main.command()
@@ -310,6 +316,23 @@ def start(
     click.echo(result)
 
 
+def _sanitize_progress_content(text: str, limit: int = 200) -> str:
+    """Sanitize untrusted event content before printing to a TTY.
+
+    - Scrub secret-looking values.
+    - Remove terminal control bytes / ANSI escape sequences.
+    - Collapse CR/LF to spaces for one-line progress output.
+    """
+    cleaned = scrub(text or "")
+    # Strip common ANSI/OSC escape sequences.
+    cleaned = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", cleaned)
+    cleaned = re.sub(r"\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)", "", cleaned)
+    # Replace newlines / carriage returns, then drop remaining control chars.
+    cleaned = cleaned.replace("\r", " ").replace("\n", " ")
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", cleaned)
+    return cleaned[:limit]
+
+
 def _stream_progress(db_path, goal_id: int, stop) -> None:
     """Poll goal_events and print one line per new entry to stderr.
 
@@ -332,7 +355,7 @@ def _stream_progress(db_path, goal_id: int, stop) -> None:
                 label = labels.get(e.kind, e.kind)
                 # Strip the hex suffix from agent names for readability.
                 agent = e.agent.split("-")[0] if e.agent else "agent"
-                content = e.content[:200]
+                content = _sanitize_progress_content(e.content, limit=200)
                 click.echo(
                     click.style(f"  [{agent}] ", fg="bright_black")
                     + click.style(f"{label}: ", fg="cyan")
@@ -645,6 +668,132 @@ def skill_info(name: str) -> None:
 
 
 @main.command()
+@click.option("--goal-id", type=int, default=None, help="Specific goal to watch.")
+@click.option("--interval", type=float, default=1.5, help="Refresh seconds.")
+@click.pass_context
+def monitor(ctx, goal_id, interval) -> None:
+    """Watch agent activity in real time (plan tree + recent events)."""
+    from .monitor import monitor_loop
+    sys.exit(monitor_loop(
+        db_path=ctx.obj["db"],
+        goal_id=goal_id,
+        interval_seconds=interval,
+    ))
+
+
+@main.group()
+def session() -> None:
+    """Manage browser-session credentials for consumer-chat providers."""
+
+
+@session.command("list")
+def session_list() -> None:
+    """List providers with a stored session."""
+    from .session_providers import cookie_store
+    names = cookie_store.list_sessions()
+    if not names:
+        click.echo("No sessions stored.")
+        return
+    for name in names:
+        click.echo(name)
+
+
+_SESSION_IMPORT_PROFILES: dict[str, dict] = {
+    "chatgpt": {
+        "canon": "chatgpt-session",
+        "cookie_key": "__Secure-next-auth.session-token",
+        "hint_url": "chatgpt.com",
+    },
+    "claude": {
+        "canon": "claude-session",
+        "cookie_key": "sessionKey",
+        "hint_url": "claude.ai",
+    },
+    "kimi": {
+        "canon": "kimi-session",
+        "cookie_key": "access_token",
+        "hint_url": "kimi.com",
+    },
+    "grok": {
+        # Grok needs auth_token + ct0; the CLI prompts for ct0 as a 2nd input.
+        "canon": "grok-session",
+        "cookie_key": "auth_token",
+        "extra_cookie_key": "ct0",
+        "hint_url": "x.com",
+    },
+    "gemini": {
+        "canon": "gemini-session",
+        "cookie_key": "__Secure-1PSID",
+        "hint_url": "gemini.google.com",
+    },
+}
+# Aliases for the canonical names.
+for _alias, _canon in [
+    ("chatgpt-session", "chatgpt"),
+    ("claude-session", "claude"),
+    ("kimi-session", "kimi"),
+    ("grok-session", "grok"),
+    ("gemini-session", "gemini"),
+]:
+    _SESSION_IMPORT_PROFILES[_alias] = _SESSION_IMPORT_PROFILES[_canon]
+
+
+@session.command("import")
+@click.argument(
+    "provider",
+    type=click.Choice(sorted(_SESSION_IMPORT_PROFILES.keys())),
+)
+@click.option(
+    "--token", default=None,
+    help="Paste the session cookie value here, or omit to be prompted.",
+)
+def session_import(provider: str, token: str | None) -> None:
+    """Import a session cookie captured from your browser.
+
+    Step 1: Sign in at the provider in your normal browser.
+    Step 2: Open DevTools -> Application -> Cookies.
+    Step 3: Copy the session cookie value and paste it here.
+    """
+    from .session_providers import cookie_store
+    profile = _SESSION_IMPORT_PROFILES[provider]
+    canon, cookie_key, hint_url = profile["canon"], profile["cookie_key"], profile["hint_url"]
+    extra_key = profile.get("extra_cookie_key")
+    if token is None:
+        click.echo(
+            f"Find your session cookie at {hint_url} -> DevTools (F12) -> "
+            f"Application -> Cookies -> {cookie_key}"
+        )
+        token = click.prompt("Paste session token", hide_input=True)
+    if not token or not token.strip():
+        click.echo("No token entered; aborting.", err=True)
+        sys.exit(2)
+    cookies = {cookie_key: token.strip()}
+    if extra_key:
+        click.echo(f"Also need the {extra_key} cookie (from the same site).")
+        extra_val = click.prompt(f"Paste {extra_key}", hide_input=True)
+        if not extra_val or not extra_val.strip():
+            click.echo(f"No {extra_key} entered; aborting.", err=True)
+            sys.exit(2)
+        cookies[extra_key] = extra_val.strip()
+    blob = {"cookies": cookies}
+    path = cookie_store.save_session(canon, blob)
+    click.echo(f"Saved session to {path} (chmod 600)")
+
+
+@session.command("clear")
+@click.argument("provider")
+def session_clear(provider: str) -> None:
+    """Delete a stored session."""
+    from .session_providers import cookie_store
+    removed = cookie_store.clear_session(provider)
+    if removed:
+        click.echo(f"Cleared session for {provider}")
+    else:
+        click.echo(f"No session stored for {provider}", err=True)
+        sys.exit(1)
+
+
+@main.command()
 @click.option("--channel", required=True, help="Channel name (e.g. telegram, sms).")
 @click.option("--user", required=True, help="The channel user_id to erase.")
 @click.option("--yes", is_flag=True, help="Skip confirmation.")
@@ -868,6 +1017,28 @@ def donate_clear(yes: bool) -> None:
     click.echo(f"cleared {n} record(s)")
 
 
+
+
+def _watch_goal_allowed(goal_text: str) -> tuple[bool, str | None]:
+    """Best-effort Shield scan for watch-mode marker goals."""
+    try:
+        from maverick_shield import Shield  # type: ignore
+    except ImportError:
+        return True, None
+
+    try:
+        verdict = Shield.from_config().scan_input(goal_text)
+    except Exception as exc:  # pragma: no cover
+        logging.getLogger(__name__).warning(
+            "Shield raised %s during watch --run scan; failing open",
+            type(exc).__name__,
+        )
+        return True, None
+
+    if verdict.allowed:
+        return True, None
+    return False, f"blocked by Shield ({verdict.severity}): {'; '.join(verdict.reasons)}"
+
 @main.command()
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--run", is_flag=True, help="Spawn a goal per match (default: print only).")
@@ -901,7 +1072,12 @@ def watch(ctx, path: str, run: bool, max_dollars: float) -> None:
             llm = LLM(model=ctx.obj["model"])
             sandbox = build_sandbox(workdir=str(p.parent if p.is_file() else p))
             title = (m.text or m.follow_lines[0] if m.follow_lines else "").strip()[:80]
-            goal_id = world.create_goal(title or "watch-mode goal", m.to_goal())
+            goal_text = m.to_goal()
+            allowed, reason = _watch_goal_allowed(goal_text)
+            if not allowed:
+                click.echo(click.style(f"  skipped: {reason}", fg="yellow"), err=True)
+                continue
+            goal_id = world.create_goal(title or "watch-mode goal", goal_text)
             click.echo(click.style(f"  -> goal #{goal_id}", fg="bright_black"))
             try:
                 result = run_goal_sync(
@@ -916,6 +1092,148 @@ def watch(ctx, path: str, run: bool, max_dollars: float) -> None:
         click.echo(f"no AI markers found in {path}")
     else:
         click.echo(f"\nfound {count} marker(s)")
+
+
+# ----- Audit log ---------------------------------------------------------
+
+@main.group()
+def audit() -> None:
+    """Inspect the audit log (~/.maverick/audit/YYYY-MM-DD.ndjson)."""
+
+
+@audit.command("tail")
+@click.option("-n", "--num", default=50, type=int, help="Lines to tail.")
+@click.option("--day", default=None, help="YYYY-MM-DD (default: today).")
+def audit_tail(num: int, day: str | None) -> None:
+    """Print the last N audit events."""
+    import json as _json
+    from .audit import default_audit_log
+    for ev in default_audit_log().tail(num, day=day):
+        click.echo(_json.dumps(ev, default=str))
+
+
+@audit.command("grep")
+@click.argument("pattern")
+@click.option("--day", default=None, help="YYYY-MM-DD (default: today).")
+def audit_grep(pattern: str, day: str | None) -> None:
+    """Regex grep over today's audit log."""
+    import json as _json
+    from .audit import default_audit_log
+    for ev in default_audit_log().grep(pattern, day=day):
+        click.echo(_json.dumps(ev, default=str))
+
+
+# ----- Killswitch --------------------------------------------------------
+
+@main.command()
+@click.option("--reason", default="manual halt", help="Why you're halting.")
+def halt(reason: str) -> None:
+    """Halt all in-flight goals by writing the HALT file."""
+    from .killswitch import _halt_file_path
+    p = _halt_file_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(reason + "\n")
+    click.echo(f"halt set: {p}")
+
+
+@main.command("unhalt")
+def unhalt() -> None:
+    """Remove the HALT file to allow goals to run again."""
+    from .killswitch import _halt_file_path
+    p = _halt_file_path()
+    if p.exists():
+        p.unlink()
+        click.echo(f"cleared: {p}")
+    else:
+        click.echo(f"no halt file at {p}")
+
+
+# ----- Cost / export / logs --------------------------------------------
+
+@main.command()
+@click.option("--month", default=None, help="YYYY-MM (default: lifetime totals).")
+@click.option("--model", default=None, help="Filter to one model id.")
+@click.pass_context
+def cost(ctx, month: str | None, model: str | None) -> None:
+    """Summarize spend across the world model."""
+    world = WorldModel(ctx.obj["db"])
+    try:
+        episodes = world.list_episodes(limit=10_000)
+    finally:
+        world.close()
+    if month:
+        import datetime as _dt
+        start = _dt.datetime.strptime(month, "%Y-%m").timestamp()
+        # End-of-month: add ~31 days and trim by month.
+        end = start + 31 * 86_400
+        episodes = [
+            e for e in episodes
+            if start <= (e.started_at or 0) < end
+        ]
+    if model:
+        # Outcome strings carry model id in the format "model=X ...".
+        episodes = [e for e in episodes if model in (e.outcome or "")]
+    total = sum((e.cost_dollars or 0) for e in episodes)
+    in_tok = sum((e.input_tokens or 0) for e in episodes)
+    out_tok = sum((e.output_tokens or 0) for e in episodes)
+    tool_calls = sum((e.tool_calls or 0) for e in episodes)
+    click.echo(f"Episodes:    {len(episodes):>10}")
+    click.echo(f"Dollars:     ${total:.4f}")
+    click.echo(f"Input tok:   {in_tok:>10,}")
+    click.echo(f"Output tok:  {out_tok:>10,}")
+    click.echo(f"Tool calls:  {tool_calls:>10,}")
+
+
+@main.command("export")
+@click.argument("goal_id", type=int)
+@click.option("-o", "--output", type=click.Path(),
+              help="Path for the bundle (default: ./goal-<id>.json).")
+@click.pass_context
+def export_goal(ctx, goal_id: int, output: str | None) -> None:
+    """Export a goal's full trajectory as a portable JSON bundle.
+
+    The bundle includes the goal record, all child goals, every event,
+    and the episode summaries. No prompt content is included unless it
+    was logged to events.
+    """
+    import json as _json
+    world = WorldModel(ctx.obj["db"])
+    try:
+        goal = world.get_goal(goal_id)
+        if goal is None:
+            click.echo(f"goal {goal_id} not found", err=True)
+            sys.exit(2)
+        events = world.goal_events(goal_id, limit=10_000)
+        episodes = world.list_episodes(limit=200, goal_id=goal_id)
+        from dataclasses import asdict
+        bundle = {
+            "v": 1,
+            "goal": asdict(goal),
+            "events": [asdict(e) for e in events],
+            "episodes": [asdict(e) for e in episodes],
+        }
+    finally:
+        world.close()
+    out_path = Path(output) if output else Path(f"goal-{goal_id}.json")
+    out_path.write_text(_json.dumps(bundle, default=str, indent=2))
+    click.echo(f"wrote {out_path}")
+
+
+@main.command("logs")
+@click.argument("pattern", required=False)
+@click.option("-n", "--num", default=200, type=int, help="Lines to show.")
+@click.option("--day", default=None, help="YYYY-MM-DD (default: today).")
+def logs_cmd(pattern: str | None, num: int, day: str | None) -> None:
+    """Show recent audit log entries (optionally regex-filtered).
+
+    Equivalent to `maverick audit grep <pattern>` or `audit tail -n N`.
+    """
+    import json as _json
+    from .audit import default_audit_log
+    al = default_audit_log()
+    rows = al.grep(pattern, day=day) if pattern else al.tail(num, day=day)
+    for r in rows[-num:]:
+        click.echo(_json.dumps(r, default=str))
 
 
 if __name__ == "__main__":
