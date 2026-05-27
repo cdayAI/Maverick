@@ -1,7 +1,6 @@
 """Tests for audit + world-model retention enforcement."""
 from __future__ import annotations
 
-import os
 import sqlite3
 import time
 from pathlib import Path
