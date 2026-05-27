@@ -144,12 +144,14 @@ def base_registry(
     from .compute import compute
     from .email_tool import email_tool
     from .embeddings import embeddings
+    from .file_watcher import file_watcher
     from .git_advanced import git_advanced
     from .gitlab import gitlab
     from .jira import jira
     from .linear import linear
     from .pandas_query import pandas_query
     from .semantic_scholar import semantic_scholar
+    from .wikipedia import wikipedia
     reg.register(recall())
     reg.register(http_fetch())
     reg.register(read_pdf())
@@ -161,12 +163,14 @@ def base_registry(
     reg.register(kv_memory(world, goal_id))
     reg.register(arxiv())
     reg.register(semantic_scholar())
+    reg.register(wikipedia())
     reg.register(apply_patch(sandbox))
     reg.register(compute())
     reg.register(email_tool())
     reg.register(pandas_query())
     reg.register(git_advanced(sandbox))
     reg.register(calendar_tool())
+    reg.register(file_watcher())
     reg.register(linear())
     reg.register(jira())
     reg.register(gitlab())
@@ -207,6 +211,17 @@ def base_registry(
             for t in tools_from_mcp(client):
                 reg.register(t)
 
+    # Per-tool rate limits from ~/.maverick/config.toml [rate_limits].
+    # Wrap AFTER MCP + before plugin tools so MCP-exposed tools (which
+    # share the most-abused namespace, mcp_*) are covered; plugins
+    # register below and pick up their own limits via a second pass.
+    try:
+        from ..safety.rate_limiter import apply_to_registry as _rl_apply
+        _rl_apply(reg)
+    except Exception as e:  # pragma: no cover
+        import logging as _logging
+        _logging.getLogger(__name__).warning("rate_limiter: %s", e)
+
     # Plugin tools registered via the `maverick.tools` entry point. Each
     # factory is called with no args and must return a Tool. A broken
     # plugin logs but never takes the swarm down.
@@ -222,6 +237,15 @@ def base_registry(
                     "plugin tool %s factory raised: %s", name, e
                 )
     except Exception:  # pragma: no cover -- importlib quirks
+        pass
+
+    # Second rate-limit pass to cover plugin-registered tools. Earlier
+    # pass already wrapped core + MCP tools; double-wrapping is avoided
+    # because apply_to_registry walks the current dict snapshot.
+    try:
+        from ..safety.rate_limiter import apply_to_registry as _rl_apply
+        _rl_apply(reg)
+    except Exception:  # pragma: no cover
         pass
 
     return reg
