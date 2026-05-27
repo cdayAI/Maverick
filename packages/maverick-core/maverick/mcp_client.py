@@ -134,6 +134,20 @@ def _validate_subprocess_inputs(spec: "MCPServerSpec") -> None:
                 )
 
 
+def _command_looks_like_path(command: str, on_windows: bool | None = None) -> bool:
+    """Heuristic: does `command` look like a filesystem path (so we
+    should NOT send it through `shutil.which`)?
+
+    Backslash counts as a separator only on Windows; on POSIX it's a
+    legal filename character. Split out so tests can pass `on_windows`
+    explicitly without monkeypatching `os.name`, which has process-wide
+    side effects (it changes which pathlib class `Path()` instantiates).
+    """
+    if on_windows is None:
+        on_windows = os.name == "nt"
+    return "/" in command or (on_windows and "\\" in command)
+
+
 def _verify_command_pin(spec: "MCPServerSpec") -> None:
     """If spec.pin_sha256 is set, hash the resolved executable and refuse
     to spawn on mismatch. Resolution uses shutil.which for argv[0].
@@ -145,7 +159,7 @@ def _verify_command_pin(spec: "MCPServerSpec") -> None:
     import hashlib as _hashlib
     import shutil as _shutil
     from pathlib import Path as _Path
-    looks_like_path = "/" in spec.command or (os.name == "nt" and "\\" in spec.command)
+    looks_like_path = _command_looks_like_path(spec.command)
     resolved = spec.command if looks_like_path else _shutil.which(spec.command)
     if not resolved or not _Path(resolved).exists():
         raise MCPClientError(
