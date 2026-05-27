@@ -527,6 +527,9 @@ def collect_browser_sessions(providers: list[str]) -> list[str]:
         if prov == "chatgpt-session":
             if _capture_chatgpt_session():
                 captured.append(prov)
+        elif prov == "claude-session":
+            if _capture_claude_session():
+                captured.append(prov)
         else:
             console.print(
                 f"[yellow]⚠[/yellow] {prov}: no capture flow implemented "
@@ -564,6 +567,35 @@ def _capture_chatgpt_session() -> bool:
         "cookies": {"__Secure-next-auth.session-token": token.strip()},
     }
     path = cookie_store.save_session("chatgpt-session", blob)
+    console.print(f"[green]✓[/green] Saved session to {path} (chmod 600)")
+    return True
+
+
+def _capture_claude_session() -> bool:
+    """Walk the user through pasting their claude.ai sessionKey cookie."""
+    console.print()
+    console.print("[bold]Capturing Claude.ai session[/bold]")
+    console.print(
+        "  1. In Chrome/Firefox/Safari, sign in at https://claude.ai\n"
+        "  2. Open DevTools (F12) -> Application -> Cookies -> claude.ai\n"
+        "  3. Copy the value of [bold]sessionKey[/bold] (starts with 'sk-ant-sid01-')"
+    )
+    token = _q_text("  Paste sessionKey", default="")
+    if not token.strip():
+        console.print("[yellow]⚠[/yellow] No token entered; skipping Claude session.")
+        return False
+
+    try:
+        from maverick.session_providers import cookie_store
+    except ImportError:
+        console.print(
+            "[red]✗[/red] maverick-core not installed; can't store session. "
+            "Run: pip install maverick-agent"
+        )
+        return False
+
+    blob = {"cookies": {"sessionKey": token.strip()}}
+    path = cookie_store.save_session("claude-session", blob)
     console.print(f"[green]✓[/green] Saved session to {path} (chmod 600)")
     return True
 

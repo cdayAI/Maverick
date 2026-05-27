@@ -25,6 +25,7 @@ from typing import Optional
 from ..budget import Budget
 from ..llm import LLMResponse
 from . import cookie_store
+from .base import approx_record_budget, stringify_messages
 
 log = logging.getLogger(__name__)
 
@@ -51,36 +52,6 @@ _BASE_HEADERS = {
     "Origin": _BASE_URL,
     "Referer": f"{_BASE_URL}/",
 }
-
-
-def _stringify_messages(system: str, messages: list[dict]) -> str:
-    """Flatten Anthropic-format messages into a single user prompt.
-
-    Consumer chat doesn't accept multi-turn history with separate roles
-    via the internal API the same way the official API does; the safest
-    cross-version approach is to render the conversation as a single
-    prompt the model sees as 'context + new instruction'.
-    """
-    parts: list[str] = []
-    if system:
-        parts.append(f"[SYSTEM]\n{system}\n")
-    for msg in messages:
-        role = (msg.get("role") or "user").upper()
-        content = msg.get("content")
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            text_buf: list[str] = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text_buf.append(block.get("text", ""))
-                elif isinstance(block, str):
-                    text_buf.append(block)
-            text = "\n".join(text_buf)
-        else:
-            text = str(content) if content is not None else ""
-        parts.append(f"[{role}]\n{text}\n")
-    return "\n".join(parts).strip()
 
 
 def _parse_sse_response(stream_text: str) -> str:
@@ -195,20 +166,6 @@ class ChatGPTSessionClient:
             "history_and_training_disabled": False,
         }
 
-    def _record_budget(self, prompt: str, output: str, budget: Optional[Budget], model: str) -> None:
-        if budget is None:
-            return
-        # Approximation: consumer chat doesn't report usage, so we
-        # estimate from char counts (~4 chars/token English avg). Worth
-        # something for budget caps; not for billing accuracy.
-        in_tok = max(1, len(prompt) // 4)
-        out_tok = max(1, len(output) // 4)
-        try:
-            budget.record_tokens(in_tok, out_tok, model=model)
-        except Exception:
-            # Budget record failures must never break the response path.
-            log.exception("budget.record_tokens failed (non-fatal)")
-
     def complete(
         self,
         system: str,
@@ -231,7 +188,7 @@ class ChatGPTSessionClient:
             log.debug("ChatGPT session ignores thinking_budget=%s", thinking_budget)
         import httpx
 
-        prompt = _stringify_messages(system, messages)
+        prompt = stringify_messages(system, messages)
         target_model = model or self.DEFAULT_MODEL
         with httpx.Client(timeout=_DEFAULT_TIMEOUT, follow_redirects=True) as client:
             token = self._fetch_access_token(client)
@@ -253,7 +210,7 @@ class ChatGPTSessionClient:
             resp.raise_for_status()
             text = _parse_sse_response(resp.text)
 
-        self._record_budget(prompt, text, budget, target_model)
+        approx_record_budget(prompt, text, budget, target_model)
         return LLMResponse(
             text=text,
             thinking=None,
@@ -280,7 +237,7 @@ class ChatGPTSessionClient:
             log.debug("ChatGPT session ignores thinking_budget=%s", thinking_budget)
         import httpx
 
-        prompt = _stringify_messages(system, messages)
+        prompt = stringify_messages(system, messages)
         target_model = model or self.DEFAULT_MODEL
         async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT, follow_redirects=True) as client:
             cached = self._session.get("access_token")
@@ -314,7 +271,7 @@ class ChatGPTSessionClient:
             resp.raise_for_status()
             text = _parse_sse_response(resp.text)
 
-        self._record_budget(prompt, text, budget, target_model)
+        approx_record_budget(prompt, text, budget, target_model)
         return LLMResponse(
             text=text,
             thinking=None,

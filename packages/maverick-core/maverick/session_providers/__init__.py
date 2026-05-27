@@ -30,6 +30,7 @@ from typing import Any
 
 _SESSION_PROVIDERS = {
     "chatgpt-session": ("chatgpt", "openai-session"),
+    "claude-session":  ("claude", "anthropic-session", "claude-ai"),
 }
 
 
@@ -54,6 +55,9 @@ def get_session_client(name: str) -> Any:
     if canon == "chatgpt-session":
         from .chatgpt_session import ChatGPTSessionClient
         return ChatGPTSessionClient()
+    if canon == "claude-session":
+        from .claude_session import ClaudeSessionClient
+        return ClaudeSessionClient()
     raise ValueError(
         f"unknown session provider {name!r}. Available: "
         + ", ".join(KNOWN_SESSION_PROVIDERS)
