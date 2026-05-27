@@ -87,6 +87,10 @@ def test_is_session_provider():
     assert is_session_provider("chatgpt")
     assert is_session_provider("openai-session")
     assert is_session_provider("CHATGPT-SESSION")  # case-insensitive
+    assert is_session_provider("claude-session")
+    assert is_session_provider("claude")
+    assert is_session_provider("anthropic-session")
+    assert is_session_provider("claude-ai")
     assert not is_session_provider("openai")  # BYOK, not session
     assert not is_session_provider("anthropic")
     assert not is_session_provider("")
@@ -317,3 +321,222 @@ def test_llm_facade_routes_chatgpt_session(tmp_path, monkeypatch):
     # The cached client is a ChatGPTSessionClient, not OpenAIClient.
     from maverick.session_providers.chatgpt_session import ChatGPTSessionClient
     assert isinstance(llm._clients["chatgpt-session"], ChatGPTSessionClient)
+
+
+# ---------- ClaudeSessionClient ----------
+
+class _MultiResponseFakeClient:
+    """Multi-call fake: returns queued responses in order, records calls."""
+    def __init__(self, responses: list):
+        self._queue = list(responses)
+        self.calls: list[tuple[str, str, dict, dict | None]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def _pop(self):
+        if not self._queue:
+            raise AssertionError("Fake client out of queued responses")
+        return self._queue.pop(0)
+
+    def get(self, url, headers=None, timeout=None):
+        self.calls.append(("GET", url, headers or {}, None))
+        return self._pop()
+
+    def post(self, url, headers=None, json=None, timeout=None):
+        self.calls.append(("POST", url, headers or {}, json))
+        return self._pop()
+
+
+def _stub_claude_session(tmp_path, monkeypatch, *, org_id=None):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from maverick.session_providers import cookie_store
+    blob = {"cookies": {"sessionKey": "sk-ant-sid01-fake"}}
+    if org_id:
+        blob["org_id"] = org_id
+    cookie_store.save_session("claude-session", blob)
+
+
+def _claude_sse(*deltas: str) -> str:
+    """Build a Claude-style INCREMENTAL SSE body (concat, not overwrite)."""
+    import json
+    lines = []
+    for d in deltas:
+        lines.append("data: " + json.dumps({"completion": d}))
+    lines.append("data: [DONE]")
+    return "\n".join(lines)
+
+
+def test_claude_session_dispatches(tmp_path, monkeypatch):
+    """get_session_client('claude-session') -> ClaudeSessionClient."""
+    _stub_claude_session(tmp_path, monkeypatch, org_id="org-1")
+    from maverick.session_providers import get_session_client
+    from maverick.session_providers.claude_session import ClaudeSessionClient
+    client = get_session_client("claude-session")
+    assert isinstance(client, ClaudeSessionClient)
+    # Alias routes too.
+    client2 = get_session_client("claude")
+    assert isinstance(client2, ClaudeSessionClient)
+
+
+def test_claude_session_requires_stored_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from maverick.session_providers import get_session_client
+    with pytest.raises(RuntimeError, match="No Claude session stored"):
+        get_session_client("claude-session")
+
+
+def test_claude_session_sse_concatenates_deltas(tmp_path, monkeypatch):
+    """Claude streams INCREMENTAL deltas; final text is concatenation
+    of all completion fragments, not the last one alone."""
+    _stub_claude_session(tmp_path, monkeypatch, org_id="org-1")
+    from maverick.session_providers.claude_session import ClaudeSessionClient
+
+    conv_create = _FakeResponse(200, json_data={"uuid": "conv-uuid-1"})
+    completion = _FakeResponse(
+        200, text=_claude_sse("Hello", ", ", "world!"),
+    )
+    fake = _MultiResponseFakeClient([conv_create, completion])
+
+    import httpx
+    with patch.object(httpx, "Client", return_value=fake):
+        client = ClaudeSessionClient()
+        resp = client.complete(
+            system="be brief",
+            messages=[{"role": "user", "content": "say hi"}],
+        )
+
+    assert resp.text == "Hello, world!"  # concat, not last-only
+    assert resp.tool_calls == []
+    assert resp.stop_reason == "end_turn"
+
+
+def test_claude_session_caches_org_id(tmp_path, monkeypatch):
+    """If org_id is in the session blob, /api/organizations isn't hit."""
+    _stub_claude_session(tmp_path, monkeypatch, org_id="cached-org")
+    from maverick.session_providers.claude_session import ClaudeSessionClient
+
+    conv_create = _FakeResponse(200, json_data={"uuid": "c-1"})
+    completion = _FakeResponse(200, text=_claude_sse("ok"))
+    fake = _MultiResponseFakeClient([conv_create, completion])
+
+    import httpx
+    with patch.object(httpx, "Client", return_value=fake):
+        client = ClaudeSessionClient()
+        client.complete(system="", messages=[{"role": "user", "content": "yo"}])
+
+    methods = [c[0] for c in fake.calls]
+    # Only 2 POSTs (create + completion); no GET to /api/organizations.
+    assert methods == ["POST", "POST"]
+
+
+def test_claude_session_resolves_org_id_on_first_call(tmp_path, monkeypatch):
+    """No cached org_id -> fetch from /api/organizations."""
+    _stub_claude_session(tmp_path, monkeypatch)
+    from maverick.session_providers.claude_session import ClaudeSessionClient
+
+    orgs_resp = _FakeResponse(200, json_data=[
+        {"uuid": "discovered-org", "capabilities": ["chat"]},
+    ])
+    conv_create = _FakeResponse(200, json_data={"uuid": "c-1"})
+    completion = _FakeResponse(200, text=_claude_sse("ok"))
+    fake = _MultiResponseFakeClient([orgs_resp, conv_create, completion])
+
+    import httpx
+    with patch.object(httpx, "Client", return_value=fake):
+        client = ClaudeSessionClient()
+        client.complete(system="", messages=[{"role": "user", "content": "y"}])
+
+    # First call must be GET /api/organizations.
+    assert fake.calls[0][0] == "GET"
+    assert "/api/organizations" in fake.calls[0][1]
+    # Conversation create POST hit the discovered org.
+    assert "/api/organizations/discovered-org/chat_conversations" in fake.calls[1][1]
+
+
+def test_claude_session_rejects_tool_use(tmp_path, monkeypatch):
+    _stub_claude_session(tmp_path, monkeypatch, org_id="o")
+    from maverick.session_providers.claude_session import ClaudeSessionClient
+    client = ClaudeSessionClient()
+    with pytest.raises(NotImplementedError, match="tool-use"):
+        client.complete(
+            system="", messages=[{"role": "user", "content": "x"}],
+            tools=[{"name": "calc", "input_schema": {}}],
+        )
+
+
+def test_claude_session_401_actionable_error(tmp_path, monkeypatch):
+    _stub_claude_session(tmp_path, monkeypatch)
+    from maverick.session_providers.claude_session import ClaudeSessionClient
+
+    orgs_resp = _FakeResponse(401)
+    fake = _MultiResponseFakeClient([orgs_resp])
+
+    import httpx
+    with patch.object(httpx, "Client", return_value=fake):
+        client = ClaudeSessionClient()
+        with pytest.raises(RuntimeError, match="(expired|re-capture)"):
+            client.complete(system="", messages=[{"role": "user", "content": "x"}])
+
+
+def test_claude_session_429_rate_limit(tmp_path, monkeypatch):
+    _stub_claude_session(tmp_path, monkeypatch, org_id="o")
+    from maverick.session_providers.claude_session import ClaudeSessionClient
+
+    conv_create = _FakeResponse(200, json_data={"uuid": "c"})
+    completion = _FakeResponse(429)
+    fake = _MultiResponseFakeClient([conv_create, completion])
+
+    import httpx
+    with patch.object(httpx, "Client", return_value=fake):
+        client = ClaudeSessionClient()
+        with pytest.raises(RuntimeError, match="rate-limited"):
+            client.complete(system="", messages=[{"role": "user", "content": "x"}])
+
+
+def test_claude_session_request_body_shape(tmp_path, monkeypatch):
+    """Completion POST sends prompt + model in the body claude.ai expects."""
+    _stub_claude_session(tmp_path, monkeypatch, org_id="o")
+    from maverick.session_providers.claude_session import ClaudeSessionClient
+
+    conv_create = _FakeResponse(200, json_data={"uuid": "conv-x"})
+    completion = _FakeResponse(200, text=_claude_sse("ok"))
+    fake = _MultiResponseFakeClient([conv_create, completion])
+
+    import httpx
+    with patch.object(httpx, "Client", return_value=fake):
+        client = ClaudeSessionClient()
+        client.complete(
+            system="sys", messages=[{"role": "user", "content": "hello"}],
+            model="claude-haiku-4-5",
+        )
+
+    # Last POST is the completion call.
+    completion_call = fake.calls[-1]
+    assert completion_call[0] == "POST"
+    assert "/completion" in completion_call[1]
+    body = completion_call[3]
+    assert body["model"] == "claude-haiku-4-5"
+    assert "[SYSTEM]" in body["prompt"]
+    assert "hello" in body["prompt"]
+    assert body.get("rendering_mode") == "messages"
+
+
+def test_llm_facade_routes_claude_session(tmp_path, monkeypatch):
+    _stub_claude_session(tmp_path, monkeypatch, org_id="o")
+    from maverick.llm import LLM
+
+    llm = LLM(model="claude-session:claude-sonnet-4-6")
+    conv_create = _FakeResponse(200, json_data={"uuid": "c"})
+    completion = _FakeResponse(200, text=_claude_sse("routed-to-claude"))
+    fake = _MultiResponseFakeClient([conv_create, completion])
+
+    import httpx
+    with patch.object(httpx, "Client", return_value=fake):
+        resp = llm.complete(system="", messages=[{"role": "user", "content": "go"}])
+    assert resp.text == "routed-to-claude"
+    from maverick.session_providers.claude_session import ClaudeSessionClient
+    assert isinstance(llm._clients["claude-session"], ClaudeSessionClient)

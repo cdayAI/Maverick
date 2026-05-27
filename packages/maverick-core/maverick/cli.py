@@ -661,8 +661,28 @@ def session_list() -> None:
         click.echo(name)
 
 
+_SESSION_IMPORT_PROFILES: dict[str, dict] = {
+    "chatgpt": {
+        "canon": "chatgpt-session",
+        "cookie_key": "__Secure-next-auth.session-token",
+        "hint_url": "chatgpt.com",
+    },
+    "claude": {
+        "canon": "claude-session",
+        "cookie_key": "sessionKey",
+        "hint_url": "claude.ai",
+    },
+}
+# Aliases for the canonical names.
+_SESSION_IMPORT_PROFILES["chatgpt-session"] = _SESSION_IMPORT_PROFILES["chatgpt"]
+_SESSION_IMPORT_PROFILES["claude-session"]  = _SESSION_IMPORT_PROFILES["claude"]
+
+
 @session.command("import")
-@click.argument("provider", type=click.Choice(["chatgpt", "chatgpt-session"]))
+@click.argument(
+    "provider",
+    type=click.Choice(sorted(_SESSION_IMPORT_PROFILES.keys())),
+)
 @click.option(
     "--token", default=None,
     help="Paste the session cookie value here, or omit to be prompted.",
@@ -675,17 +695,18 @@ def session_import(provider: str, token: str | None) -> None:
     Step 3: Copy the session cookie value and paste it here.
     """
     from .session_providers import cookie_store
-    canon = "chatgpt-session"  # only adapter today
+    profile = _SESSION_IMPORT_PROFILES[provider]
+    canon, cookie_key, hint_url = profile["canon"], profile["cookie_key"], profile["hint_url"]
     if token is None:
         click.echo(
-            "Find your session cookie at chatgpt.com -> DevTools (F12) -> "
-            "Application -> Cookies -> __Secure-next-auth.session-token"
+            f"Find your session cookie at {hint_url} -> DevTools (F12) -> "
+            f"Application -> Cookies -> {cookie_key}"
         )
         token = click.prompt("Paste session token", hide_input=True)
     if not token or not token.strip():
         click.echo("No token entered; aborting.", err=True)
         sys.exit(2)
-    blob = {"cookies": {"__Secure-next-auth.session-token": token.strip()}}
+    blob = {"cookies": {cookie_key: token.strip()}}
     path = cookie_store.save_session(canon, blob)
     click.echo(f"Saved session to {path} (chmod 600)")
 

@@ -113,6 +113,17 @@ PROVIDERS: dict[str, dict] = {
             {"id": "gpt-4o-mini", "notes": "Free tier model. Use for cheap roles."},
         ],
     },
+    "claude-session": {
+        "status": "ready",
+        "label": "Claude.ai browser session (use your Pro subscription, no API key)",
+        "env": None,
+        "session": True,
+        "tool_support": False,
+        "models": [
+            {"id": "claude-sonnet-4-6", "notes": "Pro default. Best for summarizer/writer/analyst."},
+            {"id": "claude-haiku-4-5",  "notes": "Faster, lower quota cost."},
+        ],
+    },
 }
 
 
