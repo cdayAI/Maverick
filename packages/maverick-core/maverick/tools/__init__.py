@@ -35,8 +35,23 @@ class Tool:
 class ToolRegistry:
     def __init__(self):
         self._tools: dict[str, Tool] = {}
+        self._acl_allowed: set[str] = set()
+        self._acl_denied: set[str] = set()
+
+    def set_acl(self, *, allowed: set[str] | None = None, denied: set[str] | None = None) -> None:
+        self._acl_allowed = set(allowed or set())
+        self._acl_denied = set(denied or set())
+
+    def _acl_allows(self, name: str) -> bool:
+        if self._acl_allowed and name not in self._acl_allowed:
+            return False
+        if self._acl_denied and name in self._acl_denied:
+            return False
+        return True
 
     def register(self, tool: Tool) -> None:
+        if not self._acl_allows(tool.name):
+            return
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> Tool:
