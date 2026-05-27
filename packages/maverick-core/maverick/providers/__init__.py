@@ -6,38 +6,77 @@ Each provider client implements the same interface as ``AnthropicClient``:
     complete_async(system, messages, tools=None, budget=None, ...) -> LLMResponse
 
 Accepting Anthropic-format messages/tools and returning a
-``maverick.llm.LLMResponse``. OpenAI/OpenRouter/Ollama/Gemini clients
-translate the format on the fly.
+``maverick.llm.LLMResponse``. OpenAI/OpenRouter/Ollama/Gemini/Moonshot/
+DeepSeek/xAI clients translate the format on the fly.
 """
 from __future__ import annotations
 
 from typing import Any, Optional
 
 
+# Each entry: (canonical name, list of accepted aliases).
+# Aliases let users type the brand name they know (kimi → moonshot,
+# grok → xai) without us redefining the canonical provider id.
+_PROVIDER_ALIASES = {
+    "anthropic":  ("claude",),
+    "openai":     ("chatgpt", "gpt"),
+    "moonshot":   ("kimi",),
+    "xai":        ("grok",),
+    "gemini":     ("google",),
+    "deepseek":   (),
+    "openrouter": (),
+    "ollama":     ("local",),
+}
+
+
+def _canonical(name: str) -> str:
+    """Map an alias to the canonical provider name."""
+    lower = (name or "").strip().lower()
+    if lower in _PROVIDER_ALIASES:
+        return lower
+    for canon, aliases in _PROVIDER_ALIASES.items():
+        if lower in aliases:
+            return canon
+    return lower
+
+
 def get_provider_client(name: str, api_key: Optional[str] = None) -> Any:
     """Lazy-import and instantiate the named provider client."""
-    if name == "anthropic":
+    canon = _canonical(name)
+    if canon == "anthropic":
         from .anthropic_provider import AnthropicClient
         return AnthropicClient(api_key=api_key)
-    if name == "openai":
+    if canon == "openai":
         from .openai_provider import OpenAIClient
         return OpenAIClient(api_key=api_key)
-    if name == "openrouter":
+    if canon == "openrouter":
         from .openrouter_provider import OpenRouterClient
         return OpenRouterClient(api_key=api_key)
-    if name == "ollama":
+    if canon == "ollama":
         from .ollama_provider import OllamaClient
         return OllamaClient()
-    if name == "gemini":
+    if canon == "gemini":
         from .gemini_provider import GeminiClient
         return GeminiClient(api_key=api_key)
+    if canon == "moonshot":
+        from .moonshot_provider import MoonshotClient
+        return MoonshotClient(api_key=api_key)
+    if canon == "deepseek":
+        from .deepseek_provider import DeepSeekClient
+        return DeepSeekClient(api_key=api_key)
+    if canon == "xai":
+        from .xai_provider import XaiClient
+        return XaiClient(api_key=api_key)
     raise ValueError(
         f"unknown provider {name!r}. Available: "
-        "anthropic, openai, openrouter, ollama, gemini"
+        + ", ".join(KNOWN_PROVIDERS)
     )
 
 
-KNOWN_PROVIDERS = ("anthropic", "openai", "openrouter", "ollama", "gemini")
+KNOWN_PROVIDERS = (
+    "anthropic", "openai", "moonshot", "xai", "gemini",
+    "deepseek", "openrouter", "ollama",
+)
 
 
 __all__ = ["get_provider_client", "KNOWN_PROVIDERS"]

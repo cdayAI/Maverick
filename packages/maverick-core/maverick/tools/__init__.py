@@ -65,6 +65,8 @@ def base_registry(
     sandbox,
     mcp_clients: Optional[list] = None,
     goal_id: Optional[int] = None,
+    enable_computer_use: bool = False,
+    enable_browser: bool = False,
 ) -> ToolRegistry:
     """Build the base tool set (no spawn tools).
 
@@ -75,6 +77,14 @@ def base_registry(
     running goal — otherwise the orchestrator's ``open_questions(gid)``
     filter returns nothing and "PAUSED: 0 open question(s)" is shown
     even though the agent asked.
+
+    ``enable_computer_use`` / ``enable_browser`` register optional
+    high-impact tools. Both require optional extras
+    (``maverick-agent[computer-use]`` / ``[browser]``); when missing
+    the tool factories raise an actionable ImportError at registration
+    time, NOT at tool-call time -- so a user who picks computer-use in
+    the wizard discovers the missing dep immediately rather than after
+    the first run.
     """
     from .ask_user import ask_user
     from .attachments import list_attachments_tool
@@ -84,9 +94,14 @@ def base_registry(
     from .str_edit import str_replace_editor
 
     reg = ToolRegistry()
-    reg.register(read_file(sandbox))
-    reg.register(write_file(sandbox))
-    reg.register(list_dir(sandbox))
+    # SSHBackend executes shell commands remotely, but filesystem tools
+    # are local pathlib operations. Registering read/write/list for SSH
+    # would access the Maverick host filesystem instead of the remote
+    # sandbox host.
+    if sandbox.__class__.__name__ != "SSHBackend":
+        reg.register(read_file(sandbox))
+        reg.register(write_file(sandbox))
+        reg.register(list_dir(sandbox))
     reg.register(shell(sandbox))
     reg.register(ask_user(world, goal_id=goal_id))
     reg.register(list_attachments_tool(world, goal_id))
@@ -95,6 +110,57 @@ def base_registry(
     # single contribution to SWE-bench scores — eliminates ~30% of
     # apply-fail failures by side-stepping hand-authored diffs.
     reg.register(str_replace_editor(sandbox))
+
+    # Web search and cross-goal memory are zero-config additions:
+    # web_search degrades to free DuckDuckGo when no API key is set;
+    # recall_past_goals uses fastembed when present, jaccard otherwise.
+    from .web_search import web_search
+    from .recall import recall
+    from .http_fetch import http_fetch
+    from .pdf_reader import read_pdf
+    from .view_image import view_image
+    from .dep_graph import dep_graph
+    from .ast_edit import ast_edit
+    from .clipboard import clipboard
+    from .preview_diff import preview_diff
+    from .kv_memory import kv_memory
+    from .arxiv import arxiv
+    reg.register(web_search())
+    reg.register(recall())
+    reg.register(http_fetch())
+    reg.register(read_pdf())
+    reg.register(view_image())
+    reg.register(dep_graph(sandbox))
+    reg.register(ast_edit(sandbox))
+    reg.register(clipboard())
+    reg.register(preview_diff(sandbox))
+    reg.register(kv_memory(world, goal_id))
+    reg.register(arxiv())
+
+    # Voice tools (opt-in extra; tool factories raise ImportError only
+    # when called without the required API key OR SDK; registering is
+    # cheap).
+    from .voice import speak, transcribe_audio
+    reg.register(transcribe_audio())
+    reg.register(speak())
+
+    if enable_computer_use:
+        from .computer import computer
+        reg.register(computer())
+
+    if enable_browser:
+        from .browser import browser
+        reg.register(browser())
+
+    # Apply allow/deny lists from ~/.maverick/config.toml [security].
+    # Fail-soft: any error here is logged and the registry is left
+    # untouched.
+    try:
+        from ..safety.tool_acl import apply_to_registry
+        apply_to_registry(reg)
+    except Exception as e:  # pragma: no cover
+        import logging as _logging
+        _logging.getLogger(__name__).warning("tool_acl: %s", e)
 
     if mcp_clients:
         from ..mcp_tools import tools_from_mcp

@@ -31,7 +31,29 @@ _IGNORE_DIRS = {
 
 # Wave 9 council H7: cache per-workdir so a chatty agent calling
 # repo_map every turn doesn't pay the walk cost N times.
+# May 26 council fix (long-tail audit #2): bounded LRU. Best-of-N
+# with future per-attempt worktrees would each carry a distinct
+# cache key; a 500-instance × 4-attempt sweep would otherwise
+# accumulate ~2000 entries (60MB+) in this dict. Also: cache key
+# now includes workdir mtime so the cache invalidates when files
+# change. Cap at 64 entries.
 _CACHE: dict[str, str] = {}
+_CACHE_MAX = 64
+
+
+def _inside_workspace(root: Path, candidate: Path) -> bool:
+    """True when candidate resolves under root."""
+    try:
+        candidate.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def clear_repo_map_cache() -> None:
+    """Invalidate the repo_map cache. Called by the harness between
+    instances when the workdir is reset to a different commit."""
+    _CACHE.clear()
 
 
 def _detect_languages(root: Path) -> list[str]:
@@ -83,12 +105,21 @@ def repo_map(sandbox) -> Tool:
         entries = [e for e in entries if e.name not in _IGNORE_DIRS][:_MAX_TOP_ENTRIES]
 
         for entry in entries:
+            # Never follow top-level symlinks; they may point outside the workspace.
+            if entry.is_symlink():
+                lines.append(f"  {entry.name}@    [symlink skipped]")
+                continue
+
             if entry.is_dir():
                 # One-line summary: top N files within.
                 try:
                     children = sorted(
                         x.name for x in entry.iterdir()
-                        if x.name not in _IGNORE_DIRS
+                        if (
+                            x.name not in _IGNORE_DIRS
+                            and (not x.is_symlink())
+                            and _inside_workspace(root, x)
+                        )
                     )[:_MAX_NESTED_PER_DIR]
                 except OSError:
                     children = ["(unreadable)"]
@@ -125,6 +156,15 @@ def repo_map(sandbox) -> Tool:
                 f"\n\n... [truncated to {_MAX_OUTPUT_BYTES}B; "
                 f"use `list_dir` for specifics]"
             )
+        # LRU eviction: drop oldest entry when over cap. dict preserves
+        # insertion order in 3.7+ so popitem(last=False) gives FIFO.
+        if len(_CACHE) >= _CACHE_MAX:
+            # Pop oldest entry to bound memory.
+            try:
+                oldest = next(iter(_CACHE))
+                del _CACHE[oldest]
+            except (StopIteration, KeyError):
+                pass
         _CACHE[cache_key] = text
         return text
 

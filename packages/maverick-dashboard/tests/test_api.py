@@ -51,6 +51,15 @@ class TestGoals:
         # security review).
         assert called[0][1] == 1.0
 
+
+    def test_create_rejects_invalid_template_name(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+        resp = client.post("/api/v1/goals", json={
+            "title": "test goal",
+            "template": "../escape_secret",
+        })
+        assert resp.status_code == 400
+        assert "invalid template name" in resp.json()["detail"]
     def test_create_clamps_max_dollars(self, monkeypatch):
         """Pydantic Field bounds reject values outside [0, 100]."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
@@ -141,6 +150,57 @@ class TestAttachments:
         )
         assert resp.status_code == 400
         assert "mime type not allowed" in resp.json()["detail"]
+
+
+    def test_upload_reads_with_size_cap(self, monkeypatch):
+        import asyncio
+        from maverick_dashboard import api as api_mod
+
+        class _World:
+            def get_goal(self, goal_id):
+                return object()
+
+            def list_attachments(self, goal_id):
+                return []
+
+            def add_attachment(self, **kwargs):
+                return 1
+
+        class _Stored:
+            filename = "x.txt"
+            mime = "text/plain"
+            size_bytes = 1
+            sha256 = "abc"
+            path = "/tmp/x"
+
+        class _File:
+            filename = "x.txt"
+            content_type = "text/plain"
+
+            def __init__(self):
+                self.read_sizes = []
+
+            async def read(self, size=-1):
+                self.read_sizes.append(size)
+                return b"x"
+
+        monkeypatch.setattr(api_mod, "_world", lambda: _World())
+
+        called = {}
+
+        def _store(goal_id, filename, mime, data, existing_total):
+            called["data"] = data
+            return _Stored()
+
+        monkeypatch.setattr("maverick.attachments.store", _store)
+        monkeypatch.setattr("maverick.attachments.MAX_FILE_BYTES", 7)
+
+        f = _File()
+        out = asyncio.run(api_mod.upload_attachment(1, f))
+
+        assert f.read_sizes == [8]
+        assert called["data"] == b"x"
+        assert out.size_bytes == 1
 
     def test_upload_to_unknown_goal_404(self):
         resp = client.post(
