@@ -29,7 +29,7 @@ from .budget import Budget
 from .config import load_config
 from .llm import LLM
 from .orchestrator import run_goal
-from .sandbox import LocalBackend
+from .sandbox import build_sandbox
 from .world_model import WorldModel
 
 log = logging.getLogger(__name__)
@@ -40,12 +40,12 @@ class Server:
         self,
         world: WorldModel,
         llm: LLM,
-        workdir: Optional[Path] = None,
+        sandbox=None,
         max_depth: int = 3,
     ):
         self.world = world
         self.llm = llm
-        self.workdir = workdir or Path.cwd()
+        self.sandbox = sandbox or build_sandbox()
         self.max_depth = max_depth
         self._channels: list = []
         self._tasks: list[asyncio.Task] = []
@@ -89,12 +89,10 @@ class Server:
         goal_id = self.world.create_goal(title, msg.text)
 
         budget = Budget()
-        sandbox = LocalBackend(workdir=self.workdir)
-
         try:
             result = await run_goal(
                 self.llm, self.world, budget, goal_id,
-                sandbox=sandbox, max_depth=self.max_depth,
+                sandbox=self.sandbox, max_depth=self.max_depth,
                 conversation_id=conversation.id,
             )
         except Exception:
@@ -278,8 +276,10 @@ def build_from_config() -> Server:
     world = WorldModel()
     llm = LLM()
     sandbox_cfg = cfg.get("sandbox", {})
+    backend = sandbox_cfg.get("backend")
     workdir = Path(sandbox_cfg.get("workdir", str(Path.cwd()))).expanduser()
-    server = Server(world=world, llm=llm, workdir=workdir)
+    sandbox = build_sandbox(workdir=workdir, backend=backend)
+    server = Server(world=world, llm=llm, sandbox=sandbox)
 
     channels_cfg = cfg.get("channels", {})
     for name, wire in _WIRES.items():
