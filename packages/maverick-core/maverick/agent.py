@@ -421,14 +421,16 @@ class Agent:
                 # blackboard as a plain observation, was never applied,
                 # and the orchestrator returned the raw SR text as
                 # `final` with `final_patch=None` — silent score loss.
-                # Use the LAST line-anchored FINAL: marker, mirroring
-                # extract_unified_diff's logic.
+                # Parse the FIRST line-anchored FINAL: marker so
+                # quoted/tool/user content that contains another
+                # standalone "FINAL:" line cannot override the
+                # model's intended final payload.
                 import re as _re
-                _final_matches = list(_re.finditer(
+                _first_final = _re.search(
                     r"(?:^|\n)\s*FINAL:\s*\n?", resp.text,
-                ))
-                if _final_matches:
-                    final = resp.text[_final_matches[-1].end():].strip()
+                )
+                if _first_final:
+                    final = resp.text[_first_final.end():].strip()
                     # May 26 council fix: clear any stale `_final_patch`
                     # from a previous FINAL attempt. If a prior FINAL was
                     # rejected (defensive/validate) and the revised
