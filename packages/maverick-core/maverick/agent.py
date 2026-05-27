@@ -12,6 +12,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional
 
+from ._envparse import env_int
 from .budget import BudgetExceeded
 from .llm import model_for_role
 from .swarm import SwarmContext
@@ -85,6 +86,7 @@ class Agent:
         ctx: SwarmContext,
         role: str,
         brief: str,
+        model_override: Optional[str] = None,
         depth: int = 0,
         parent: Optional["Agent"] = None,
         max_steps: int = 25,
@@ -98,12 +100,12 @@ class Agent:
         # shows "most successful solutions resolve in ~25 rounds; long-
         # tail iteration past that has diminishing returns." Allow ops
         # to override globally via MAVERICK_MAX_STEPS, default 25.
-        self.max_steps = int(os.environ.get("MAVERICK_MAX_STEPS", str(max_steps)))
+        self.max_steps = env_int("MAVERICK_MAX_STEPS", max_steps)
         self.name = f"{role}-{depth}-{uuid.uuid4().hex[:6]}"
 
         self.tools = self._build_tools()
         self.system = self._build_system()
-        self.model = model_for_role(role)
+        self.model = model_override or model_for_role(role)
 
     def _build_tools(self) -> ToolRegistry:
         reg = base_registry(
