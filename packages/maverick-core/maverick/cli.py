@@ -34,14 +34,16 @@ def main(ctx: click.Context, db: str, model: str) -> None:
 
 
 @main.command()
-def init() -> None:
+@click.option("--fast", is_flag=True,
+              help="Skip every prompt; use recommended defaults.")
+def init(fast: bool) -> None:
     """Run the interactive setup wizard."""
     try:
         from maverick_installer.wizard import run as run_wizard
     except ImportError:
         click.echo("Install: pipx install maverick-installer", err=True)
         sys.exit(2)
-    sys.exit(run_wizard())
+    sys.exit(run_wizard(fast=fast))
 
 
 @main.command()
