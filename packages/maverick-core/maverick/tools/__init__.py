@@ -111,8 +111,14 @@ def base_registry(
     # recall_past_goals uses fastembed when present, jaccard otherwise.
     from .web_search import web_search
     from .recall import recall
+    from .http_fetch import http_fetch
+    from .pdf_reader import read_pdf
+    from .view_image import view_image
     reg.register(web_search())
     reg.register(recall())
+    reg.register(http_fetch())
+    reg.register(read_pdf())
+    reg.register(view_image())
 
     if enable_computer_use:
         from .computer import computer
