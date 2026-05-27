@@ -644,6 +644,20 @@ def skill_info(name: str) -> None:
     sys.exit(2)
 
 
+@main.command()
+@click.option("--goal-id", type=int, default=None, help="Specific goal to watch.")
+@click.option("--interval", type=float, default=1.5, help="Refresh seconds.")
+@click.pass_context
+def monitor(ctx, goal_id, interval) -> None:
+    """Watch agent activity in real time (plan tree + recent events)."""
+    from .monitor import monitor_loop
+    sys.exit(monitor_loop(
+        db_path=ctx.obj["db"],
+        goal_id=goal_id,
+        interval_seconds=interval,
+    ))
+
+
 @main.group()
 def session() -> None:
     """Manage browser-session credentials for consumer-chat providers."""
