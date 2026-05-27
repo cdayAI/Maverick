@@ -94,9 +94,14 @@ def base_registry(
     from .str_edit import str_replace_editor
 
     reg = ToolRegistry()
-    reg.register(read_file(sandbox))
-    reg.register(write_file(sandbox))
-    reg.register(list_dir(sandbox))
+    # SSHBackend executes shell commands remotely, but filesystem tools
+    # are local pathlib operations. Registering read/write/list for SSH
+    # would access the Maverick host filesystem instead of the remote
+    # sandbox host.
+    if sandbox.__class__.__name__ != "SSHBackend":
+        reg.register(read_file(sandbox))
+        reg.register(write_file(sandbox))
+        reg.register(list_dir(sandbox))
     reg.register(shell(sandbox))
     reg.register(ask_user(world, goal_id=goal_id))
     reg.register(list_attachments_tool(world, goal_id))
