@@ -67,6 +67,7 @@ def base_registry(
     goal_id: Optional[int] = None,
     enable_computer_use: bool = False,
     enable_browser: bool = False,
+    enable_web_search: bool = False,
 ) -> ToolRegistry:
     """Build the base tool set (no spawn tools).
 
@@ -106,13 +107,12 @@ def base_registry(
     # apply-fail failures by side-stepping hand-authored diffs.
     reg.register(str_replace_editor(sandbox))
 
-    # Web search and cross-goal memory are zero-config additions:
-    # web_search degrades to free DuckDuckGo when no API key is set;
-    # recall_past_goals uses fastembed when present, jaccard otherwise.
-    from .web_search import web_search
     from .recall import recall
-    reg.register(web_search())
     reg.register(recall())
+
+    if enable_web_search:
+        from .web_search import web_search
+        reg.register(web_search())
 
     if enable_computer_use:
         from .computer import computer
