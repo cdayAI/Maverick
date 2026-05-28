@@ -168,10 +168,15 @@ def base_registry(
     from .jira import jira
     from .linear import linear
     from .notify import notify_tool
+    from .notion import notion
     from .pandas_query import pandas_query
     from .semantic_scholar import semantic_scholar
+    from .slack_bot import slack_bot
     from .spend_report import spend_report
+    from .test_impact import test_impact
+    from .translate import translate
     from .wikipedia import wikipedia
+    from .youtube import youtube
     reg.register(recall())
     reg.register(http_fetch())
     reg.register(read_pdf())
@@ -201,6 +206,11 @@ def base_registry(
     reg.register(android())
     reg.register(ios_sim())
     reg.register(spend_report())
+    reg.register(test_impact())
+    reg.register(youtube())
+    reg.register(notion())
+    reg.register(translate())
+    reg.register(slack_bot())
 
     # Voice tools (opt-in extra; tool factories raise ImportError only
     # when called without the required API key OR SDK; registering is
