@@ -38,15 +38,24 @@ _DISCORD_SCHEMA: dict[str, Any] = {
                 "lookup_channel", "lookup_user",
             ],
         },
-        "channel_id": {"type": "string"},
-        "message_id": {"type": "string"},
+        "channel_id": {"type": "string", "pattern": r"^\d{15,22}$"},
+        "message_id": {"type": "string", "pattern": r"^\d{15,22}$"},
         "content": {"type": "string"},
         "emoji": {"type": "string", "description": "Unicode emoji or 'name:id' for custom."},
-        "user_id": {"type": "string"},
+        "user_id": {"type": "string", "pattern": r"^\d{15,22}$"},
         "limit": {"type": "integer"},
     },
     "required": ["op"],
 }
+
+
+def _normalize_snowflake(value: Any, field: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.isdigit() and 15 <= len(raw) <= 22:
+        return raw
+    raise ValueError(f"{field} must be a Discord snowflake ID")
 
 
 _API = "https://discord.com/api/v10"
@@ -178,15 +187,15 @@ def _run(args: dict[str, Any]) -> str:
         import httpx  # noqa: F401
     except ImportError:
         return "ERROR: httpx not installed. Run: pip install 'maverick-agent[issue-trackers]'"
-    channel = (args.get("channel_id") or "").strip()
     try:
+        channel = _normalize_snowflake(args.get("channel_id"), "channel_id")
         if op == "post":
             content = args.get("content") or ""
             if not channel or not content:
                 return "ERROR: post requires channel_id and content"
             return _op_post(channel, content)
         if op == "reply":
-            mid = (args.get("message_id") or "").strip()
+            mid = _normalize_snowflake(args.get("message_id"), "message_id")
             content = args.get("content") or ""
             if not channel or not mid or not content:
                 return "ERROR: reply requires channel_id, message_id, content"
@@ -196,7 +205,7 @@ def _run(args: dict[str, Any]) -> str:
                 return "ERROR: history requires channel_id"
             return _op_history(channel, int(args.get("limit") or 20))
         if op == "react":
-            mid = (args.get("message_id") or "").strip()
+            mid = _normalize_snowflake(args.get("message_id"), "message_id")
             emoji = (args.get("emoji") or "").strip()
             if not channel or not mid or not emoji:
                 return "ERROR: react requires channel_id, message_id, emoji"
@@ -206,11 +215,13 @@ def _run(args: dict[str, Any]) -> str:
                 return "ERROR: lookup_channel requires channel_id"
             return _op_lookup_channel(channel)
         if op == "lookup_user":
-            uid = (args.get("user_id") or "").strip()
+            uid = _normalize_snowflake(args.get("user_id"), "user_id")
             if not uid:
                 return "ERROR: lookup_user requires user_id"
             return _op_lookup_user(uid)
     except RuntimeError as e:
+        return f"ERROR: {e}"
+    except ValueError as e:
         return f"ERROR: {e}"
     except Exception as e:
         return f"ERROR: Discord request failed: {type(e).__name__}: {e}"
