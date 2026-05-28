@@ -159,6 +159,13 @@ def test_compute_diff():
     assert "3" in out and "x" in out
 
 
+@pytest.mark.skipif(not _HAS_SYMPY, reason="sympy not installed")
+def test_compute_sympy_rejects_arbitrary_code():
+    from maverick.tools.compute import compute
+    out = compute().fn({"op": "simplify", "expr": "__import__('os').system('id')"})
+    assert "ERROR" in out
+
+
 def test_compute_unknown_op_rejected():
     from maverick.tools.compute import compute
     out = compute().fn({"op": "factorial"})

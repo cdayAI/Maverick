@@ -15,7 +15,9 @@ SymPy's parser accepts a restricted grammar of math expressions.
 """
 from __future__ import annotations
 
+import ast
 import logging
+import re
 from typing import Any
 
 from . import Tool
@@ -58,7 +60,7 @@ def _have_sympy() -> bool:
 
 def _evaluate_with_sympy(expr: str) -> str:
     import sympy
-    parsed = sympy.sympify(expr, evaluate=True)
+    parsed = _safe_parse_expr(expr, evaluate=True)
     val = sympy.N(parsed, 30)
     return f"{val}"
 
@@ -86,6 +88,51 @@ def _evaluate_fallback(expr: str) -> str:
     code = compile(tree, "<expr>", "eval")
     result = eval(code, {"__builtins__": {}}, safe_globals)
     return repr(result)
+
+
+
+
+_ALLOWED_EXPR_RE = re.compile(r"^[0-9A-Za-z_+\-*/%^().,=\s]*$")
+_ALLOWED_FUNCS = {
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+    "sinh", "cosh", "tanh", "exp", "log", "sqrt", "Abs", "abs",
+    "min", "max",
+}
+_ALLOWED_CONSTS = {"pi", "e", "tau", "E", "I", "oo"}
+_ALLOWED_SYMBOLS = {"x", "y", "z", "t", "u", "v"}
+
+
+def _validate_expr_safety(expr: str) -> None:
+    if not _ALLOWED_EXPR_RE.match(expr):
+        raise ValueError("expression contains disallowed characters")
+    tree = ast.parse(expr, mode="eval")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name) or node.func.id not in _ALLOWED_FUNCS:
+                raise ValueError("function not allowed")
+        elif isinstance(node, ast.Name):
+            if node.id not in _ALLOWED_CONSTS and node.id not in _ALLOWED_FUNCS and node.id not in _ALLOWED_SYMBOLS:
+                raise ValueError(f"name not allowed: {node.id}")
+        elif isinstance(node, ast.Attribute):
+            raise ValueError("attribute access is not allowed")
+
+
+def _safe_parse_expr(expr: str, *, evaluate: bool):
+    import sympy
+    from sympy.parsing.sympy_parser import parse_expr
+
+    _validate_expr_safety(expr)
+    local_dict = {name: sympy.Symbol(name) for name in ("x", "y", "z", "t", "u", "v")}
+    local_dict.update({
+        "pi": sympy.pi, "e": sympy.E, "E": sympy.E, "I": sympy.I, "oo": sympy.oo,
+        "sin": sympy.sin, "cos": sympy.cos, "tan": sympy.tan,
+        "asin": sympy.asin, "acos": sympy.acos, "atan": sympy.atan, "atan2": sympy.atan2,
+        "sinh": sympy.sinh, "cosh": sympy.cosh, "tanh": sympy.tanh,
+        "exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt,
+        "Abs": sympy.Abs, "abs": sympy.Abs,
+        "min": sympy.Min, "max": sympy.Max,
+    })
+    return parse_expr(expr, local_dict=local_dict, global_dict={"__builtins__": {}}, evaluate=evaluate)
 
 
 _VALID_OPS = {"evaluate", "simplify", "solve", "diff", "integrate"}
@@ -122,7 +169,7 @@ def _run(args: dict[str, Any]) -> str:
         if not expr:
             return "ERROR: simplify requires expr"
         try:
-            return str(sympy.simplify(sympy.sympify(expr)))
+            return str(sympy.simplify(_safe_parse_expr(expr, evaluate=True)))
         except Exception as e:
             return f"ERROR: cannot simplify {expr!r}: {type(e).__name__}: {e}"
 
@@ -136,9 +183,9 @@ def _run(args: dict[str, Any]) -> str:
             # Parse "A = B" -> A - B. If no "=", treat as "expr = 0".
             if "=" in eqn:
                 left, right = eqn.split("=", 1)
-                target = sympy.sympify(left) - sympy.sympify(right)
+                target = _safe_parse_expr(left, evaluate=True) - _safe_parse_expr(right, evaluate=True)
             else:
-                target = sympy.sympify(eqn)
+                target = _safe_parse_expr(eqn, evaluate=True)
             sols = sympy.solve(target, var)
             return f"{var_name} ∈ {{{', '.join(str(s) for s in sols)}}}"
         except Exception as e:
@@ -151,7 +198,7 @@ def _run(args: dict[str, Any]) -> str:
         var_name = (args.get("var") or "x").strip()
         try:
             return str(sympy.diff(
-                sympy.sympify(expr), sympy.Symbol(var_name),
+                _safe_parse_expr(expr, evaluate=True), sympy.Symbol(var_name),
             ))
         except Exception as e:
             return f"ERROR: cannot differentiate: {type(e).__name__}: {e}"
@@ -163,7 +210,7 @@ def _run(args: dict[str, Any]) -> str:
         var_name = (args.get("var") or "x").strip()
         try:
             return str(sympy.integrate(
-                sympy.sympify(expr), sympy.Symbol(var_name),
+                _safe_parse_expr(expr, evaluate=True), sympy.Symbol(var_name),
             ))
         except Exception as e:
             return f"ERROR: cannot integrate: {type(e).__name__}: {e}"
