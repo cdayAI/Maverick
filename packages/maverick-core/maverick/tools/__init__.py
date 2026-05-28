@@ -11,6 +11,7 @@ MCPClient. This is how Maverick consumes the wider MCP ecosystem.
 from __future__ import annotations
 
 import inspect
+import os
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional, Union
 
@@ -88,6 +89,11 @@ class ToolRegistry:
             except Exception as e:
                 return f"ERROR: {type(e).__name__}: {e}"
 
+
+
+
+def _env_true(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 def base_registry(
     world,
@@ -267,13 +273,14 @@ def base_registry(
     reg.register(s3_tool())
     reg.register(elasticsearch_tool())
     reg.register(github_actions())
-    reg.register(airtable_tool())
-    reg.register(asana_tool())
-    reg.register(clickup_tool())
-    reg.register(lambda_tool())
-    reg.register(dynamodb_tool())
-    reg.register(vercel_tool())
-    reg.register(gdrive_tool())
+    if _env_true("MAVERICK_ENABLE_CRED_TOOLS"):
+        reg.register(airtable_tool())
+        reg.register(asana_tool())
+        reg.register(clickup_tool())
+        reg.register(lambda_tool())
+        reg.register(dynamodb_tool())
+        reg.register(vercel_tool())
+        reg.register(gdrive_tool())
 
     # Voice tools (opt-in extra; tool factories raise ImportError only
     # when called without the required API key OR SDK; registering is
