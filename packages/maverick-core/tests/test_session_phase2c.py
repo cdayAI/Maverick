@@ -447,6 +447,9 @@ def test_browser_tool_rejects_unsafe_url(monkeypatch):
         def page(self):
             return _FakePage()
 
+        def save_state(self):
+            return True
+
     monkeypatch.setattr(browser_mod, "_get_session", lambda: _FakeSession())
     out = browser_mod._run_browser_action({"action": "navigate", "url": "file:///etc/passwd"})
     assert "must be http(s)" in out.lower()
