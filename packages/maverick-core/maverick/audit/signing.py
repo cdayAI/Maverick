@@ -28,6 +28,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,28 @@ log = logging.getLogger(__name__)
 
 
 KEY_DIR = Path.home() / ".maverick" / "audit" / "keys"
+
+
+_KEY_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _is_valid_key_id(key_id: str) -> bool:
+    """Key IDs are fixed-width lowercase hex fingerprints."""
+    return bool(_KEY_ID_RE.fullmatch(key_id))
+
+
+def _key_paths_for_id(key_id: str) -> tuple[Path, Path] | tuple[None, None]:
+    """Return trusted key paths for key_id, or (None, None) if invalid."""
+    if not _is_valid_key_id(key_id):
+        return None, None
+    pub_path = (KEY_DIR / f"{key_id}.pub").resolve()
+    priv_path = (KEY_DIR / f"{key_id}.key").resolve()
+    try:
+        pub_path.relative_to(KEY_DIR.resolve())
+        priv_path.relative_to(KEY_DIR.resolve())
+    except ValueError:
+        return None, None
+    return pub_path, priv_path
 
 
 @dataclass
@@ -216,10 +239,10 @@ def verify_chain(path: Path, pubkey_hex: Optional[str] = None) -> list[ChainBrea
             # rotation (which always writes both .key and .pub). For
             # third-party tamper-evidence, callers should pass the
             # trusted pubkey_hex explicitly.
-            p = KEY_DIR / f"{key_id}.pub"
-            if not p.exists() or not (KEY_DIR / f"{key_id}.key").exists():
+            pub_path, priv_path = _key_paths_for_id(key_id)
+            if pub_path is None or not pub_path.exists() or not priv_path.exists():
                 return None
-            obj = ed25519.Ed25519PublicKey.from_public_bytes(p.read_bytes())
+            obj = ed25519.Ed25519PublicKey.from_public_bytes(pub_path.read_bytes())
         pubkey_cache[key_id] = obj
         return obj
 

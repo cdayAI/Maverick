@@ -393,6 +393,28 @@ def test_audit_verify_rejects_lone_pubkey(tmp_path, monkeypatch):
     _ = _json  # silence
 
 
+
+def test_audit_verify_rejects_path_traversal_key_id(tmp_path, monkeypatch):
+    if not _crypto_available():
+        return
+    import json as _json
+
+    from maverick.audit import signing
+    monkeypatch.setattr(signing, "KEY_DIR", tmp_path / "keys")
+    path = tmp_path / "audit.ndjson"
+    s = signing.AuditSigner(path)
+    s.write({"event": "a"})
+
+    lines = path.read_text().splitlines()
+    row = _json.loads(lines[0])
+    row["key_id"] = "../../tmp/evil"
+    lines[0] = _json.dumps(row)
+    path.write_text("\n".join(lines) + "\n")
+
+    breaks = signing.verify_chain(path)
+    assert any(b.reason == "no_pubkey" for b in breaks)
+
+
 # ---------- hackernews: null points on comment hits ----------
 
 def test_hackernews_handles_null_points(monkeypatch):
