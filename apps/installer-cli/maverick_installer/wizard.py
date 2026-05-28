@@ -1630,6 +1630,15 @@ def write_consumer_config(
     the branded error).
     """
     Path(workdir).expanduser().mkdir(parents=True, exist_ok=True)
+    backend = "docker" if _docker_available() else "local"
+    # Computer + browser always require explicit opt-in (consumer is
+    # never asked). When there's no Docker sandbox to contain it, also
+    # deny the host-mutating tools — fail closed on the host. With
+    # Docker present, shell/write_file/apply_patch stay enabled because
+    # the container is the blast radius, not the user's machine.
+    denied_tools = ["computer", "browser"]
+    if backend == "local":
+        denied_tools.extend(["shell", "write_file", "apply_patch", "str_replace_editor"])
     write_config(
         "desktop",                 # deployment
         ["anthropic"],             # providers
@@ -1644,16 +1653,13 @@ def write_consumer_config(
         },
         budget,
         {
-            # Docker only when the daemon answers; falls back to local.
-            "backend": "docker" if _docker_available() else "local",
+            "backend": backend,
             "workdir": str(Path(workdir).expanduser()),
             "timeout": 60,
         },
         keys,
         {"computer_use": False, "browser": False},  # capabilities
-        # Computer + browser require explicit opt-in; consumer is never
-        # asked, so deny them at the ACL too.
-        tool_acl={"denied_tools": ["computer", "browser"]},
+        tool_acl={"denied_tools": denied_tools},
         rate_limits={
             "web_search": "5/60",
             "http_fetch": "10/60",
