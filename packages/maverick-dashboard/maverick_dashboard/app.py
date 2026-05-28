@@ -11,6 +11,7 @@ import hmac
 import ipaddress
 import logging
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -448,12 +449,32 @@ async def providers_page(request: Request) -> HTMLResponse:
 
 # ----- Control surface pages (council pass) -----
 
+_AUDIT_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def safe_audit_day(day: Optional[str]) -> Optional[str]:
+    """Validate a ``?day=`` value as YYYY-MM-DD before it reaches the
+    audit log's path builder.
+
+    The audit log resolves ``day`` to ``audit_dir/{day}.ndjson``; an
+    unvalidated value like ``../../../etc/foo`` would escape the audit
+    directory. Anything that isn't a bare date is rejected to ``None``
+    (today), neutralizing path traversal at the HTTP boundary.
+    """
+    if day and _AUDIT_DAY_RE.match(day):
+        return day
+    return None
+
+
 @app.get("/audit", response_class=HTMLResponse)
 async def audit_page(request: Request) -> HTMLResponse:
     """Tail of the local audit log."""
     from maverick.audit import default_audit_log
-    n = max(1, min(int(request.query_params.get("n") or 200), 1000))
-    day = request.query_params.get("day") or None
+    try:
+        n = max(1, min(int(request.query_params.get("n") or 200), 1000))
+    except (TypeError, ValueError):
+        n = 200
+    day = safe_audit_day(request.query_params.get("day"))
     events = default_audit_log().tail(n, day=day)
     return templates.TemplateResponse(
         request, "audit.html",
@@ -939,6 +960,7 @@ async def api_goal_events_legacy(goal_id: int, since: int = 0, limit: int = 200)
     g = w.get_goal(goal_id)
     if g is None:
         raise HTTPException(status_code=404, detail="no such goal")
+    limit = max(1, min(limit, 500))
     events = w.goal_events(goal_id, since_id=since, limit=limit)
     return {
         "status": g.status,
