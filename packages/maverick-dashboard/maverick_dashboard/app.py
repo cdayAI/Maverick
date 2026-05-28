@@ -977,15 +977,22 @@ async def api_goal_events_stream(goal_id: int, since: int = 0) -> StreamingRespo
 
     TERMINAL = ("done", "cancelled", "failed")
     POLL_INTERVAL = 0.5            # server-side cadence
+    MAX_POLL_INTERVAL = 5.0        # cap idle backoff to reduce DB churn
     IDLE_HEARTBEAT_EVERY = 30      # send a comment line so proxies don't time out
+    MAX_STREAM_SECONDS = 300       # lifetime cap per SSE stream
     MAX_BATCH = 200
 
     async def generate():
+        started = _asyncio.get_running_loop().time()
         sid = since
         idle_ticks = 0
+        poll_interval = POLL_INTERVAL
         # Initial flush: anything already on the board since `since`.
         try:
             while True:
+                if (_asyncio.get_running_loop().time() - started) >= MAX_STREAM_SECONDS:
+                    yield "event: timeout\ndata: {\"detail\": \"stream lifetime exceeded\"}\n\n"
+                    return
                 events = w.goal_events(goal_id, since_id=sid, limit=MAX_BATCH)
                 g = w.get_goal(goal_id)
                 if g is None:
@@ -1005,6 +1012,7 @@ async def api_goal_events_stream(goal_id: int, since: int = 0) -> StreamingRespo
                     }
                     yield f"data: {_json.dumps(payload)}\n\n"
                     idle_ticks = 0
+                    poll_interval = POLL_INTERVAL
                 else:
                     idle_ticks += 1
                     if idle_ticks * POLL_INTERVAL >= IDLE_HEARTBEAT_EVERY:
@@ -1012,6 +1020,7 @@ async def api_goal_events_stream(goal_id: int, since: int = 0) -> StreamingRespo
                         # intermediaries from closing the connection.
                         yield ": heartbeat\n\n"
                         idle_ticks = 0
+                    poll_interval = min(MAX_POLL_INTERVAL, poll_interval * 1.5)
                 if g.status in TERMINAL:
                     payload = {
                         "status": g.status,
@@ -1022,7 +1031,7 @@ async def api_goal_events_stream(goal_id: int, since: int = 0) -> StreamingRespo
                     }
                     yield f"event: terminal\ndata: {_json.dumps(payload)}\n\n"
                     return
-                await _asyncio.sleep(POLL_INTERVAL)
+                await _asyncio.sleep(poll_interval)
         except _asyncio.CancelledError:
             return
 
