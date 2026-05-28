@@ -15,6 +15,13 @@ Persistent browser context across actions: the tool keeps a single
 chromium instance alive in a module-level handle. Closed at the end
 of the goal via ``close_browser()``.
 
+Session persistence: cookies + localStorage are saved to disk
+(``~/.maverick/browser/state.json`` by default, mode 0600) after each
+navigation, on the ``save_session`` action, and at interpreter exit,
+then reloaded when the next context starts -- so logins survive
+restarts and crashes. Override the path with ``MAVERICK_BROWSER_STATE``
+(per-task profiles) or disable with ``MAVERICK_BROWSER_NO_PERSIST=1``.
+
 Safety:
   - All navigations are allow-listed by default to ``http(s)://`` URLs.
   - ``MAVERICK_BROWSER_DISABLE=1`` env var disables the tool entirely.
@@ -22,6 +29,7 @@ Safety:
 """
 from __future__ import annotations
 
+import atexit
 import base64
 import ipaddress
 import logging
@@ -29,11 +37,35 @@ import os
 import re
 from urllib.parse import urlparse
 import threading
+from pathlib import Path
 from typing import Any, Optional
 
 from . import Tool
 
 log = logging.getLogger(__name__)
+
+
+# ---------- session persistence (cookies + localStorage survive restarts) ----------
+
+_DEFAULT_STATE_PATH = Path.home() / ".maverick" / "browser" / "state.json"
+
+
+def _persist_enabled() -> bool:
+    """On by default; opt out with MAVERICK_BROWSER_NO_PERSIST=1."""
+    return os.environ.get("MAVERICK_BROWSER_NO_PERSIST") != "1"
+
+
+def _state_path() -> Path:
+    override = os.environ.get("MAVERICK_BROWSER_STATE")
+    return Path(os.path.expanduser(override)) if override else _DEFAULT_STATE_PATH
+
+
+def _restore_state_arg() -> Optional[str]:
+    """storage_state path to seed a new context with, or None for a fresh one."""
+    if not _persist_enabled():
+        return None
+    p = _state_path()
+    return str(p) if p.exists() else None
 
 
 _BROWSER_INPUT_SCHEMA: dict[str, Any] = {
@@ -45,7 +77,7 @@ _BROWSER_INPUT_SCHEMA: dict[str, Any] = {
                 "navigate", "click", "type", "press", "scroll",
                 "screenshot", "extract_text", "extract_html",
                 "find_text", "wait_for", "go_back", "go_forward",
-                "current_url", "list_links", "close",
+                "current_url", "list_links", "save_session", "close",
             ],
             "description": "Action to perform.",
         },
@@ -104,6 +136,7 @@ class _BrowserSession:
                 "Chrome/126.0.0.0 Safari/537.36"
             ),
             viewport={"width": 1280, "height": 800},
+            storage_state=_restore_state_arg(),
         )
         self._page = self._context.new_page()
 
@@ -111,6 +144,24 @@ class _BrowserSession:
     def page(self):
         self._ensure_started()
         return self._page
+
+    def save_state(self) -> bool:
+        """Persist cookies + localStorage to disk. Returns True if written."""
+        with self._lock:
+            if self._context is None or not _persist_enabled():
+                return False
+            p = _state_path()
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                self._context.storage_state(path=str(p))
+                try:
+                    os.chmod(p, 0o600)  # cookies are sensitive
+                except OSError:
+                    pass
+                return True
+            except Exception as e:
+                log.warning("browser save_state: %s", e)
+                return False
 
     def close(self):
         with self._lock:
@@ -144,8 +195,21 @@ def close_browser() -> None:
     global _session
     with _session_lock:
         if _session is not None:
+            _session.save_state()
             _session.close()
             _session = None
+
+
+def _save_on_exit() -> None:
+    s = _session
+    if s is not None:
+        try:
+            s.save_state()
+        except Exception:
+            pass
+
+
+atexit.register(_save_on_exit)
 
 
 _SAFE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
@@ -189,7 +253,8 @@ def _run_browser_action(args: dict[str, Any]) -> str:
         return "browser closed"
 
     try:
-        page = _get_session().page
+        session = _get_session()
+        page = session.page
     except ImportError as e:
         return f"ERROR: {e}"
 
@@ -204,6 +269,7 @@ def _run_browser_action(args: dict[str, Any]) -> str:
             )
         log.info("browser.navigate %s", url)
         page.goto(url, timeout=timeout, wait_until="domcontentloaded")
+        session.save_state()  # checkpoint cookies after each navigation
         return f"navigated to {page.url} (status: loaded)"
 
     if action == "current_url":
@@ -310,6 +376,10 @@ def _run_browser_action(args: dict[str, Any]) -> str:
             text = (a.inner_text() or "").strip()[:80]
             links.append(f"{text!r} -> {href}")
         return "\n".join(links) if links else "no links on page"
+
+    if action == "save_session":
+        ok = session.save_state()
+        return "session saved" if ok else "session not saved (persistence disabled or no active context)"
 
     return f"ERROR: unknown action {action!r}"
 
