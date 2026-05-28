@@ -1523,10 +1523,213 @@ def run_fast() -> int:
     return 0
 
 
+CONSUMER_DEMO_GOAL = "Write me a haiku about Tuesday."
+CONSUMER_DEMO_MODEL = "anthropic:claude-haiku-4-5"
+
+
+def pick_mode() -> str:
+    """First-screen picker: consumer vs advanced.
+
+    Council round-2 design: every launch starts here so a non-technical
+    user lands in a four-question flow with safe defaults, and a power
+    user can opt straight into the full wizard.
+    """
+    console.print()
+    console.print(Panel.fit(
+        "[bold]How do you want to set this up?[/bold]\n\n"
+        "  consumer  Four questions, safe defaults. About a minute.\n"
+        "  advanced  Pick every model, channel, safety level, budget.",
+        border_style="cyan",
+    ))
+    pick = _q_select(
+        "Pick a mode:",
+        [
+            "consumer - just get me running",
+            "advanced - let me configure everything",
+        ],
+        default="consumer - just get me running",
+    )
+    return pick.split()[0]
+
+
+def _consumer_budget() -> dict[str, float]:
+    """Single-question budget chip picker for consumer mode."""
+    pick = _q_select(
+        "Stop after spending how much per task?",
+        ["$1", "$5", "$20", "custom"],
+        default="$5",
+    )
+    if pick == "custom":
+        dollars = _safe_float(_q_text("  Custom cap ($)", default="5.0"), default=5.0)
+    else:
+        dollars = float(pick.lstrip("$"))
+    return {
+        "max_dollars": dollars,
+        "max_wall_seconds": 600.0,
+        "max_tool_calls": 100,
+    }
+
+
+def _consumer_api_key() -> dict[str, str]:
+    """Single-screen Anthropic key collection for consumer mode.
+
+    No DevTools paste, no jargon. Three escape hatches:
+      1. Paste the key (the default).
+      2. Skip for now (write config without keys; user can re-run later).
+      3. Open the console in a browser to make a key.
+    """
+    console.print()
+    console.print(
+        "Maverick needs an account with Claude (Anthropic). "
+        "Get a key at: [cyan]https://console.anthropic.com/settings/keys[/cyan]\n"
+        "[dim]It looks like 'sk-ant-...' and is about 100 characters long.[/dim]",
+    )
+    val = _q_secret("  Paste your Anthropic API key (leave blank to skip):")
+    if not val.strip():
+        console.print(
+            "[yellow]Skipped.[/yellow] You can add one later by running "
+            "[bold]maverick init[/bold] again."
+        )
+        return {}
+    # Validate with the 7-day cache.
+    cached = _cached_validation("ANTHROPIC_API_KEY", val)
+    if cached is not None:
+        ok, msg = cached
+    else:
+        ok, msg = _validate_anthropic_key(val)
+        _remember_validation("ANTHROPIC_API_KEY", val, ok, msg)
+    if ok:
+        console.print(f"  [green]ok[/green] {msg}")
+        return {"ANTHROPIC_API_KEY": val}
+    # On failure, surface the branded error and let the user decide.
+    show_bad_key_error("ANTHROPIC_API_KEY", msg)
+    if _q_confirm("Save the key anyway and continue?", default=False):
+        return {"ANTHROPIC_API_KEY": val}
+    return {}
+
+
+def run_consumer() -> int:
+    """Four-question consumer flow. Writes a minimal config with
+    consumer-grade safe defaults, then prints a one-line demo command."""
+    console.print()
+    console.print(Panel.fit(
+        "[bold]Maverick setup[/bold]\n\n"
+        "Four questions. About a minute. You can change anything later\n"
+        "by running [bold]maverick init[/bold] again.",
+        border_style="cyan",
+    ))
+
+    if not preflight():
+        console.print(
+            "[red]Setup can't continue.[/red] Fix the issues above and try again."
+        )
+        return 1
+
+    user_name = _q_text(
+        "What should we call you?",
+        default=os.environ.get("USER") or os.environ.get("USERNAME") or "",
+    ).strip() or "you"
+
+    keys = _consumer_api_key()
+
+    workdir = _q_text(
+        "Where can Maverick work?",
+        default=str(Path.home() / "Documents" / "Maverick"),
+    ).strip() or str(Path.home() / "Documents" / "Maverick")
+    Path(workdir).expanduser().mkdir(parents=True, exist_ok=True)
+
+    budget = _consumer_budget()
+
+    # Consumer-mode safe defaults. The safety seat catalogued the
+    # full table in round 2; this is the minimum that doesn't expose
+    # a clueless user.
+    deployment = "desktop"
+    providers = ["anthropic"]
+    role_models: dict[str, str] = {}
+    channels: dict[str, Any] = {}
+    safety = {
+        "profile": "strict",          # strictest shield
+        "block_threshold": "medium",  # block medium+ threats
+        "scan_input": True,
+        "scan_tool_calls": True,
+        "scan_output": True,
+    }
+    sandbox = {
+        # Docker only when the daemon answers; falls back to local.
+        "backend": "docker" if _docker_available() else "local",
+        "workdir": str(Path(workdir).expanduser()),
+        "timeout": 60,
+    }
+    capabilities = {"computer_use": False, "browser": False}
+    tool_acl = {
+        # Computer + browser require explicit opt-in; the wizard never
+        # asks the consumer those questions.
+        "denied_tools": ["computer", "browser"],
+    }
+    rate_limits = {
+        "web_search": "5/60",
+        "http_fetch": "10/60",
+        "shell": "5/60",
+        "mcp_*": "20/60",
+    }
+    retention = {
+        "audit_days": 30,
+        "episodes_days": 90,
+        "events_days": 30,
+    }
+    persona = {"name": "Maverick", "style": "balanced", "user_name": user_name}
+
+    try:
+        write_config(
+            deployment, providers, role_models, channels, safety, budget,
+            sandbox, keys, capabilities,
+            tool_acl=tool_acl,
+            rate_limits=rate_limits,
+            retention=retention,
+            persona=persona,
+            web_search_enabled=True,
+        )
+    except Exception as e:
+        show_install_failure(e)
+        return 1
+
+    # First-goal nudge. Don't run the goal here (the kernel doesn't
+    # stream into a wizard window today, and shelling out from inside
+    # the installer is ugly); print the one-liner instead. The Haiku
+    # model keeps the demo under $0.01 and finishes in a couple of
+    # seconds even on cold connections.
+    console.print()
+    if keys:
+        console.print(Panel.fit(
+            f"[bold green]Setup complete, {user_name}.[/bold green]\n\n"
+            "Try your first goal:\n"
+            f"  [bold]maverick start \"{CONSUMER_DEMO_GOAL}\" --model {CONSUMER_DEMO_MODEL}[/bold]\n\n"
+            "Then:\n"
+            "  [bold]maverick dashboard[/bold]   web UI at http://127.0.0.1:8765",
+            border_style="green",
+        ))
+    else:
+        console.print(Panel.fit(
+            f"[bold yellow]Setup saved without an API key, {user_name}.[/bold yellow]\n\n"
+            "Add one later by exporting ANTHROPIC_API_KEY or by running\n"
+            "[bold]maverick init[/bold] again.",
+            border_style="yellow",
+        ))
+    _clear_partial()
+    return 0
+
+
 def run(fast: bool = False, resume: bool = False) -> int:
     if fast:
         return run_fast()
     welcome()
+    # Council round-2: mode picker on every launch. Consumer is default.
+    # Skip the picker on --resume since it implies an in-progress
+    # advanced flow.
+    if not resume:
+        mode = pick_mode()
+        if mode == "consumer":
+            return run_consumer()
     if not preflight():
         console.print(
             "[red]Preflight failed.[/red] Fix the issues above and re-run `maverick init`."
