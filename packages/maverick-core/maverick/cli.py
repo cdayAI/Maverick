@@ -27,6 +27,36 @@ def _default_model() -> str:
     return DEFAULT_MODEL
 
 
+_PROVIDER_ENV_VARS = (
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+    "OPENROUTER_API_KEY", "MOONSHOT_API_KEY", "DEEPSEEK_API_KEY",
+    "XAI_API_KEY",
+)
+
+
+def _require_llm_key() -> str:
+    """Council UX/capabilities fix: don't sys.exit(2) on missing ANTHROPIC_API_KEY.
+
+    First, check every supported provider's env var; return the first
+    one set (the LLM facade dispatches on model id, not env var, so any
+    valid provider config is fine). If none, print an actionable error
+    that points at ``maverick init`` and exit cleanly.
+    """
+    for var in _PROVIDER_ENV_VARS:
+        if os.environ.get(var):
+            return var
+    click.echo(
+        "Maverick can't reach an LLM. No provider key is set.\n"
+        "\n"
+        "Set one up with:  maverick init\n"
+        "Or export an existing key, for example:\n"
+        "  export ANTHROPIC_API_KEY=sk-ant-...\n"
+        "  export OPENAI_API_KEY=sk-...",
+        err=True,
+    )
+    sys.exit(2)
+
+
 def _kernel():
     """Lazy-import the agent-runtime modules into a single namespace.
 
@@ -277,9 +307,7 @@ def start(
         os.environ["MAVERICK_FAIL_TO_PASS"] = fail_to_pass
     if pass_to_pass:
         os.environ["MAVERICK_PASS_TO_PASS"] = pass_to_pass
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        click.echo("ERROR: ANTHROPIC_API_KEY not set. Run: maverick doctor", err=True)
-        sys.exit(2)
+    _require_llm_key()
     if template_name:
         from .templates import load_template
         try:
@@ -419,9 +447,7 @@ def chat(ctx, max_depth: int, max_dollars: float, workdir) -> None:
     Multi-line input: end a line with ``\\`` to continue, or open with
     ``\"\"\"`` to enter a paste block ending with ``\"\"\"`` on its own line.
     """
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        click.echo("ERROR: ANTHROPIC_API_KEY not set.", err=True)
-        sys.exit(2)
+    _require_llm_key()
     k = _kernel()
     world = WorldModel(ctx.obj["db"])
     llm = k.LLM(model=ctx.obj["model"] or k.DEFAULT_MODEL)
@@ -610,9 +636,7 @@ def answer(ctx, question_id: int, answer: tuple[str, ...]) -> None:
 @click.pass_context
 def resume(ctx, goal_id, max_depth: int) -> None:
     """Resume a blocked goal."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        click.echo("ERROR: ANTHROPIC_API_KEY not set.", err=True)
-        sys.exit(2)
+    _require_llm_key()
     world = WorldModel(ctx.obj["db"])
     if goal_id is None:
         g = world.active_goal()
@@ -1110,8 +1134,12 @@ def watch(ctx, path: str, run: bool, max_dollars: float) -> None:
                 click.echo(f"    {fl}")
 
         if run:
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                click.echo("ERROR: ANTHROPIC_API_KEY not set; skipping --run.", err=True)
+            # Don't sys.exit in the watch loop: just skip this marker and continue.
+            if not any(os.environ.get(v) for v in _PROVIDER_ENV_VARS):
+                click.echo(
+                    "Skipping --run: no provider key set. Run 'maverick init' to configure.",
+                    err=True,
+                )
                 continue
             k = _kernel()
             world = WorldModel(ctx.obj["db"])

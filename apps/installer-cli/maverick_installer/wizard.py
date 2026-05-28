@@ -281,6 +281,118 @@ _VALIDATORS = {
 }
 
 
+# ---------- validation cache ----------
+
+VALIDATION_CACHE_PATH = CONFIG_DIR / "validation-cache.json"
+_VALIDATION_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
+
+def _key_fingerprint(env_name: str, key: str) -> str:
+    import hashlib
+    digest = hashlib.sha256(f"{env_name}\x00{key}".encode()).hexdigest()
+    return digest[:32]
+
+
+def _load_validation_cache() -> dict[str, Any]:
+    try:
+        import json as _json
+        return _json.loads(VALIDATION_CACHE_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_validation_cache(cache: dict[str, Any]) -> None:
+    import json as _json
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        VALIDATION_CACHE_PATH.write_text(_json.dumps(cache, default=str))
+        try:
+            os.chmod(VALIDATION_CACHE_PATH, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def _cached_validation(env_name: str, key: str) -> tuple[bool, str] | None:
+    """Return cached (ok, msg) if the same key was validated within the TTL."""
+    import time as _time
+    if not key.strip():
+        return None
+    cache = _load_validation_cache()
+    fp = _key_fingerprint(env_name, key)
+    entry = cache.get(fp)
+    if not entry:
+        return None
+    ts = float(entry.get("ts", 0))
+    if (_time.time() - ts) > _VALIDATION_TTL_SECONDS:
+        return None
+    return bool(entry.get("ok", False)), str(entry.get("msg", "cached"))
+
+
+def _remember_validation(env_name: str, key: str, ok: bool, msg: str) -> None:
+    import time as _time
+    if not key.strip():
+        return
+    cache = _load_validation_cache()
+    cache[_key_fingerprint(env_name, key)] = {
+        "ts": _time.time(),
+        "ok": ok,
+        "msg": msg,
+    }
+    _save_validation_cache(cache)
+
+
+# ---------- error UI ----------
+
+def show_bad_key_error(env_name: str, msg: str) -> None:
+    """Council UX seat error screen #1: provider rejected the key."""
+    console.print()
+    console.print(Panel.fit(
+        f"[bold]That {env_name.split('_')[0].title()} key didn't work.[/bold]\n\n"
+        f"{msg}\n\n"
+        "Common causes:\n"
+        "  1. Typo (the secret is long; copy/paste, don't retype).\n"
+        "  2. The key was deleted from your account.\n"
+        "  3. Billing isn't set up on the provider.",
+        border_style="red",
+    ))
+
+
+def show_network_error(provider: str, exception_type: str) -> None:
+    """Council UX seat error screen #2: validator couldn't reach the provider."""
+    console.print()
+    console.print(Panel.fit(
+        f"[bold]Couldn't reach {provider} to check the key ({exception_type}).[/bold]\n\n"
+        "Usually a network block or proxy. Your key is saved either way;\n"
+        "if it's wrong the first goal you run will say so.",
+        border_style="yellow",
+    ))
+
+
+def show_install_failure(exc: BaseException) -> None:
+    """Council UX seat error screen #3: catch-all for unexpected setup failures."""
+    console.print()
+    console.print(Panel.fit(
+        "[bold]Setup hit a problem and stopped.[/bold]\n\n"
+        f"{type(exc).__name__}: {exc}\n\n"
+        "Nothing was changed. Try again, or report the issue with the\n"
+        "diagnostic output of [bold]maverick doctor[/bold].",
+        border_style="red",
+    ))
+
+
+def show_browser_capture_timeout(provider: str) -> None:
+    """Council UX seat error screen #4: browser session capture timed out."""
+    console.print()
+    console.print(Panel.fit(
+        f"[bold]Sign-in to {provider} didn't complete in time.[/bold]\n\n"
+        "Try again, or pick a different option (paste an API key, or use a\n"
+        "local model).",
+        border_style="yellow",
+    ))
+
+
 # ---------- wizard steps ----------
 
 def welcome() -> None:
@@ -517,7 +629,32 @@ def pick_capabilities() -> dict[str, bool]:
     }
 
 
+def _docker_available() -> bool:
+    """Return True iff the `docker` binary is on PATH AND the daemon
+    responds. Used to pick a safe sandbox default in consumer mode and
+    to choose the wizard's default in dev mode."""
+    if not shutil.which("docker"):
+        return False
+    try:
+        subprocess.run(
+            ["docker", "version"],
+            capture_output=True, timeout=2, check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def pick_sandbox() -> dict[str, Any]:
+    # Default to docker only when it actually works on this machine.
+    # Council UX seat: defaulting to docker on a fresh Windows laptop
+    # without Docker installed makes the first goal hang on container
+    # pull or fail outright.
+    docker_default = (
+        "docker - Throwaway Docker container (recommended)"
+        if _docker_available()
+        else "local  - Subprocess on this machine (fastest, least isolated)"
+    )
     pick = _q_select(
         "Sandbox backend (where the agent runs shell commands):",
         [
@@ -527,7 +664,7 @@ def pick_sandbox() -> dict[str, Any]:
             "devcontainer - Reuse a .devcontainer config",
             "ssh    - Remote machine",
         ],
-        default="docker - Throwaway Docker container (recommended)",
+        default=docker_default,
     )
     backend = pick.split()[0]
     workdir = _q_text("  Workspace directory", default=str(Path.home() / "maverick-workspace"))
@@ -793,12 +930,20 @@ def collect_api_keys(providers: list[str], channel_envs: set[str]) -> dict[str, 
                 keys[env_name] = current
             continue
 
-        # Validate when we know how.
+        # Validate when we know how, with a 7-day cache so re-runs of
+        # the wizard don't burn an API round-trip on every key.
         validator = _VALIDATORS.get(env_name)
         if validator:
-            ok, msg = validator(val)
-            marker = "[green]✓[/green]" if ok else "[red]✗[/red]"
-            console.print(f"    {marker} {msg}")
+            cached = _cached_validation(env_name, val)
+            if cached is not None:
+                ok, msg = cached
+                marker = "[green]ok[/green]" if ok else "[red]x[/red]"
+                console.print(f"    {marker} {msg} (cached)")
+            else:
+                ok, msg = validator(val)
+                marker = "[green]ok[/green]" if ok else "[red]x[/red]"
+                console.print(f"    {marker} {msg}")
+                _remember_validation(env_name, val, ok, msg)
             if not ok and not _q_confirm("Save anyway?", default=False):
                 continue
         keys[env_name] = val
