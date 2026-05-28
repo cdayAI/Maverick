@@ -67,6 +67,13 @@ def test_enable_tool_clears_override(monkeypatch, tmp_path):
     assert names.get("shell") is True
 
 
+def test_disable_tool_rejects_invalid_name(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    client = _client()
+    r = client.post('/api/v1/permissions/tools/bad"name/disable', headers={"Origin": "http://testserver"})
+    assert r.status_code == 400
+
+
 def test_permissions_page_renders(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
     client = _client()

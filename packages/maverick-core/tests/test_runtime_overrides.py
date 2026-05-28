@@ -65,6 +65,15 @@ def test_corrupt_overlay_degrades_to_empty(monkeypatch, tmp_path):
     assert ro.denied_tools() == set()
 
 
+def test_disable_rejects_invalid_tool_name(monkeypatch, tmp_path):
+    ro = _point_overlay(monkeypatch, tmp_path)
+    try:
+        ro.disable_tool('bad"name')
+        assert False, "expected ValueError for invalid tool name"
+    except ValueError:
+        pass
+
+
 # ---------- ACL union ----------
 
 def test_acl_unions_overlay_into_deny(monkeypatch, tmp_path):

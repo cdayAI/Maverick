@@ -637,7 +637,10 @@ async def disable_tool(name: str) -> None:
     with no restart.
     """
     from maverick.runtime_overrides import disable_tool as _disable
-    _disable(name)
+    try:
+        _disable(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/permissions/tools/{name}/enable", status_code=204)
@@ -649,7 +652,10 @@ async def enable_tool(name: str) -> None:
     denies it, config does).
     """
     from maverick.runtime_overrides import enable_tool as _enable
-    _enable(name)
+    try:
+        _enable(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/cache/stats")

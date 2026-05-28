@@ -18,11 +18,14 @@ the next goal with no restart. config.toml is never touched.
 from __future__ import annotations
 
 import logging
+import os
+import re
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 OVERRIDES_PATH = Path.home() / ".maverick" / "runtime-overrides.toml"
+_VALID_TOOL_NAME = re.compile(r"^[a-z0-9_-]+$")
 
 
 def _tomllib():
@@ -56,9 +59,8 @@ def _write_denied(names: set[str]) -> None:
     Hand-rolled TOML (no tomli-w dependency) since the shape is fixed:
     one table, one string-list. Atomic write at 0o600.
     """
-    import os
     OVERRIDES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    rendered = ", ".join(f'"{n}"' for n in sorted(names))
+    rendered = ", ".join(_toml_string(n) for n in sorted(names))
     body = (
         "# Dashboard-managed overrides. Edit via the dashboard's\n"
         "# permissions page, not by hand (the dashboard rewrites this\n"
@@ -66,21 +68,33 @@ def _write_denied(names: set[str]) -> None:
         "[security]\n"
         f"denied_tools = [{rendered}]\n"
     )
-    fd = os.open(OVERRIDES_PATH, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    tmp_path = OVERRIDES_PATH.with_suffix(".toml.tmp")
+    fd = os.open(tmp_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(body)
+    os.replace(tmp_path, OVERRIDES_PATH)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(body)
-    finally:
-        try:
-            os.chmod(OVERRIDES_PATH, 0o600)
-        except OSError:
-            pass
+        os.chmod(OVERRIDES_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def _toml_string(value: str) -> str:
+    import json
+    return json.dumps(value)
+
+
+def _validate_tool_name(name: str) -> str:
+    n = (name or "").strip()
+    if not _VALID_TOOL_NAME.fullmatch(n):
+        raise ValueError("invalid tool name")
+    return n
 
 
 def disable_tool(name: str) -> set[str]:
     """Add ``name`` to the overlay deny-list. Returns the new set."""
     current = denied_tools()
-    current.add(name)
+    current.add(_validate_tool_name(name))
     _write_denied(current)
     return current
 
@@ -92,7 +106,7 @@ def enable_tool(name: str) -> set[str]:
     denied in config.toml itself, re-enabling requires editing config.
     """
     current = denied_tools()
-    current.discard(name)
+    current.discard(_validate_tool_name(name))
     _write_denied(current)
     return current
 
