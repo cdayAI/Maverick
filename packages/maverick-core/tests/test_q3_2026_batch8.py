@@ -116,7 +116,7 @@ def test_discord_bot_missing_token(monkeypatch):
     fake.post = MagicMock()
     monkeypatch.setitem(sys.modules, "httpx", fake)
     from maverick.tools.discord_bot import discord_bot
-    out = discord_bot().fn({"op": "post", "channel_id": "1", "content": "hi"})
+    out = discord_bot().fn({"op": "post", "channel_id": "123456789012345678", "content": "hi"})
     assert "DISCORD_BOT_TOKEN" in out
 
 
@@ -129,8 +129,8 @@ def test_discord_bot_post_calls_api(monkeypatch):
     fake_httpx.post = MagicMock(return_value=resp)
     monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
     from maverick.tools.discord_bot import discord_bot
-    out = discord_bot().fn({"op": "post", "channel_id": "C1", "content": "hi"})
-    assert "posted to C1" in out and "msg_42" in out
+    out = discord_bot().fn({"op": "post", "channel_id": "123456789012345678", "content": "hi"})
+    assert "posted to 123456789012345678" in out and "msg_42" in out
 
 
 def test_discord_bot_history_renders(monkeypatch):
@@ -145,14 +145,27 @@ def test_discord_bot_history_renders(monkeypatch):
     fake_httpx.get = MagicMock(return_value=resp)
     monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
     from maverick.tools.discord_bot import discord_bot
-    out = discord_bot().fn({"op": "history", "channel_id": "C1", "limit": 10})
+    out = discord_bot().fn({"op": "history", "channel_id": "123456789012345678", "limit": 10})
     assert "alice: hello" in out and "bob: yo" in out
 
 
-def test_discord_bot_react_validates():
+def test_discord_bot_react_validates(monkeypatch):
+    fake_httpx = types.ModuleType("httpx")
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
     from maverick.tools.discord_bot import discord_bot
-    out = discord_bot().fn({"op": "react", "channel_id": "C"})
+    out = discord_bot().fn({"op": "react", "channel_id": "123456789012345678"})
     assert "channel_id, message_id, emoji" in out
+
+
+def test_discord_bot_rejects_non_snowflake_ids(monkeypatch):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "bot_xx")
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.get = MagicMock()
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+    from maverick.tools.discord_bot import discord_bot
+    out = discord_bot().fn({"op": "lookup_channel", "channel_id": "123/../roles"})
+    assert "snowflake" in out
+    fake_httpx.get.assert_not_called()
 
 
 # ---------- Hacker News tool ----------
