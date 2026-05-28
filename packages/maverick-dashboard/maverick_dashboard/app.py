@@ -421,6 +421,15 @@ async def tools_page(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/cache", response_class=HTMLResponse)
+async def cache_page(request: Request) -> HTMLResponse:
+    """In-process cache stats + purge buttons."""
+    from maverick.cache import stats
+    return templates.TemplateResponse(
+        request, "cache.html", {"stats": stats()},
+    )
+
+
 @app.get("/channels", response_class=HTMLResponse)
 async def channels_page(request: Request) -> HTMLResponse:
     """Configured + enabled channels."""

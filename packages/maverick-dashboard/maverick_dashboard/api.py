@@ -381,14 +381,33 @@ class HaltIn(BaseModel):
 
 @router.get("/halt")
 async def halt_status() -> dict:
-    """Is the killswitch armed?"""
+    """Is the killswitch armed?
+
+    Council round-2 capabilities-seat fix: round-1 only surfaced the
+    file path. Now also returns the reason string (from the file body
+    when the halt was set via POST) and the file's mtime as ``armed_at``
+    so the UI can show "halted 3m ago for: <reason>".
+    """
     from maverick.killswitch import _halt_file_path, is_active
     p = _halt_file_path()
-    return {
+    out: dict = {
         "active": is_active(),
         "file": str(p),
         "file_present": p.exists(),
+        "reason": None,
+        "armed_at": None,
     }
+    if p.exists():
+        try:
+            body = p.read_text(errors="replace").strip()
+            out["reason"] = body or None
+        except OSError:
+            pass
+        try:
+            out["armed_at"] = p.stat().st_mtime
+        except OSError:
+            pass
+    return out
 
 
 @router.post("/halt", status_code=204)
@@ -539,3 +558,73 @@ async def audit_tail(n: int = 100, day: Optional[str] = None) -> dict:
     from maverick.audit import default_audit_log
     n = max(1, min(int(n or 100), 1000))
     return {"events": default_audit_log().tail(n, day=day)}
+
+
+@router.get("/audit/grep")
+async def audit_grep(pattern: str, day: Optional[str] = None) -> dict:
+    """Regex-search the audit log for the given day (default: today).
+
+    Mirrors the CLI's ``maverick audit grep <pattern>`` — exists in the
+    kernel as a method on AuditLog but had no HTTP surface before.
+    """
+    if not pattern:
+        raise HTTPException(status_code=400, detail="pattern is required")
+    if len(pattern) > 500:
+        raise HTTPException(status_code=400, detail="pattern too long")
+    try:
+        import re
+        re.compile(pattern)
+    except re.error as e:
+        raise HTTPException(status_code=400, detail=f"bad regex: {e}")
+    from maverick.audit import default_audit_log
+    return {"events": default_audit_log().grep(pattern, day=day)}
+
+
+@router.get("/cache/stats")
+async def cache_stats() -> dict:
+    """In-process cache sizes (file reads, repo-map, skill embeddings).
+
+    Mirrors ``maverick cache stats`` — surfaced here so the dashboard
+    Cache page can render without shelling out.
+    """
+    from maverick.cache import stats
+    return stats()
+
+
+class CachePurgeIn(BaseModel):
+    scopes: list[str] = Field(default_factory=lambda: ["all"])
+
+
+@router.post("/cache/purge")
+async def cache_purge(payload: CachePurgeIn) -> dict:
+    """Purge one or more cache scopes.
+
+    Valid scopes (from maverick.cache._VALID_SCOPES): files, repo_map,
+    skill_embeddings, all. Unknown scopes are ignored.
+    """
+    from maverick.cache import purge
+    return purge(payload.scopes or ["all"])
+
+
+@router.post("/goals/{goal_id}/resume", status_code=204)
+async def resume_goal(goal_id: int, bg: BackgroundTasks) -> None:
+    """Resume a blocked / cancelled goal.
+
+    Capabilities-seat finding: the CLI has ``maverick resume`` but the
+    dashboard's only way to flip a cancelled goal back was to start a
+    brand-new one. This route flips status back to 'pending' and
+    re-queues the runner, so the next goal-event poll picks it back up.
+    """
+    w = _world()
+    g = w.get_goal(goal_id)
+    if g is None:
+        raise HTTPException(status_code=404, detail="no such goal")
+    # Block resuming things that have no parked work.
+    if g.status not in ("blocked", "cancelled", "failed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"goal is {g.status!r}; only blocked/cancelled/failed goals can resume",
+        )
+    w.set_goal_status(goal_id, "pending", result=None)
+    from maverick.runner import run_goal_in_thread
+    bg.add_task(run_goal_in_thread, goal_id)
