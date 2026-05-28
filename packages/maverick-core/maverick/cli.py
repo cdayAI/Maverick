@@ -10,29 +10,53 @@ from pathlib import Path
 
 import click
 
-from .budget import Budget
-from .llm import DEFAULT_MODEL, LLM
-from .orchestrator import run_goal_sync
-from .secrets import scrub
-from .sandbox import build_sandbox
-from .skills import (
-    SKILLS_DIR,
-    install_skill,
-    load_skills,
-    remove_skill,
-)
-from .world_model import DEFAULT_DB, WorldModel
+# Council round-2 perf-seat fix: keep the top-level import surface
+# minimal so `maverick --help` and `maverick version` don't pay for
+# heavy submodules (orchestrator, agent, swarm, skills, sandbox) they
+# never use. Submodules import lazily inside the command bodies that
+# actually need them. `world_model` stays at module top — its imports
+# are stdlib (sqlite3, dataclasses, pathlib) and the DEFAULT_DB
+# constant is used in the click option default below.
+from .world_model import DEFAULT_DB, WorldModel  # noqa: E402  -- cheap stdlib chain
+
+
+def _default_model() -> str:
+    """Lazy resolver so the click default callback doesn't pull `.llm`
+    (and the anthropic SDK) at module import time."""
+    from .llm import DEFAULT_MODEL
+    return DEFAULT_MODEL
+
+
+def _kernel():
+    """Lazy-import the agent-runtime modules into a single namespace.
+
+    Importing ``.orchestrator`` transitively pulls agent + swarm +
+    blackboard + sandbox + skills + tools (~30 ms). Commands that
+    don't drive the agent (``version``, ``doctor``, ``config``,
+    ``audit``, ``cache``, ``retention``, ``skill *``, ``template *``)
+    never need any of it. Call this at the top of any command that does.
+    """
+    import types
+    from .budget import Budget
+    from .llm import LLM, DEFAULT_MODEL
+    from .orchestrator import run_goal_sync
+    from .sandbox import build_sandbox
+    from .secrets import scrub
+    return types.SimpleNamespace(
+        Budget=Budget, LLM=LLM, DEFAULT_MODEL=DEFAULT_MODEL,
+        run_goal_sync=run_goal_sync, build_sandbox=build_sandbox, scrub=scrub,
+    )
 
 
 @click.group()
 @click.option("--db", default=str(DEFAULT_DB), help="World model database path.")
-@click.option("--model", default=DEFAULT_MODEL, help="LLM model id.")
+@click.option("--model", default=None, help="LLM model id (default: from config).")
 @click.pass_context
-def main(ctx: click.Context, db: str, model: str) -> None:
+def main(ctx: click.Context, db: str, model: str | None) -> None:
     """Maverick: multi-agent swarm for long-horizon work."""
     ctx.ensure_object(dict)
     ctx.obj["db"] = Path(db)
-    ctx.obj["model"] = model
+    ctx.obj["model"] = model  # resolved lazily on first use
 
 
 @main.command()
@@ -282,15 +306,16 @@ def start(
         click.echo("ERROR: pass TITLE or --template <name>", err=True)
         sys.exit(2)
 
+    k = _kernel()
     world = WorldModel(ctx.obj["db"])
     goal_id = world.create_goal(title, description)
     click.echo(f"goal #{goal_id} created: {title}")
-    llm = LLM(model=ctx.obj["model"])
-    bud = Budget(
+    llm = k.LLM(model=ctx.obj["model"] or k.DEFAULT_MODEL)
+    bud = k.Budget(
         max_dollars=max_dollars or 5.0,
         max_wall_seconds=max_wall_seconds or 3600.0,
     )
-    sandbox = build_sandbox(workdir=workdir, backend=sandbox_backend)
+    sandbox = k.build_sandbox(workdir=workdir, backend=sandbox_backend)
 
     # Council UX finding: `maverick start "..."` used to look hung
     # between "goal created" and the final printout. A background poller
@@ -317,7 +342,7 @@ def start(
                 sandbox=sandbox, max_depth=max_depth, n=best_of_n,
             ))
         else:
-            result = run_goal_sync(
+            result = k.run_goal_sync(
                 llm, world, bud, goal_id,
                 sandbox=sandbox, max_depth=max_depth,
             )
@@ -336,6 +361,7 @@ def _sanitize_progress_content(text: str, limit: int = 200) -> str:
     - Remove terminal control bytes / ANSI escape sequences.
     - Collapse CR/LF to spaces for one-line progress output.
     """
+    from .secrets import scrub  # lazy: only used by the streaming helper
     cleaned = scrub(text or "")
     # Strip common ANSI/OSC escape sequences.
     cleaned = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", cleaned)
@@ -396,9 +422,10 @@ def chat(ctx, max_depth: int, max_dollars: float, workdir) -> None:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         click.echo("ERROR: ANTHROPIC_API_KEY not set.", err=True)
         sys.exit(2)
+    k = _kernel()
     world = WorldModel(ctx.obj["db"])
-    llm = LLM(model=ctx.obj["model"])
-    sandbox = build_sandbox(workdir=workdir)
+    llm = k.LLM(model=ctx.obj["model"] or k.DEFAULT_MODEL)
+    sandbox = k.build_sandbox(workdir=workdir)
     click.echo(click.style("Maverick chat. Type 'exit' to leave.", fg="cyan"))
     click.echo(click.style(
         "Multi-line: end a line with \\ or wrap a block in \"\"\".",
@@ -460,9 +487,9 @@ def chat(ctx, max_depth: int, max_dollars: float, workdir) -> None:
         title = full.splitlines()[0][:80]
         goal_id = world.create_goal(title, full)
         click.echo(click.style(f"  ... goal #{goal_id}", fg="bright_black"))
-        bud = Budget(max_dollars=max_dollars)
+        bud = k.Budget(max_dollars=max_dollars)
         try:
-            result = run_goal_sync(llm, world, bud, goal_id,
+            result = k.run_goal_sync(llm, world, bud, goal_id,
                                    sandbox=sandbox, max_depth=max_depth)
         except Exception as e:
             click.echo(click.style(f"  ✗ {e}", fg="red"))
@@ -599,9 +626,10 @@ def resume(ctx, goal_id, max_depth: int) -> None:
         for q in open_qs:
             click.echo(f"  #{q.id}: {q.question}")
         return
-    llm = LLM(model=ctx.obj["model"])
-    bud = Budget()
-    result = run_goal_sync(llm, world, bud, goal_id, max_depth=max_depth)
+    k = _kernel()
+    llm = k.LLM(model=ctx.obj["model"] or k.DEFAULT_MODEL)
+    bud = k.Budget()
+    result = k.run_goal_sync(llm, world, bud, goal_id, max_depth=max_depth)
     click.echo(result)
 
 
@@ -628,6 +656,7 @@ def facts(ctx) -> None:
 @main.command()
 def skills() -> None:
     """List skills the swarm has distilled or installed."""
+    from .skills import SKILLS_DIR, load_skills
     items = load_skills()
     if not items:
         click.echo(f"no skills yet (in {SKILLS_DIR}).")
@@ -647,6 +676,7 @@ def skill() -> None:
 @click.argument("source")
 def skill_install(source: str) -> None:
     """Install a SKILL.md."""
+    from .skills import install_skill
     try:
         s = install_skill(source)
     except ValueError as e:
@@ -658,6 +688,7 @@ def skill_install(source: str) -> None:
 @skill.command("remove")
 @click.argument("name")
 def skill_remove(name: str) -> None:
+    from .skills import remove_skill
     if remove_skill(name):
         click.echo(f"removed: {name}")
     else:
@@ -668,6 +699,7 @@ def skill_remove(name: str) -> None:
 @skill.command("info")
 @click.argument("name")
 def skill_info(name: str) -> None:
+    from .skills import load_skills
     for s in load_skills():
         if s.name == name:
             click.echo(s.path)
@@ -1081,9 +1113,10 @@ def watch(ctx, path: str, run: bool, max_dollars: float) -> None:
             if not os.environ.get("ANTHROPIC_API_KEY"):
                 click.echo("ERROR: ANTHROPIC_API_KEY not set; skipping --run.", err=True)
                 continue
+            k = _kernel()
             world = WorldModel(ctx.obj["db"])
-            llm = LLM(model=ctx.obj["model"])
-            sandbox = build_sandbox(workdir=str(p.parent if p.is_file() else p))
+            llm = k.LLM(model=ctx.obj["model"] or k.DEFAULT_MODEL)
+            sandbox = k.build_sandbox(workdir=str(p.parent if p.is_file() else p))
             title = (m.text or m.follow_lines[0] if m.follow_lines else "").strip()[:80]
             goal_text = m.to_goal()
             allowed, reason = _watch_goal_allowed(goal_text)
@@ -1093,8 +1126,8 @@ def watch(ctx, path: str, run: bool, max_dollars: float) -> None:
             goal_id = world.create_goal(title or "watch-mode goal", goal_text)
             click.echo(click.style(f"  -> goal #{goal_id}", fg="bright_black"))
             try:
-                result = run_goal_sync(
-                    llm, world, Budget(max_dollars=max_dollars),
+                result = k.run_goal_sync(
+                    llm, world, k.Budget(max_dollars=max_dollars),
                     goal_id, sandbox=sandbox, max_depth=2,
                 )
                 click.echo(result)
