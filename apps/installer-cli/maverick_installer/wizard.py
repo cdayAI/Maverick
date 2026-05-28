@@ -51,10 +51,29 @@ CHANNELS: list[tuple[str, str, list[str]]] = [
     ("signal",   "Signal (via signal-cli)",             []),
     ("email",    "Email (IMAP/SMTP, stdlib only)",      ["EMAIL_USER", "EMAIL_APP_PASSWORD"]),
     ("matrix",   "Matrix (federated)",                  ["MATRIX_ACCESS_TOKEN"]),
+    ("bluesky",  "Bluesky (AT Protocol)",               ["BLUESKY_HANDLE", "BLUESKY_APP_PASSWORD"]),
+    ("mastodon", "Mastodon (any instance)",             ["MASTODON_ACCESS_TOKEN"]),
+    ("voice",    "Voice (Twilio Voice in, TTS out)",    ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]),
     ("whatsapp", "WhatsApp (Twilio, needs webhook)",    ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]),
     ("sms",      "SMS (Twilio, needs webhook)",         ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]),
     ("imessage", "iMessage (macOS only)",               []),
 ]
+
+
+def _safe_int(s: str, *, default: int) -> int:
+    """``int()`` that doesn't crash on whitespace, empty, or junk input."""
+    try:
+        return int(str(s or "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(s: str, *, default: float) -> float:
+    """``float()`` that doesn't crash on whitespace, empty, or junk input."""
+    try:
+        return float(str(s or "").strip())
+    except (TypeError, ValueError):
+        return default
 
 
 # ---------- prompt primitives ----------
@@ -166,15 +185,20 @@ def preflight() -> bool:
 # ---------- validators ----------
 
 def _validate_anthropic_key(key: str) -> tuple[bool, str]:
-    """Ping Anthropic with the key. Returns (ok, message)."""
-    if not key.startswith("sk-ant-"):
-        return False, "key doesn't start with 'sk-ant-' -- typo?"
+    """Ping Anthropic with the key. Returns (ok, message).
+
+    Skip the prefix check: Anthropic now ships admin keys, batch keys,
+    and several legacy formats. The API ping handles whatever shape
+    the key takes.
+    """
+    if not key.strip():
+        return False, "empty key"
     try:
         import anthropic
     except ImportError:
         return True, "anthropic SDK not installed -- skipping validation"
     try:
-        client = anthropic.Anthropic(api_key=key)
+        client = anthropic.Anthropic(api_key=key, timeout=5.0)
         # Minimal call -- list available models is enough to verify auth.
         list(client.models.list(limit=1))
         return True, "validated"
@@ -185,14 +209,16 @@ def _validate_anthropic_key(key: str) -> tuple[bool, str]:
 
 
 def _validate_openai_key(key: str) -> tuple[bool, str]:
-    if not key.startswith("sk-"):
-        return False, "key doesn't start with 'sk-' -- typo?"
+    if not key.strip():
+        return False, "empty key"
+    # Azure OpenAI keys are 32-char hex with no prefix; OpenAI ships
+    # sk-, sk-proj-, sk-svcacct-. Just ping the API and let it tell us.
     try:
         from openai import AuthenticationError, OpenAI
     except ImportError:
         return True, "openai SDK not installed -- skipping validation"
     try:
-        client = OpenAI(api_key=key)
+        client = OpenAI(api_key=key, timeout=5.0)
         list(client.models.list().data[:1])
         return True, "validated"
     except AuthenticationError:
@@ -210,7 +236,7 @@ def _validate_openai_compat_key(key: str, base_url: str, label: str) -> tuple[bo
     except ImportError:
         return True, "openai SDK not installed -- skipping validation"
     try:
-        client = OpenAI(api_key=key, base_url=base_url)
+        client = OpenAI(api_key=key, base_url=base_url, timeout=5.0)
         list(client.models.list().data[:1])
         return True, f"validated against {label}"
     except AuthenticationError:
@@ -379,7 +405,7 @@ def pick_channels(deployment: str) -> tuple[dict[str, dict[str, Any]], set[str]]
         elif ch_id == "email":
             cfg["imap_host"] = _q_text("  IMAP server", default="imap.gmail.com")
             cfg["smtp_host"] = _q_text("  SMTP server", default="smtp.gmail.com")
-            cfg["smtp_port"] = int(_q_text("  SMTP port", default="465"))
+            cfg["smtp_port"] = _safe_int(_q_text("  SMTP port", default="465"), default=465)
             cfg["imap_user"] = "${EMAIL_USER}"
             cfg["imap_password"] = "${EMAIL_APP_PASSWORD}"
             cfg["smtp_user"] = "${EMAIL_USER}"
@@ -389,20 +415,39 @@ def pick_channels(deployment: str) -> tuple[dict[str, dict[str, Any]], set[str]]
             cfg["homeserver"] = _q_text("  Matrix homeserver URL", default="https://matrix.org")
             cfg["user_id"] = _q_text("  Matrix user ID (e.g., @you:matrix.org)", default="")
             cfg["access_token"] = "${MATRIX_ACCESS_TOKEN}"
+        elif ch_id == "bluesky":
+            cfg["handle"] = "${BLUESKY_HANDLE}"
+            cfg["app_password"] = "${BLUESKY_APP_PASSWORD}"
+            cfg["poll_interval"] = 60
+        elif ch_id == "mastodon":
+            cfg["instance"] = _q_text(
+                "  Mastodon instance URL", default="https://mastodon.social",
+            )
+            cfg["access_token"] = "${MASTODON_ACCESS_TOKEN}"
+            cfg["poll_interval"] = 30
+        elif ch_id == "voice":
+            cfg["account_sid"] = "${TWILIO_ACCOUNT_SID}"
+            cfg["auth_token"] = "${TWILIO_AUTH_TOKEN}"
+            cfg["from_number"] = _q_text(
+                "  Voice 'from' number (e.g., +14155551234)", default="",
+            )
+            cfg["port"] = _safe_int(
+                _q_text("  Webhook port", default="8767"), default=8767,
+            )
         elif ch_id == "whatsapp":
             cfg["account_sid"] = "${TWILIO_ACCOUNT_SID}"
             cfg["auth_token"] = "${TWILIO_AUTH_TOKEN}"
             cfg["from_number"] = _q_text(
                 "  WhatsApp 'from' (e.g., whatsapp:+14155238886)", default=""
             )
-            cfg["port"] = int(_q_text("  Webhook port", default="8765"))
+            cfg["port"] = _safe_int(_q_text("  Webhook port", default="8765"), default=8765)
         elif ch_id == "sms":
             cfg["account_sid"] = "${TWILIO_ACCOUNT_SID}"
             cfg["auth_token"] = "${TWILIO_AUTH_TOKEN}"
             cfg["from_number"] = _q_text(
                 "  SMS 'from' number (e.g., +14155551234)", default=""
             )
-            cfg["port"] = int(_q_text("  Webhook port", default="8766"))
+            cfg["port"] = _safe_int(_q_text("  Webhook port", default="8766"), default=8766)
         elif ch_id == "imessage":
             cfg["poll_interval"] = 5
 
@@ -440,11 +485,18 @@ def pick_safety() -> dict[str, Any]:
 
 def pick_budget() -> dict[str, float]:
     console.print()
-    console.print("[dim]Budget caps prevent runaway costs. Conservative defaults:[/dim]")
+    console.print("[dim]Per-run caps. Edit later in ~/.maverick/config.toml.[/dim]")
     return {
-        "max_dollars": float(_q_text("  Max $ per run", default="5.0")),
-        "max_wall_seconds": float(_q_text("  Max wall-clock seconds per run", default="3600")),
-        "max_tool_calls": int(_q_text("  Max tool calls per run", default="500")),
+        "max_dollars": _safe_float(
+            _q_text("  Max $ per run", default="5.0"), default=5.0,
+        ),
+        "max_wall_seconds": _safe_float(
+            _q_text("  Max wall-clock seconds per run", default="3600"),
+            default=3600.0,
+        ),
+        "max_tool_calls": _safe_int(
+            _q_text("  Max tool calls per run", default="500"), default=500,
+        ),
     }
 
 
@@ -488,13 +540,248 @@ def pick_sandbox() -> dict[str, Any]:
         [
             "local  - Subprocess on this machine (fastest, least isolated)",
             "docker - Throwaway Docker container (recommended)",
-            "ssh    - Remote machine [v0.2]",
+            "podman - Throwaway Podman container (rootless)",
+            "devcontainer - Reuse a .devcontainer config",
+            "ssh    - Remote machine",
         ],
         default="docker - Throwaway Docker container (recommended)",
     )
     backend = pick.split()[0]
     workdir = _q_text("  Workspace directory", default=str(Path.home() / "maverick-workspace"))
     return {"backend": backend, "workdir": workdir, "timeout": 60}
+
+
+# ---------- new wizard steps (council parity pass) ----------
+
+def pick_web_search() -> tuple[bool, list[str]]:
+    """Enable web search + pick a default backend. Returns (enabled, env_vars_needed)."""
+    if not _q_confirm(
+        "Enable web search? (Tavily / Brave / SerpAPI / DuckDuckGo)",
+        default=True,
+    ):
+        return False, []
+    pick = _q_select(
+        "  Default backend:",
+        [
+            "tavily   - best quality, free tier ~1k/mo, BYOK",
+            "brave    - generous free tier, BYOK",
+            "serpapi  - paid, covers more engines",
+            "ddg      - no key, rate-limited",
+        ],
+        default="tavily   - best quality, free tier ~1k/mo, BYOK",
+    )
+    backend = pick.split()[0]
+    envs = {
+        "tavily":  ["TAVILY_API_KEY"],
+        "brave":   ["BRAVE_API_KEY"],
+        "serpapi": ["SERPAPI_API_KEY"],
+        "ddg":     [],
+    }[backend]
+    os.environ["MAVERICK_SEARCH_BACKEND"] = backend  # picked up by web_search tool
+    return True, envs
+
+
+def pick_mcp_servers() -> dict[str, dict[str, Any]]:
+    """Configure MCP servers the agent will consume as tools.
+
+    MCP servers expose their own tools (filesystem, GitHub, etc.) via a
+    JSON-RPC protocol. The agent calls them as ``mcp_<name>__<tool>``.
+    Skip if you don't know what MCP is.
+    """
+    if not _q_confirm(
+        "Add MCP servers? (extensibility hook; skip if unsure)",
+        default=False,
+    ):
+        return {}
+    servers: dict[str, dict[str, Any]] = {}
+    console.print(
+        "[dim]Example: name 'filesystem', command 'npx', "
+        "args '-y @modelcontextprotocol/server-filesystem /tmp'.[/dim]"
+    )
+    while True:
+        name = _q_text("  Name (blank to finish)", default="").strip()
+        if not name:
+            break
+        cmd = _q_text(f"  {name}: command", default="").strip()
+        if not cmd:
+            console.print("  [yellow]skipped (no command)[/yellow]")
+            continue
+        args_raw = _q_text(f"  {name}: args (space-separated)", default="").strip()
+        args = args_raw.split() if args_raw else []
+        servers[name] = {"command": cmd, "args": args}
+        if not _q_confirm("  Add another?", default=False):
+            break
+    return servers
+
+
+def pick_plugins() -> list[str]:
+    """Allowlist for pip-installed plugin packages.
+
+    Plugins are loaded only when listed in ``[plugins].enabled``. We
+    scan installed entry-points and offer a checkbox; if nothing is
+    installed, the step is a no-op.
+    """
+    discovered: set[str] = set()
+    try:
+        from maverick.plugins import _entry_points  # type: ignore[attr-defined]
+        for group in (
+            "maverick.tools",
+            "maverick.channels",
+            "maverick.skills",
+            "maverick.personas",
+        ):
+            for ep in _entry_points(group):
+                discovered.add(ep.name)
+    except Exception:
+        return []
+    if not discovered:
+        return []
+    console.print()
+    console.print(
+        "[bold]Plugins discovered via entry_points:[/bold] "
+        + ", ".join(sorted(discovered))
+    )
+    if not _q_confirm(
+        "Enable any of these? (allow-listed for security; skip is safe)",
+        default=False,
+    ):
+        return []
+    return _q_checkbox("Enable plugins:", sorted(discovered))
+
+
+def pick_tool_acl(channels: dict[str, Any]) -> dict[str, Any]:
+    """Optional per-tool / per-channel allow/deny lists.
+
+    Common pattern: a Telegram channel may chat but shouldn't run
+    shell. Power users only; defaults to no restriction.
+    """
+    if not _q_confirm(
+        "Restrict tools the agent may run? (skip for full access)",
+        default=False,
+    ):
+        return {}
+    acl: dict[str, Any] = {}
+    common = ["shell", "write_file", "computer", "browser", "http_fetch", "apply_patch"]
+    denied = _q_checkbox(
+        "Deny these tools globally (rare; usually empty):",
+        common,
+        default=[],
+    )
+    if denied:
+        acl["denied_tools"] = denied
+    for ch_id in channels:
+        if not _q_confirm(f"  Restrict tools available over {ch_id}?", default=False):
+            continue
+        ch_denied = _q_checkbox(
+            f"    Deny over {ch_id}:",
+            common,
+            default=["shell", "computer"],
+        )
+        acl.setdefault("channels", {})[ch_id] = {"denied_tools": ch_denied}
+    return acl
+
+
+def pick_rate_limits(channels: dict[str, Any]) -> dict[str, str]:
+    """Per-tool sliding-window rate caps."""
+    default = bool(channels)  # default ON when exposing via channels
+    if not _q_confirm(
+        "Cap call rate per tool? (recommended when exposing via channels)",
+        default=default,
+    ):
+        return {}
+    limits: dict[str, str] = {}
+    proposed = [
+        ("web_search", "10/60"),
+        ("http_fetch", "30/60"),
+        ("shell",      "30/60"),
+        ("mcp_*",      "60/60"),
+    ]
+    for name, spec_default in proposed:
+        spec = _q_text(
+            f"  {name} (N/seconds, blank to skip)",
+            default=spec_default,
+        ).strip()
+        if spec:
+            limits[name] = spec
+    return limits
+
+
+def pick_retention() -> dict[str, int]:
+    """Auto-prune audit logs and world-model rows."""
+    if not _q_confirm(
+        "Auto-prune audit logs + old episodes after N days?",
+        default=True,
+    ):
+        return {}
+    return {
+        "audit_days":    _safe_int(_q_text("  Audit log retention days",   default="90"),  default=90),
+        "episodes_days": _safe_int(_q_text("  Episode retention days",     default="365"), default=365),
+        "events_days":   _safe_int(_q_text("  Goal-event retention days",  default="180"), default=180),
+    }
+
+
+def pick_persona() -> dict[str, str]:
+    """Agent identity: name + voice."""
+    if not _q_confirm(
+        "Customise the agent's name and style? (skip for defaults)",
+        default=False,
+    ):
+        return {}
+    name = _q_text("  Agent name", default="Maverick").strip() or "Maverick"
+    style_pick = _q_select(
+        "  Style:",
+        [
+            "concise   - terse, direct",
+            "balanced  - default",
+            "verbose   - explains its reasoning",
+        ],
+        default="balanced  - default",
+    )
+    return {"name": name, "style": style_pick.split()[0]}
+
+
+def pick_notifications() -> tuple[dict[str, Any], list[str]]:
+    """Run-end notification webhook. Returns (config, env_vars_needed)."""
+    if not _q_confirm(
+        "Get pinged when long runs finish? (ntfy / Pushover / Slack / Discord)",
+        default=False,
+    ):
+        return {}, []
+    pick = _q_select(
+        "  Backend:",
+        [
+            "ntfy      - free, no signup, push to phone via ntfy.sh",
+            "pushover  - one-time $5, phone push",
+            "slack     - incoming webhook",
+            "discord   - webhook URL",
+        ],
+        default="ntfy      - free, no signup, push to phone via ntfy.sh",
+    )
+    backend = pick.split()[0]
+    if backend == "ntfy":
+        topic = _q_text(
+            "  ntfy topic (any unique string; treat as a password)",
+            default="",
+        ).strip()
+        return ({"backend": "ntfy", "topic": topic}, []) if topic else ({}, [])
+    if backend == "pushover":
+        return (
+            {"backend": "pushover",
+             "user_key": "${PUSHOVER_USER_KEY}",
+             "app_token": "${PUSHOVER_APP_TOKEN}"},
+            ["PUSHOVER_USER_KEY", "PUSHOVER_APP_TOKEN"],
+        )
+    if backend == "slack":
+        return (
+            {"backend": "slack", "webhook_url": "${SLACK_NOTIFY_WEBHOOK}"},
+            ["SLACK_NOTIFY_WEBHOOK"],
+        )
+    if backend == "discord":
+        return (
+            {"backend": "discord", "webhook_url": "${DISCORD_NOTIFY_WEBHOOK}"},
+            ["DISCORD_NOTIFY_WEBHOOK"],
+        )
+    return {}, []
 
 
 def collect_api_keys(providers: list[str], channel_envs: set[str]) -> dict[str, str]:
@@ -793,6 +1080,19 @@ def _capture_gemini_session() -> bool:
 
 # ---------- write + verify ----------
 
+def _emit_kv(lines: list[str], k: str, v: Any) -> None:
+    """Append one TOML key=value line, type-dispatched."""
+    if isinstance(v, bool):
+        lines.append(f"{k} = {str(v).lower()}")
+    elif isinstance(v, (int, float)):
+        lines.append(f"{k} = {v}")
+    elif isinstance(v, list):
+        rendered = ", ".join(f'"{x}"' for x in v)
+        lines.append(f"{k} = [{rendered}]")
+    else:
+        lines.append(f'{k} = "{v}"')
+
+
 def write_config(
     deployment: str,
     providers: list[str],
@@ -803,6 +1103,15 @@ def write_config(
     sandbox: dict[str, Any],
     keys: dict[str, str],
     capabilities: dict[str, bool] | None = None,
+    *,
+    mcp_servers: dict[str, dict[str, Any]] | None = None,
+    plugins: list[str] | None = None,
+    tool_acl: dict[str, Any] | None = None,
+    rate_limits: dict[str, str] | None = None,
+    retention: dict[str, int] | None = None,
+    persona: dict[str, str] | None = None,
+    notifications: dict[str, Any] | None = None,
+    web_search_enabled: bool = False,
 ) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -889,6 +1198,61 @@ def write_config(
         lines.append("[capabilities]")
         for k, v in capabilities.items():
             lines.append(f"{k} = {str(v).lower()}")
+        if web_search_enabled and not capabilities.get("web_search"):
+            # web_search is wired through enable_web_search at kernel
+            # boot; reflect the wizard's pick under [capabilities].
+            lines.append("web_search = true")
+
+    if mcp_servers:
+        for name, cfg in mcp_servers.items():
+            lines.append("")
+            lines.append(f"[mcp_servers.{name}]")
+            for k, v in cfg.items():
+                _emit_kv(lines, k, v)
+
+    if plugins:
+        lines.append("")
+        lines.append("[plugins]")
+        _emit_kv(lines, "enabled", plugins)
+
+    if tool_acl:
+        lines.append("")
+        lines.append("[security]")
+        for k, v in tool_acl.items():
+            if k == "channels":
+                continue
+            _emit_kv(lines, k, v)
+        for ch_id, ch_cfg in (tool_acl.get("channels") or {}).items():
+            lines.append("")
+            lines.append(f"[security.channels.{ch_id}]")
+            for k, v in ch_cfg.items():
+                _emit_kv(lines, k, v)
+
+    if rate_limits:
+        lines.append("")
+        lines.append("[rate_limits]")
+        for name, spec in rate_limits.items():
+            # Quote names that aren't bare identifiers (e.g. "mcp_*").
+            key = name if name.replace("_", "").isalnum() else f'"{name}"'
+            lines.append(f'{key} = "{spec}"')
+
+    if retention:
+        lines.append("")
+        lines.append("[retention]")
+        for k, v in retention.items():
+            _emit_kv(lines, k, v)
+
+    if persona:
+        lines.append("")
+        lines.append("[persona]")
+        for k, v in persona.items():
+            _emit_kv(lines, k, v)
+
+    if notifications:
+        lines.append("")
+        lines.append("[notifications]")
+        for k, v in notifications.items():
+            _emit_kv(lines, k, v)
 
     # Config has no secrets today but does carry the deployment
     # topology and provider names. chmod 600 so multi-user hosts don't
@@ -1063,9 +1427,13 @@ def run(fast: bool = False, resume: bool = False) -> int:
     _save_partial(state)
 
     providers = state.get("providers") or pick_providers()
-    if not providers:
-        console.print("[red]No providers selected. Aborting.[/red]")
-        return 1
+    while not providers:
+        # Aborting on empty selection forced the user to restart the
+        # whole wizard (UX seat finding). Re-ask instead.
+        console.print(
+            "[yellow]Pick at least one provider; Maverick needs an LLM.[/yellow]"
+        )
+        providers = pick_providers()
     state["providers"] = providers
     _save_partial(state)
 
@@ -1102,17 +1470,67 @@ def run(fast: bool = False, resume: bool = False) -> int:
     state["capabilities"] = capabilities
     _save_partial(state)
 
+    web_search_enabled, web_search_envs = (
+        state.get("_web_search_pair") or pick_web_search()
+    )
+    state["_web_search_pair"] = [web_search_enabled, web_search_envs]
+    _save_partial(state)
+
+    mcp_servers = state.get("mcp_servers") or pick_mcp_servers()
+    state["mcp_servers"] = mcp_servers
+    _save_partial(state)
+
+    plugins = state.get("plugins") or pick_plugins()
+    state["plugins"] = plugins
+    _save_partial(state)
+
+    tool_acl = state.get("tool_acl") or pick_tool_acl(channels)
+    state["tool_acl"] = tool_acl
+    _save_partial(state)
+
+    rate_limits = state.get("rate_limits") or pick_rate_limits(channels)
+    state["rate_limits"] = rate_limits
+    _save_partial(state)
+
+    retention = state.get("retention") or pick_retention()
+    state["retention"] = retention
+    _save_partial(state)
+
+    persona = state.get("persona") or pick_persona()
+    state["persona"] = persona
+    _save_partial(state)
+
+    notifications, notify_envs = state.get("_notifications_pair") or pick_notifications()
+    state["_notifications_pair"] = [notifications, notify_envs]
+    _save_partial(state)
+
     # Keys/sessions are never persisted to disk in the partial state
     # (they're secrets; the only safe place is ~/.maverick/.env).
-    keys = collect_api_keys(providers, channel_envs)
+    extra_envs = set(web_search_envs) | set(notify_envs)
+    keys = collect_api_keys(providers, channel_envs | extra_envs)
     collect_browser_sessions(providers)
 
     console.print()
     if not _q_confirm("Write config and finish?", default=True):
-        console.print("Aborted. Partial state saved; resume with `maverick init --resume`.")
+        # Be honest about where the state lives and what restore does.
+        console.print(
+            f"Stopped. Partial answers saved to {PARTIAL_STATE_PATH}.\n"
+            "Resume with: maverick init --resume"
+        )
         return 0
 
-    write_config(deployment, providers, role_models, channels, safety, budget, sandbox, keys, capabilities)
+    write_config(
+        deployment, providers, role_models, channels, safety, budget, sandbox,
+        keys, capabilities,
+        mcp_servers=mcp_servers,
+        plugins=plugins,
+        tool_acl=tool_acl,
+        rate_limits=rate_limits,
+        retention=retention,
+        persona=persona,
+        notifications=notifications,
+        web_search_enabled=web_search_enabled,
+    )
     _clear_partial()
     ok = smoke_test()
     if ok:
@@ -1123,7 +1541,7 @@ def run(fast: bool = False, resume: bool = False) -> int:
             "Try:\n"
             f"  [bold]{next_step}[/bold]\n"
             "  [bold]maverick status[/bold]\n"
-            "  [bold]maverick skill install gh:texasreaper62/awesome-maverick-skills[/bold]",
+            "  [bold]maverick dashboard[/bold]    # web UI at http://127.0.0.1:8765",
             border_style="green",
         ))
         return 0
