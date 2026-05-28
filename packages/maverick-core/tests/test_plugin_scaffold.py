@@ -91,6 +91,17 @@ def test_scaffold_tool_factory_returns_tool(tmp_path: Path):
         sys.modules.pop("my_weather", None)
 
 
+def test_scaffold_manifest_permissions_parse_correctly(tmp_path: Path):
+    scaffold("net-tool", "tool", dest=tmp_path)
+    from maverick.plugin_manifest import parse
+
+    mf = parse(tmp_path / "net-tool" / "maverick-plugin.toml")
+    assert mf is not None
+    assert mf.permissions.network is True
+    assert mf.permissions.fs_write is False
+    assert mf.permissions.subprocess is False
+
+
 # ---------- scaffold (channel + persona) ----------
 
 def test_scaffold_channel(tmp_path: Path):
