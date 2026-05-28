@@ -96,6 +96,15 @@ def resolve_lists(
     layers_allow: list[set[str]] = [g_allow] if g_allow else []
     layers_deny: list[set[str]] = [g_deny]
 
+    # Dashboard-owned runtime overrides (one-click "disable this tool")
+    # union into the deny-list without touching config.toml. Fail-soft:
+    # a missing/broken overlay never blocks the registry.
+    try:
+        from ..runtime_overrides import denied_tools as _overlay_denied
+        layers_deny.append(_overlay_denied())
+    except Exception as e:  # pragma: no cover
+        log.debug("tool_acl: runtime overrides unavailable: %s", e)
+
     if channel:
         c_allow, c_deny = _load_lists_for_channel(channel)
         if c_allow:
