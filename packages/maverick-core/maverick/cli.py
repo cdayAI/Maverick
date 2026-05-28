@@ -692,6 +692,50 @@ def skills() -> None:
 
 
 @main.group()
+def plugin() -> None:
+    """Scaffold + manage Maverick plugins."""
+
+
+@plugin.command("new")
+@click.argument("name")
+@click.option(
+    "--kind",
+    type=click.Choice(("tool", "channel", "persona")),
+    default="tool",
+    show_default=True,
+    help="Plugin kind. Skills install via `maverick skill install`; "
+         "MCP servers go in [mcp_servers.<name>] in config.toml.",
+)
+@click.option(
+    "--dest", type=click.Path(file_okay=False), default=".",
+    show_default=True, help="Parent directory; a NAME/ subdir is created here.",
+)
+def plugin_new(name: str, kind: str, dest: str) -> None:
+    """Generate a working plugin skeleton at ./<NAME>/.
+
+    Closes the council ecosystem-seat gap: third-party contributors had
+    no on-ramp besides hand-writing pyproject.toml + the entry-point
+    block + a manifest. This generates all four files with a working
+    factory the contributor can ``pip install -e .`` and exercise
+    immediately.
+    """
+    from .plugin_scaffold import scaffold, ScaffoldError
+    try:
+        files = scaffold(name, kind, dest=Path(dest))
+    except ScaffoldError as e:
+        click.echo(f"ERROR: {e}", err=True)
+        sys.exit(2)
+    click.echo(f"Scaffolded {name} ({kind}) at {Path(dest) / name}:")
+    for f in files:
+        click.echo(f"  {f.relative_to(Path(dest))}")
+    click.echo("")
+    click.echo("Next steps:")
+    click.echo(f"  cd {name}")
+    click.echo("  pip install -e .")
+    click.echo("  pytest -v")
+
+
+@main.group()
 def skill() -> None:
     """Manage skills (install, remove, info)."""
 
