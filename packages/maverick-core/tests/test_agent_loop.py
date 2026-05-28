@@ -158,3 +158,97 @@ class TestAgentLoop:
         ]
         assert turn1, "turn-1 assistant message not found in echoed history"
         assert turn1[0]["content"] == interleaved
+
+    @pytest.mark.asyncio
+    async def test_final_with_interleaved_tools_does_not_merge_thinking(
+        self, ctx,
+    ):
+        """May 28 fix #2: a turn that emits a FINAL: marker ALONGSIDE
+        interleaved tool_use must not corrupt the thinking sequence when
+        it is re-sent on a revision pass.
+
+        The loop drops the tool attempt (FINAL wins) but the original
+        tool_use blocks separated two thinking blocks. Dropping the
+        tool_use while keeping the thinking would make those blocks
+        CONSECUTIVE, which Anthropic rejects on the next request:
+          messages.N.content.M: `thinking`/`redacted_thinking` blocks in
+          the latest assistant message cannot be modified.
+        The model never emits consecutive thinking blocks, so no echoed
+        assistant message may contain a run of 2+ of them."""
+        import copy as _copy
+
+        class _RecordingLLM:
+            # Deep-copies messages at call time; the loop mutates the live
+            # list afterward, so a shallow ref would not show call-time state.
+            def __init__(self, scripted):
+                self.scripted = list(scripted)
+                self.calls = []
+                self.model = "claude-opus-4-7"
+
+            async def complete_async(self, *, system, messages, tools=None,
+                                     budget=None, max_tokens=4096,
+                                     thinking_budget=None, model=None):
+                self.calls.append({"messages": _copy.deepcopy(messages)})
+                if self.scripted:
+                    return self.scripted.pop(0)
+                return LLMResponse(text="FINAL: done", thinking=None,
+                                   tool_calls=[], stop_reason="end_turn")
+
+        interleaved = [
+            {"type": "thinking", "thinking": "plan A", "signature": "sigA"},
+            {"type": "tool_use", "id": "t1", "name": "shell",
+             "input": {"cmd": "echo one"}},
+            {"type": "thinking", "thinking": "plan B", "signature": "sigB"},
+            {"type": "tool_use", "id": "t2", "name": "shell",
+             "input": {"cmd": "echo two"}},
+            {"type": "text", "text": "FINAL: first answer"},
+        ]
+        reject = '{"confidence":0.1,"accepts":false,"critique":"no","issues":["x"]}'
+        ctx.llm = _RecordingLLM([
+            # turn 1: FINAL + interleaved tool_use (stop_reason tool_use)
+            LLMResponse(
+                text="FINAL: first answer", thinking=None,
+                tool_calls=[
+                    ToolCall(id="t1", name="shell", input={"cmd": "echo one"}),
+                    ToolCall(id="t2", name="shell", input={"cmd": "echo two"}),
+                ],
+                stop_reason="tool_use",
+                content_blocks=_copy.deepcopy(interleaved),
+            ),
+            LLMResponse(text=reject, thinking=None, tool_calls=[],
+                        stop_reason="end_turn"),                  # verifier #1
+            LLMResponse(text="FINAL: revised answer", thinking=None,
+                        tool_calls=[], stop_reason="end_turn"),   # turn 2
+            LLMResponse(text=reject, thinking=None, tool_calls=[],
+                        stop_reason="end_turn"),                  # verifier #2
+        ])
+        # Orchestrator at depth 0 with a goal_id runs the verifier, whose
+        # rejection forces the loop to CONTINUE and re-send turn 1.
+        agent = Agent(ctx=ctx, role="orchestrator", brief="build a thing")
+        result = await agent.run()
+        assert result.final == "revised answer"
+
+        def _max_thinking_run(content) -> int:
+            longest = run = 0
+            if not isinstance(content, list):
+                return 0
+            for b in content:
+                if isinstance(b, dict) and b.get("type") in (
+                        "thinking", "redacted_thinking"):
+                    run += 1
+                    longest = max(longest, run)
+                else:
+                    run = 0
+            return longest
+
+        # The revision pass must have happened (turn1 + verifier + re-send).
+        assert len(ctx.llm.calls) >= 3, "FINAL+reject+continue path not exercised"
+        # No echoed assistant message anywhere may contain consecutive
+        # thinking blocks — that is the exact corruption Anthropic rejects.
+        for call in ctx.llm.calls:
+            for m in call["messages"]:
+                if m.get("role") == "assistant":
+                    assert _max_thinking_run(m.get("content")) <= 1, (
+                        "consecutive thinking blocks in echoed assistant "
+                        f"message: {m.get('content')}"
+                    )

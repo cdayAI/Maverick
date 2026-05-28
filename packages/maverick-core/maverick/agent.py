@@ -377,27 +377,42 @@ class Agent:
             # Drop the tool_use blocks before assembling the assistant
             # message; the FINAL critique is what we want the model to
             # respond to, not the orphan tools.
+            final_dropped_tools = False
             if resp.text and resp.tool_calls:
                 from .coding_mode import has_final_marker as _has_final
                 if _has_final(resp.text):
                     resp.tool_calls = []
+                    final_dropped_tools = True
 
             assistant_content: list[dict] = []
             ordered_blocks = getattr(resp, "content_blocks", None)
-            if ordered_blocks:
+            if final_dropped_tools:
+                # May 28 fix #2: the model emitted a FINAL: marker AND
+                # tool_use in the same turn; we discard the tool attempt and
+                # treat FINAL as the answer. Do NOT replay the model's blocks
+                # here. Dropping the interleaved tool_use would merge
+                # previously-separated thinking blocks into one consecutive
+                # run, and on a revision pass (verifier/patch reject ->
+                # continue) the re-sent turn 400s:
+                #   messages.N.content.M: `thinking`/`redacted_thinking`
+                #   blocks in the latest assistant message cannot be modified.
+                # The tool_use can't stay either (orphan with no
+                # tool_result). Omitting thinking from a turn is explicitly
+                # allowed (the API auto-filters prior-turn thinking), so emit
+                # a clean text-only turn. resp.text is non-empty here (guarded
+                # by `resp.text and resp.tool_calls` above).
+                assistant_content.append({"type": "text", "text": resp.text})
+            elif ordered_blocks:
                 # May 28 fix: replay the model's blocks in their ORIGINAL
-                # order. Anthropic rejects a rearranged thinking-block
-                # sequence on the next request — the bucket-by-type rebuild
-                # in the else branch reordered interleaved Opus 4.7 turns
-                # (thinking between tool_use) and triggered "thinking blocks
-                # in the latest assistant message cannot be modified". Drop
-                # any tool_use the FINAL-marker check above cleared, else
-                # the orphan tool_use 400s with no matching tool_result.
-                keep_ids = {tc.id for tc in resp.tool_calls}
+                # order, COMPLETE and UNMODIFIED. Anthropic rejects a
+                # rearranged thinking-block sequence on the next request —
+                # the bucket-by-type rebuild in the else branch reordered
+                # interleaved Opus 4.7 turns (thinking between tool_use) and
+                # triggered "thinking blocks in the latest assistant message
+                # cannot be modified". (The only tool_use-dropping case,
+                # FINAL, is handled above — here every block is kept so the
+                # tool_use blocks always have matching tool_results below.)
                 for blk in ordered_blocks:
-                    if (blk.get("type") == "tool_use"
-                            and blk.get("id") not in keep_ids):
-                        continue
                     assistant_content.append(dict(blk))
             else:
                 # May 26 council fix: emit ONE thinking block per original
