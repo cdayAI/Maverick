@@ -69,6 +69,12 @@ class ProviderStat:
 class ProviderHealth:
     """Thread-safe collector. One global instance via :func:`get`."""
 
+    # Cap distinct (provider, model) keys. Model names are caller-supplied,
+    # so a misconfig or a provider that echoes per-request model IDs would
+    # otherwise grow this dict without bound for the process lifetime. When
+    # over the cap, evict the least-recently-seen key.
+    _MAX_KEYS = 512
+
     def __init__(self) -> None:
         self._stats: dict[tuple[str, str], ProviderStat] = {}
         self._lock = threading.Lock()
@@ -91,6 +97,11 @@ class ProviderHealth:
             k = self._key(provider, model)
             st = self._stats.get(k)
             if st is None:
+                if len(self._stats) >= self._MAX_KEYS:
+                    oldest = min(
+                        self._stats, key=lambda kk: self._stats[kk].last_seen,
+                    )
+                    self._stats.pop(oldest, None)
                 st = ProviderStat(provider=k[0], model=k[1])
                 self._stats[k] = st
             st.calls += 1

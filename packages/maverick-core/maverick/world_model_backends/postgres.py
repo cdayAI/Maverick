@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -127,6 +128,14 @@ class PostgresWorldModel:
                 "[world_model] dsn in config.toml."
             )
         self.conn = psycopg.connect(self._dsn, autocommit=False)
+        # One long-lived connection shared across this object. psycopg
+        # connections are NOT safe for concurrent use by multiple threads,
+        # and the kernel drives this from FastAPI's threadpool + the
+        # background runner. Serialize every transaction the way the SQLite
+        # WorldModel does with its RLock; without it, interleaved
+        # execute/commit/rollback corrupt results or raise
+        # InFailedSqlTransaction. (Reentrant so a method can nest _tx.)
+        self._lock = threading.RLock()
         self._migrate()
 
     def __enter__(self) -> "PostgresWorldModel":
@@ -145,18 +154,19 @@ class PostgresWorldModel:
         InFailedSqlTransaction until the process restarts. Rolling back
         keeps the connection usable.
         """
-        cur = self.conn.cursor()
-        try:
-            yield cur
-            self.conn.commit()
-        except Exception:
+        with self._lock:
+            cur = self.conn.cursor()
             try:
-                self.conn.rollback()
-            except Exception:  # pragma: no cover
-                pass
-            raise
-        finally:
-            cur.close()
+                yield cur
+                self.conn.commit()
+            except Exception:
+                try:
+                    self.conn.rollback()
+                except Exception:  # pragma: no cover
+                    pass
+                raise
+            finally:
+                cur.close()
 
     def _migrate(self) -> None:
         with self._tx() as cur:

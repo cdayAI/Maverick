@@ -77,11 +77,19 @@ class DockerBackend:
                 exit_code=result.returncode,
             )
         except subprocess.TimeoutExpired as e:
-            subprocess.run(
-                ["docker", "rm", "-f", container_name],
-                capture_output=True,
-                timeout=10,
-            )
+            # Best-effort cleanup. If the Docker daemon is itself wedged
+            # (often the cause of the original timeout), `docker rm` can
+            # also hang/raise; swallow it so the clean exit_code=124
+            # TIMEOUT result below is what propagates, not an unhandled
+            # exception in the agent loop. (Matches podman/kubernetes.)
+            try:
+                subprocess.run(
+                    ["docker", "rm", "-f", container_name],
+                    capture_output=True,
+                    timeout=10,
+                )
+            except Exception:
+                pass
             stdout = e.stdout or ""
             if isinstance(stdout, bytes):
                 stdout = stdout.decode("utf-8", errors="replace")

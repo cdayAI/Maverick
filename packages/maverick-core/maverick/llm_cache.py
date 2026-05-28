@@ -180,12 +180,17 @@ class LLMCache:
                 (key, provider, model, text, thinking, stop_reason, now),
             )
             if self.max_rows:
-                # Evict beyond the cap, keeping the most-used then most-
-                # recent rows (approximate LRU/LFU).
+                # Evict beyond the cap by recency (true LRU). The previous
+                # `ORDER BY hit_count DESC` evicted the row we JUST inserted
+                # (hit_count=0) whenever the cache was full of hit rows, so
+                # under a stream of unique prompts the cache stopped
+                # accepting new entries entirely (thrash -> ~0% hit rate).
+                # Ordering by created_at keeps the newest, so the just-
+                # stored row always survives.
                 c.execute(
                     "DELETE FROM responses WHERE key NOT IN ("
                     "  SELECT key FROM responses "
-                    "  ORDER BY hit_count DESC, created_at DESC LIMIT ?)",
+                    "  ORDER BY created_at DESC LIMIT ?)",
                     (self.max_rows,),
                 )
 

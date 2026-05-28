@@ -10,8 +10,12 @@ Operations:
   - diff(expr, var)      — derivative
   - integrate(expr, var) — antiderivative
 
-All operations are sandboxed: we never `eval()` user input directly.
-SymPy's parser accepts a restricted grammar of math expressions.
+Safety: with SymPy, expressions go through its restricted-grammar parser
+(no Python `eval`). The no-SymPy fallback compiles the expression and
+runs `eval()` with `__builtins__` stripped and only a math allowlist in
+scope, after AST-walking to reject calls to anything outside the
+allowlist, attribute access, imports, and unbounded exponentiation. It is
+a hardened evaluator, not "never eval" — keep the AST guards intact.
 """
 from __future__ import annotations
 

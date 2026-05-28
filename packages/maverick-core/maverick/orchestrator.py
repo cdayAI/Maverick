@@ -82,6 +82,27 @@ async def run_goal(
     sandbox = sandbox or LocalBackend()
     shield = _build_shield()
 
+    # Chokepoint #1: scan the initial goal text before the orchestrator
+    # acts on it. The channel server scans inbound messages, but the
+    # primary `maverick start "..."` / MCP `maverick_start` / chat paths
+    # funnel the goal straight here -- so this is where the first scan
+    # must live. Fail-open per kernel rule 1 (the shield is optional).
+    if shield is not None:
+        try:
+            goal_text = f"{goal.title}\n{goal.description or ''}"
+            verdict = shield.scan_input(goal_text)
+            if not getattr(verdict, "allowed", True):
+                reason = getattr(verdict, "reason", "") or "blocked by Shield"
+                world.set_goal_status(goal_id, "blocked", result=f"input blocked: {reason}")
+                try:
+                    world.end_episode(episode_id, "input blocked by Shield", "blocked")
+                except Exception:  # pragma: no cover
+                    pass
+                log.warning("goal #%s input blocked by Shield: %s", goal_id, reason)
+                return f"BLOCKED: goal input rejected by Shield ({reason})"
+        except Exception:  # pragma: no cover
+            log.exception("scan_input on goal text failed (fail-open)")
+
     mcp_specs = load_mcp_specs_from_config()
     mcp_clients = await start_mcp_clients(mcp_specs) if mcp_specs else []
 

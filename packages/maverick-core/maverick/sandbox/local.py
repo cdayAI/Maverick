@@ -6,10 +6,51 @@ That's the abstraction Hermes' 7 backends collapse to. Start simple.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+
+# Names matching this pattern are stripped from the child shell's env.
+# Catches STRIPE_API_KEY, PLAID_SECRET, CLOUDFLARE_API_TOKEN,
+# AWS_SECRET_ACCESS_KEY / AWS_ACCESS_KEY_ID / AWS_SESSION_TOKEN,
+# *_PASSWORD, *_CREDENTIAL, etc.
+_SECRET_ENV_RE = re.compile(
+    r"(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|APIKEY)",
+    re.IGNORECASE,
+)
+# Stripped explicitly even though the pattern already covers them — kept
+# as a readable record of the provider creds we never want in the shell.
+_ALWAYS_STRIP_ENV = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITLAB_TOKEN",
+)
+
+
+def scrub_env(source: Optional[dict] = None) -> dict:
+    """Return a copy of the environment with secrets removed.
+
+    The default LocalBackend runs model-driven shell commands on the host,
+    so a prompt-injected agent can ``printenv`` / ``echo $STRIPE_API_KEY``
+    and the value lands in stdout -> back to the model -> out via any
+    channel. The old code stripped only 5 named vars while the ~70-tool
+    suite reads 40+ other secret vars; this strips by name pattern so new
+    credentials are covered by default (deny-by-pattern, not an ad-hoc
+    name list). Tools that legitimately need a credential run in-process
+    (Python), not through this shell, so aggressive stripping is safe.
+    """
+    src = os.environ if source is None else source
+    out: dict = {}
+    for k, v in src.items():
+        if k in _ALWAYS_STRIP_ENV or _SECRET_ENV_RE.search(k):
+            continue
+        out[k] = v
+    return out
 
 
 @dataclass
@@ -44,15 +85,7 @@ class LocalBackend:
         except ImportError:
             pass
         effective = self.timeout if timeout is None else timeout
-        child_env = os.environ.copy()
-        for key in (
-            "ANTHROPIC_API_KEY",
-            "OPENAI_API_KEY",
-            "GITHUB_TOKEN",
-            "GH_TOKEN",
-            "GITLAB_TOKEN",
-        ):
-            child_env.pop(key, None)
+        child_env = scrub_env()
 
         try:
             result = subprocess.run(
