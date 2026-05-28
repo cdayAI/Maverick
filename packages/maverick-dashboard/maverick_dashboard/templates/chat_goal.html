@@ -150,43 +150,69 @@
         }
       });
 
-      async function poll() {
-        if (done) return;
-        if (document.visibilityState === 'hidden') {
-          setTimeout(poll, 5000);
-          return;
+      // SSE replaces the 2s/5s polling loop. The server holds one TCP
+      // connection open and pushes only when there's something new;
+      // EventSource handles reconnect automatically. Falls back to
+      // polling if SSE isn't available (very old browsers, blocked
+      // by a corporate proxy).
+      function applyPayload(d) {
+        for (const e of d.events) appendEvent(e);
+        if (d.events && d.events.length > 0) sinceId = d.next_id;
+        eventsEl.parentElement.scrollTop = eventsEl.parentElement.scrollHeight;
+        statusEl.className = 'badge ' + d.status;
+        statusEl.textContent = d.status;
+        if (d.result) {
+          resultEl.textContent = d.result;
+          resultSection.style.display = 'block';
         }
-        try {
-          const url = '/api/goal/' + goalId + '/events?since=' + sinceId;
-          const resp = await fetch(url);
-          if (!resp.ok) { setTimeout(poll, 5000); return; }
-          const d = await resp.json();
-          for (const e of d.events) appendEvent(e);
-          if (d.events.length > 0) sinceId = d.next_id;
-          eventsEl.parentElement.scrollTop = eventsEl.parentElement.scrollHeight;
-          statusEl.className = 'badge ' + d.status;
-          statusEl.textContent = d.status;
-          if (d.result) {
-            resultEl.textContent = d.result;
-            resultSection.style.display = 'block';
-          }
-          if (d.status === 'blocked') {
-            await pollQuestions();
-          }
-          if (d.status === 'done' || d.status === 'cancelled' || d.status === 'failed') {
-            done = true;
-            cancelBtn.disabled = true;
-            return;
-          }
-        } catch (e) {
-          console.error('poll error', e);
+        if (d.status === 'blocked') {
+          pollQuestions();
         }
-        setTimeout(poll, pollDelay);
+        if (d.status === 'done' || d.status === 'cancelled' || d.status === 'failed') {
+          done = true;
+          cancelBtn.disabled = true;
+        }
       }
 
-      poll();
+      function openStream() {
+        if (typeof EventSource === 'undefined') return openPollingFallback();
+        const es = new EventSource('/api/goal/' + goalId + '/events/stream?since=' + sinceId);
+        es.onmessage = function(ev) {
+          try { applyPayload(JSON.parse(ev.data)); } catch (_) {}
+        };
+        es.addEventListener('terminal', function(ev) {
+          try { applyPayload(JSON.parse(ev.data)); } catch (_) {}
+          es.close();
+        });
+        es.onerror = function() {
+          // EventSource auto-reconnects; if it permanently fails (network
+          // gone, server down), fall back to polling so the UI still works.
+          if (es.readyState === EventSource.CLOSED) openPollingFallback();
+        };
+      }
+
+      function openPollingFallback() {
+        async function poll() {
+          if (done) return;
+          if (document.visibilityState === 'hidden') {
+            setTimeout(poll, 5000);
+            return;
+          }
+          try {
+            const url = '/api/goal/' + goalId + '/events?since=' + sinceId;
+            const resp = await fetch(url);
+            if (!resp.ok) { setTimeout(poll, 5000); return; }
+            applyPayload(await resp.json());
+            if (done) return;
+          } catch (e) { /* swallow */ }
+          setTimeout(poll, pollDelay);
+        }
+        poll();
+      }
+
+      openStream();
       // Poll questions on a longer cadence so the form picks up on
-      // ask_user that happens between event polls.
+      // ask_user that happens between event ticks.
       setInterval(function() { if (!done) pollQuestions(); }, 5000);
     })();
   </script>
