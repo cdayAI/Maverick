@@ -953,7 +953,7 @@ async def api_goal_events_legacy(goal_id: int, since: int = 0, limit: int = 200)
 
 
 @app.get("/api/goal/{goal_id}/events/stream")
-async def api_goal_events_stream(goal_id: int, since: int = 0) -> StreamingResponse:
+async def api_goal_events_stream(request: Request, goal_id: int, since: int = 0) -> StreamingResponse:
     """Server-Sent Events stream of new goal events.
 
     Council perf-seat fix: client polled this route every 2s (visible
@@ -982,11 +982,25 @@ async def api_goal_events_stream(goal_id: int, since: int = 0) -> StreamingRespo
     MAX_STREAM_SECONDS = 300       # lifetime cap per SSE stream
     MAX_BATCH = 200
 
+    # EventSource reconnects on its own (a network blip, a proxy timeout,
+    # or our MAX_STREAM_SECONDS cap). Without resume support it would
+    # restart from ``?since=`` and replay the whole log as duplicates;
+    # honor Last-Event-ID so a reconnect resumes exactly where it left off.
+    resume_from = since
+    last_event_id = request.headers.get("last-event-id")
+    if last_event_id:
+        try:
+            resume_from = max(resume_from, int(last_event_id))
+        except ValueError:
+            pass
+
     async def generate():
         started = _asyncio.get_running_loop().time()
-        sid = since
+        sid = resume_from
         idle_ticks = 0
         poll_interval = POLL_INTERVAL
+        # Advertise the reconnect delay (ms) to the client.
+        yield "retry: 3000\n\n"
         # Initial flush: anything already on the board since `since`.
         try:
             while True:
@@ -1010,7 +1024,7 @@ async def api_goal_events_stream(goal_id: int, since: int = 0) -> StreamingRespo
                             for e in events
                         ],
                     }
-                    yield f"data: {_json.dumps(payload)}\n\n"
+                    yield f"id: {sid}\ndata: {_json.dumps(payload)}\n\n"
                     idle_ticks = 0
                     poll_interval = POLL_INTERVAL
                 else:
@@ -1029,7 +1043,7 @@ async def api_goal_events_stream(goal_id: int, since: int = 0) -> StreamingRespo
                         "events": [],
                         "terminal": True,
                     }
-                    yield f"event: terminal\ndata: {_json.dumps(payload)}\n\n"
+                    yield f"id: {sid}\nevent: terminal\ndata: {_json.dumps(payload)}\n\n"
                     return
                 await _asyncio.sleep(poll_interval)
         except _asyncio.CancelledError:
