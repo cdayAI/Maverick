@@ -77,6 +77,21 @@ def test_tree_of_thought_single_candidate_skips_critic():
     assert calls["n"] == 1  # critic never invoked
 
 
+def test_tree_of_thought_reraises_budget_exceeded():
+    from maverick.budget import BudgetExceeded
+    from maverick.tree_of_thought import plan_tree_of_thought
+
+    class _Stub:
+        def complete(self, **kwargs):
+            raise BudgetExceeded("$1.00 > $0.50")
+
+    try:
+        plan_tree_of_thought(_Stub(), "goal", n=3)
+    except BudgetExceeded:
+        return
+    raise AssertionError("expected BudgetExceeded")
+
+
 # ---------- debate ----------
 
 def test_debate_runs_rounds_and_picks_winner():
@@ -138,6 +153,24 @@ def test_debate_requires_two_participants():
         assert "at least 2" in str(e)
         return
     raise AssertionError("expected ValueError")
+
+
+def test_debate_reraises_budget_exceeded():
+    from maverick.budget import BudgetExceeded
+    from maverick.debate import DebateParticipant, run_debate
+
+    def _boom(**kwargs):
+        raise BudgetExceeded("$1.00 > $0.50")
+
+    participants = [
+        DebateParticipant("alice", "optimist", _boom),
+        DebateParticipant("bob", "skeptic", _boom),
+    ]
+    try:
+        run_debate("q", participants, judge_complete=lambda **kw: _resp("{}"), rounds=1)
+    except BudgetExceeded:
+        return
+    raise AssertionError("expected BudgetExceeded")
 
 
 # ---------- audit signing ----------

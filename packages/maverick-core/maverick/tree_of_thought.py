@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from .budget import Budget
+from .budget import Budget, BudgetExceeded
 from .llm import LLM
 
 log = logging.getLogger(__name__)
@@ -146,6 +146,8 @@ def plan_tree_of_thought(
             )
             if cand.text:
                 candidates.append(cand)
+        except BudgetExceeded:
+            raise
         except Exception as e:
             log.warning("ToT candidate %d failed: %s", i, e)
             continue

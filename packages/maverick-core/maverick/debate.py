@@ -17,7 +17,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from .budget import Budget
+from .budget import Budget, BudgetExceeded
 
 log = logging.getLogger(__name__)
 
@@ -169,6 +169,8 @@ def run_debate(
         for p in participants:
             try:
                 text = _ask(p, question, transcript, budget=budget)
+            except BudgetExceeded:
+                raise
             except Exception as e:
                 log.warning("debate turn (%s) failed: %s", p.name, e)
                 text = f"(turn failed: {e})"
