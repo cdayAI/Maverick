@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -176,7 +175,6 @@ def test_cost_csv_streams_not_buffers(monkeypatch, tmp_path: Path):
 
 def test_cost_csv_month_filter_in_sql(monkeypatch, tmp_path: Path):
     """Month filter pushes into SQL via WHERE; rows outside the month are absent."""
-    import time as _time
     from maverick import world_model
     db = tmp_path / "world.db"
     monkeypatch.setattr(world_model, "DEFAULT_DB", db)
