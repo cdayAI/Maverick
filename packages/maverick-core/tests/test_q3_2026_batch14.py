@@ -253,6 +253,16 @@ def test_dropbox_upload_dry_run(monkeypatch):
     assert "DRY RUN" in out
 
 
+
+
+def test_dropbox_share_dry_run(monkeypatch):
+    monkeypatch.setenv("DROPBOX_ACCESS_TOKEN", "tok")
+    post = MagicMock()
+    _fake_httpx(monkeypatch, post=post)
+    from maverick.tools.dropbox_tool import dropbox_tool
+    out = dropbox_tool().fn({"op": "share", "path": "/x.txt"})
+    assert "DRY RUN" in out
+    post.assert_not_called()
 def test_dropbox_list_renders(monkeypatch):
     monkeypatch.setenv("DROPBOX_ACCESS_TOKEN", "tok")
     body = {"entries": [
