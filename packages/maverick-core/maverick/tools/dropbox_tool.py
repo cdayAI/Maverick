@@ -8,7 +8,7 @@ ops:
   - download(path)                 — returns first 4KB of text
   - upload(path, content, confirm)
   - delete(path, confirm)
-  - share(path)                    — create/get a shared link
+  - share(path, confirm)           — create/get a shared link
 """
 from __future__ import annotations
 
@@ -139,6 +139,8 @@ def _op_share(args: dict) -> str:
     path = _norm(args.get("path") or "")
     if not path:
         return "ERROR: share requires path"
+    if not args.get("confirm"):
+        return f"DRY RUN: would create or fetch shared link for {path}. Re-run with confirm=true."
     code, data = _rpc(
         "/sharing/create_shared_link_with_settings", {"path": path},
     )
@@ -178,7 +180,7 @@ def dropbox_tool() -> Tool:
         name="dropbox",
         description=(
             "Dropbox files. ops: list, download (4KB preview), "
-            "upload + delete (mutations confirm=true), share "
+            "upload + delete + share (mutations confirm=true), "
             "(shared link). Auth: DROPBOX_ACCESS_TOKEN."
         ),
         input_schema=_DBX_SCHEMA,
