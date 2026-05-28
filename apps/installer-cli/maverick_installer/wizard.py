@@ -652,15 +652,10 @@ def _docker_available() -> bool:
 
 
 def pick_sandbox() -> dict[str, Any]:
-    # Default to docker only when it actually works on this machine.
-    # Council UX seat: defaulting to docker on a fresh Windows laptop
-    # without Docker installed makes the first goal hang on container
-    # pull or fail outright.
-    docker_default = (
-        "docker - Throwaway Docker container (recommended)"
-        if _docker_available()
-        else "local  - Subprocess on this machine (fastest, least isolated)"
-    )
+    # Security-first default: keep Docker selected by default regardless
+    # of current daemon reachability to avoid silently falling back to
+    # the least isolated local backend.
+    docker_default = "docker - Throwaway Docker container (recommended)"
     pick = _q_select(
         "Sandbox backend (where the agent runs shell commands):",
         [
