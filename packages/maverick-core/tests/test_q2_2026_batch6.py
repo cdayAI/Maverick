@@ -84,6 +84,42 @@ def test_calendar_create_event_calls_caldav(monkeypatch):
     assert "DTSTART:20260601T100000Z" in ical_arg
 
 
+def test_calendar_create_event_escapes_text_fields(monkeypatch):
+    monkeypatch.setenv("CALDAV_URL", "https://cal.test")
+    monkeypatch.setenv("CALDAV_USER", "me@test")
+    monkeypatch.setenv("CALDAV_PASSWORD", "pw")
+
+    import sys
+    import types
+    fake_caldav = types.ModuleType("caldav")
+
+    fake_calendar = MagicMock()
+    fake_saved = MagicMock()
+    fake_saved.url = "https://cal.test/event/456"
+    fake_calendar.save_event = MagicMock(return_value=fake_saved)
+
+    fake_principal = MagicMock()
+    fake_principal.calendars = MagicMock(return_value=[fake_calendar])
+    fake_client = MagicMock()
+    fake_client.principal = MagicMock(return_value=fake_principal)
+    fake_caldav.DAVClient = MagicMock(return_value=fake_client)
+    monkeypatch.setitem(sys.modules, "caldav", fake_caldav)
+
+    from maverick.tools.calendar_tool import calendar_tool
+    calendar_tool().fn({
+        "op": "create_event",
+        "title": "Team sync\nRRULE:FREQ=DAILY",
+        "start": "2026-06-01T10:00:00",
+        "end": "2026-06-01T11:00:00",
+        "description": "normal\nBEGIN:VALARM",
+    })
+    ical_arg = fake_calendar.save_event.call_args.args[0]
+    assert "SUMMARY:Team sync\\nRRULE:FREQ=DAILY" in ical_arg
+    assert "DESCRIPTION:normal\\nBEGIN:VALARM" in ical_arg
+    assert "\nRRULE:FREQ=DAILY\n" not in ical_arg
+    assert "\nBEGIN:VALARM\n" not in ical_arg
+
+
 def test_calendar_find_slot_picks_free_window(monkeypatch):
     """find_slot returns the first gap that fits the requested duration."""
     monkeypatch.setenv("CALDAV_URL", "https://cal.test")

@@ -98,6 +98,15 @@ def _get_caldav_calendar():
     return cals[0]
 
 
+
+def _escape_ical_text(value: Any) -> str:
+    """Escape iCalendar TEXT values to prevent property injection."""
+    s = str(value or "")
+    s = s.replace("\\", "\\\\")
+    s = s.replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n")
+    return s.replace(";", "\\;").replace(",", "\\,")
+
+
 def _parse_iso(s: str) -> datetime:
     """Parse ISO 8601; treat naive as UTC."""
     dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
@@ -138,7 +147,8 @@ def _create_event(args: dict[str, Any]) -> str:
     title = (args.get("title") or "").strip()
     start_s = (args.get("start") or "").strip()
     end_s = (args.get("end") or "").strip()
-    description = args.get("description") or ""
+    description = _escape_ical_text(args.get("description") or "")
+    title = _escape_ical_text(title)
     if not title or not start_s or not end_s:
         return "ERROR: create_event requires title + start + end"
     try:
