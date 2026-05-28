@@ -67,18 +67,26 @@ class ToolRegistry:
         if name not in self._tools:
             return f"ERROR: unknown tool {name!r}"
         try:
+            from ..observability import trace_span
+        except ImportError:  # pragma: no cover
+            import contextlib
+
+            def trace_span(*a, **kw):  # type: ignore
+                return contextlib.nullcontext()
+        with trace_span("tool.run", attributes={"tool.name": name}):
             try:
-                from ..chaos import maybe_fail
-                maybe_fail("tool_dispatch",
-                           message=f"chaos: tool_dispatch on {name!r}")
-            except ImportError:
-                pass
-            result = self._tools[name].fn(args)
-            if inspect.isawaitable(result):
-                result = await result
-            return result
-        except Exception as e:
-            return f"ERROR: {type(e).__name__}: {e}"
+                try:
+                    from ..chaos import maybe_fail
+                    maybe_fail("tool_dispatch",
+                               message=f"chaos: tool_dispatch on {name!r}")
+                except ImportError:
+                    pass
+                result = self._tools[name].fn(args)
+                if inspect.isawaitable(result):
+                    result = await result
+                return result
+            except Exception as e:
+                return f"ERROR: {type(e).__name__}: {e}"
 
 
 def base_registry(
@@ -154,6 +162,7 @@ def base_registry(
     from .file_watcher import file_watcher
     from .git_advanced import git_advanced
     from .gitlab import gitlab
+    from .huggingface import huggingface
     from .jira import jira
     from .linear import linear
     from .notify import notify_tool
@@ -183,6 +192,7 @@ def base_registry(
     reg.register(jira())
     reg.register(gitlab())
     reg.register(embeddings())
+    reg.register(huggingface())
     reg.register(notify_tool())
     reg.register(diagnose())
 

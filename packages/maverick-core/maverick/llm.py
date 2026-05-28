@@ -231,11 +231,20 @@ class LLM:
             maybe_fail("llm_call", message=f"chaos: llm_call provider={provider}")
         except ImportError:
             pass
+        try:
+            from .observability import trace_span as _trace_span
+        except ImportError:  # pragma: no cover
+            import contextlib
+            def _trace_span(*a, **kw):  # type: ignore
+                return contextlib.nullcontext()
         _t0 = _time.time()
         _d0 = budget.dollars if budget else 0.0
         _err = False
         try:
-            return client.complete(**kwargs)
+            with _trace_span("llm.complete", attributes={
+                "llm.provider": provider, "llm.model": model_id,
+            }):
+                return client.complete(**kwargs)
         except Exception:
             _err = True
             raise

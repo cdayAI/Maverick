@@ -16,6 +16,7 @@ from typing import Optional, Union
 from .devcontainer import DevcontainerBackend
 from .docker import DockerBackend
 from .firecracker import FirecrackerBackend
+from .kubernetes import KubernetesBackend
 from .local import ExecResult, LocalBackend
 from .podman import PodmanBackend
 from .ssh import SSHBackend
@@ -25,6 +26,7 @@ __all__ = [
     "DockerBackend",
     "PodmanBackend",
     "DevcontainerBackend",
+    "KubernetesBackend",
     "FirecrackerBackend",
     "SSHBackend",
     "ExecResult",
@@ -33,7 +35,7 @@ __all__ = [
 
 Sandbox = Union[
     LocalBackend, DockerBackend, PodmanBackend, DevcontainerBackend,
-    FirecrackerBackend, SSHBackend,
+    KubernetesBackend, FirecrackerBackend, SSHBackend,
 ]
 
 
@@ -79,6 +81,16 @@ def build_sandbox(
         return DevcontainerBackend(
             project_dir=project_dir, timeout=timeout,
             allow_network=bool(full_cfg.get("allow_network", True)),
+        )
+    if chosen == "kubernetes":
+        return KubernetesBackend(
+            image=full_cfg.get("image", "python:3.12-slim"),
+            namespace=full_cfg.get("namespace", "default"),
+            context=full_cfg.get("context"),
+            workdir=Path(full_cfg.get("workdir", "/workspaces/repo")),
+            timeout=timeout,
+            allow_network=bool(full_cfg.get("allow_network", False)),
+            extra_kubectl_args=full_cfg.get("extra_kubectl_args") or [],
         )
     if chosen == "firecracker":
         return FirecrackerBackend(
