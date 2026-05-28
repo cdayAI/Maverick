@@ -37,7 +37,7 @@ def test_k8s_exec_builds_kubectl_run(monkeypatch):
 
     monkeypatch.setattr("subprocess.run", _fake_run)
     from maverick.sandbox.kubernetes import KubernetesBackend
-    backend = KubernetesBackend(image="alpine", namespace="ci")
+    backend = KubernetesBackend(image="alpine", namespace="ci", allow_network=True)
     result = backend.exec("echo hi")
     assert result.ok
     args = captured["args"]
@@ -61,7 +61,7 @@ def test_k8s_passes_context(monkeypatch):
 
     monkeypatch.setattr("subprocess.run", _fake_run)
     from maverick.sandbox.kubernetes import KubernetesBackend
-    backend = KubernetesBackend(context="minikube")
+    backend = KubernetesBackend(context="minikube", allow_network=True)
     backend.exec("true")
     assert "--context" in captured["args"]
     assert "minikube" in captured["args"]
@@ -84,6 +84,22 @@ def test_build_sandbox_constructs_k8s(monkeypatch):
     sb = build_sandbox()
     assert sb.__class__.__name__ == "KubernetesBackend"
     assert sb.namespace == "x"
+
+
+def test_k8s_disallow_network_fails_closed(monkeypatch):
+    calls = {"n": 0}
+
+    def _fake_run(args, *a, **k):
+        calls["n"] += 1
+        return MagicMock(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    from maverick.sandbox.kubernetes import KubernetesBackend
+    backend = KubernetesBackend(allow_network=False)
+    out = backend.exec("echo hi")
+    assert out.exit_code == 2
+    assert "allow_network=false" in out.stderr
+    assert calls["n"] == 1  # constructor verification only
 
 
 # ---------- HuggingFace tool ----------
@@ -150,6 +166,26 @@ def test_hf_image_classify_requires_url():
     from maverick.tools.huggingface import huggingface
     out = huggingface().fn({"op": "image_classify", "model": "x"})
     assert "requires url" in out
+
+
+def test_hf_image_classify_blocks_private_ip(monkeypatch):
+    from maverick.tools.huggingface import huggingface
+    monkeypatch.setattr("maverick.tools.huggingface._is_private_ip", lambda _h: True)
+    out = huggingface().fn({"op": "image_classify", "model": "x", "url": "http://127.0.0.1/a.png"})
+    assert "refusing" in out
+
+
+def test_hf_image_classify_rejects_redirects(monkeypatch):
+    resp = MagicMock()
+    resp.status_code = 302
+    resp.content = b""
+    resp.headers = {"content-type": "text/plain"}
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.get = MagicMock(return_value=resp)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+    from maverick.tools.huggingface import huggingface
+    out = huggingface().fn({"op": "image_classify", "model": "x", "url": "https://example.com/i.png"})
+    assert "image fetch 302" in out
 
 
 # ---------- Context compactor ----------

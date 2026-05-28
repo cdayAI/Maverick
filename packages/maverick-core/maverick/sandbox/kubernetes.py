@@ -87,6 +87,16 @@ class KubernetesBackend:
             f"cd {shlex.quote(str(self.workdir))} && {cmd}"
         )
 
+        if not self.allow_network:
+            return ExecResult(
+                stdout="",
+                stderr=(
+                    "networking is disabled for kubernetes backend (allow_network=false), "
+                    "but kubectl backend cannot enforce no-network safely"
+                ),
+                exit_code=2,
+            )
+
         # `kubectl run` creates the pod, runs it, deletes it (--rm).
         # restart=Never is required for --rm semantics; --quiet
         # suppresses pod-create noise so stdout stays clean.
