@@ -15,12 +15,15 @@
     </span>
   </div>
 
+  <p id="goal-action-msg" role="status" aria-live="polite" class="muted"
+     style="min-height: 1em; margin: 0 0 1.5rem;"></p>
+
   <div id="question-panel" class="panel" style="display: none; border-color: var(--warn);">
     <h3 style="margin-top: 0;">The agent is waiting on an answer</h3>
     <p id="question-text" class="muted"></p>
     <form id="answer-form" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
       <input type="text" id="answer-input" required
-             placeholder="Your answer"
+             placeholder="Your answer" aria-label="Your answer to the agent's question"
              style="flex: 1 1 280px; padding: 0.5rem 0.75rem; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px;" />
       <button type="submit"
               style="padding: 0.5rem 1.25rem; background: var(--accent); color: #fff; border: 0; border-radius: 4px; cursor: pointer; font-weight: 500;">
@@ -58,6 +61,7 @@
       const questionText = document.getElementById('question-text');
       const answerForm = document.getElementById('answer-form');
       const answerInput = document.getElementById('answer-input');
+      const actionMsg = document.getElementById('goal-action-msg');
       let sinceId = 0;
       let done = false;
       let pollDelay = 2000;
@@ -122,6 +126,7 @@
         const qid = currentQuestionId;
         const ans = answerInput.value.trim();
         answerInput.disabled = true;
+        actionMsg.textContent = '';
         try {
           const r = await fetch('/api/v1/goals/' + goalId + '/answer', {
             method: 'POST',
@@ -133,7 +138,9 @@
             currentQuestionId = null;
             questionPanel.style.display = 'none';
           } else {
-            alert('Submit failed: ' + r.status);
+            const j = await r.json().catch(function() { return {}; });
+            actionMsg.style.color = 'var(--danger)';
+            actionMsg.textContent = j.detail || ('Submit failed: ' + r.status);
           }
         } finally {
           answerInput.disabled = false;
@@ -143,9 +150,12 @@
       cancelBtn.addEventListener('click', async function() {
         if (!confirm('Cancel this goal? The agent stops at its next tool-call boundary.')) return;
         cancelBtn.disabled = true;
+        actionMsg.textContent = '';
         const r = await fetch('/api/v1/goals/' + goalId + '/cancel', { method: 'POST' });
         if (!r.ok && r.status !== 204) {
-          alert('Cancel failed: ' + r.status);
+          const j = await r.json().catch(function() { return {}; });
+          actionMsg.style.color = 'var(--danger)';
+          actionMsg.textContent = j.detail || ('Cancel failed: ' + r.status);
           cancelBtn.disabled = false;
         }
       });
