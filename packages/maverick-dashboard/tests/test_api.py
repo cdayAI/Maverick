@@ -12,7 +12,13 @@ from fastapi.testclient import TestClient
 from maverick_dashboard.app import app
 
 
-client = TestClient(app)
+# Same-origin default: mutating /api/v1 requests in no-token (loopback) mode
+# must carry a matching Origin, the CSRF contract the dashboard enforces
+# centrally (see app.py bearer_auth). These functional tests simulate a
+# legitimate same-origin caller; the missing/forged-Origin cases are covered
+# by test_security.py. GET/HEAD/OPTIONS skip the check, so this is a no-op for
+# read tests.
+client = TestClient(app, headers={"Origin": "http://testserver"})
 
 
 @pytest.fixture(autouse=True)
