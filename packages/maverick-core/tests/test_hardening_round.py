@@ -244,3 +244,96 @@ def test_cost_router_tolerates_snapshot_without_error_rate(monkeypatch):
     from maverick.cost_router import CostSignal, pick
     spec = pick(CostSignal())
     assert spec is None or ":" in spec  # no KeyError
+
+
+# ---------- observability: record_metric label handling ----------
+
+def test_record_metric_unlabeled_gauge_no_crash(monkeypatch):
+    import maverick.observability as obs
+
+    calls = {"set": None}
+
+    class _Gauge:
+        def set(self, v):
+            calls["set"] = v
+
+        def labels(self, **kw):
+            raise AssertionError("must not call .labels() with no labels")
+
+    monkeypatch.setattr(obs, "_metrics", {"budget_dollars": _Gauge()})
+    monkeypatch.setattr(obs, "_initialize", lambda: None)
+    obs.record_metric("budget_dollars", 1.23)  # no labels
+    assert calls["set"] == 1.23
+
+
+def test_record_metric_labeled_counter(monkeypatch):
+    import maverick.observability as obs
+
+    seen = {"labels": None, "inc": None}
+
+    class _Child:
+        def inc(self, v):
+            seen["inc"] = v
+
+    class _Counter:
+        def labels(self, **kw):
+            seen["labels"] = kw
+            return _Child()
+
+    monkeypatch.setattr(obs, "_metrics", {"llm_calls": _Counter()})
+    monkeypatch.setattr(obs, "_initialize", lambda: None)
+    obs.record_metric("llm_calls", 1.0,
+                      labels={"provider": "anthropic", "model": "m"})
+    assert seen["labels"] == {"provider": "anthropic", "model": "m"}
+    assert seen["inc"] == 1.0
+
+
+# ---------- chaos: concurrent roll() doesn't tear the RNG ----------
+
+def test_chaos_roll_is_thread_safe_smoke():
+    import threading
+
+    from maverick.chaos import ChaosController, ChaosInjected, maybe_fail
+    c = ChaosController()
+    c.set(active=True, seed=1, sandbox_exec_fail_pct=50)
+    errors: list[str] = []
+
+    def _hammer():
+        for _ in range(200):
+            try:
+                maybe_fail("sandbox_exec")
+            except ChaosInjected:
+                pass
+            except Exception as e:  # a torn RNG read would land here
+                errors.append(repr(e))
+
+    threads = [threading.Thread(target=_hammer) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    c.disable()
+    assert not errors, f"concurrent roll() raised: {errors[:3]}"
+
+
+# ---------- sandbox: timeout cleanup never masks the TIMEOUT result ----
+
+def test_podman_timeout_cleanup_swallows_cleanup_error(monkeypatch, tmp_path):
+    import subprocess
+
+    from maverick.sandbox.podman import PodmanBackend
+
+    def _run(args, *a, **k):
+        if args[:2] == ["podman", "version"]:
+            return MagicMock(returncode=0, stdout=b"", stderr=b"")
+        if args[:2] == ["podman", "rm"]:
+            # Cleanup itself blows up — must be swallowed.
+            raise subprocess.TimeoutExpired(cmd="podman rm", timeout=10)
+        # The actual `podman run` times out.
+        raise subprocess.TimeoutExpired(cmd="podman run", timeout=5)
+
+    monkeypatch.setattr("subprocess.run", _run)
+    backend = PodmanBackend(workdir=tmp_path, image="alpine")
+    result = backend.exec("sleep 999")
+    assert result.exit_code == 124
+    assert "TIMEOUT" in result.stderr

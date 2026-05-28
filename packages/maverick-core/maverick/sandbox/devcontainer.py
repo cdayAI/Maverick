@@ -185,10 +185,15 @@ class DevcontainerBackend:
                 exit_code=result.returncode,
             )
         except subprocess.TimeoutExpired as e:
-            subprocess.run(
-                ["docker", "rm", "-f", container_name],
-                capture_output=True, timeout=10,
-            )
+            # Best-effort cleanup; never let a hung daemon's `rm` raise
+            # over the TIMEOUT ExecResult.
+            try:
+                subprocess.run(
+                    ["docker", "rm", "-f", container_name],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                pass
             stdout = e.stdout or ""
             if isinstance(stdout, bytes):
                 stdout = stdout.decode("utf-8", errors="replace")

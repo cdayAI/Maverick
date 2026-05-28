@@ -58,10 +58,14 @@ class ChaosState:
     seed: int = 0
     rates: dict[str, int] = field(default_factory=dict)
     _rng: random.Random = field(default_factory=random.Random, repr=False)
+    # random.Random is not thread-safe and the async/swarm paths roll
+    # concurrently while configure() may swap the generator; guard both.
+    _rng_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def configure(self, *, seed: int) -> None:
         self.seed = seed
-        self._rng = random.Random(seed)
+        with self._rng_lock:
+            self._rng = random.Random(seed)
 
     def roll(self, stage: str) -> bool:
         if not self.active:
@@ -69,7 +73,8 @@ class ChaosState:
         pct = self.rates.get(stage, 0)
         if pct <= 0:
             return False
-        return self._rng.randint(1, 100) <= pct
+        with self._rng_lock:
+            return self._rng.randint(1, 100) <= pct
 
 
 class ChaosController:
