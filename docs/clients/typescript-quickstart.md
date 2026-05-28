@@ -39,9 +39,15 @@ await client.connect(transport);
 const tools = await client.listTools();
 console.log("Maverick exposes", tools.tools.length, "tools");
 
+// Start a goal. maverick_start runs the swarm and returns the final
+// answer (it's long-running — give it a real budget/timeout).
 const result = await client.callTool({
-  name: "shell",
-  arguments: { command: "echo hello from typescript" },
+  name: "maverick_start",
+  arguments: {
+    title: "Say hello from TypeScript",
+    description: "Reply with a one-line greeting.",
+    max_dollars: 0.25,
+  },
 });
 console.log(result.content);
 
@@ -51,18 +57,25 @@ await client.close();
 Run with `npx tsx quickstart.ts` (or `bun run quickstart.ts`,
 `deno run --allow-all quickstart.ts`).
 
-You should see the tool list, then "hello from typescript".
+You should see the tool list (8 tools), then the swarm's final answer.
 
 ## What works
 
-- Every tool Maverick registers (web search, repo map, str_replace
-  editor, kv memory, jira/linear/slack/notion/datadog/…) is callable
-  from TS by name.
-- Long-running goals: spawn a goal via the `start_goal` tool, then
-  poll `goal_status` / read trajectory tools.
-- Stdout / stderr from sandboxed shell commands streams back via
-  `notifications/message` events; subscribe via
-  `client.setRequestHandler(...)`.
+The MCP server exposes a small, stable control surface — **8
+`maverick_*` tools**, not the ~70 in-kernel tools. You drive the swarm;
+the kernel runs the tools internally.
+
+- `maverick_start` `{title, description?, max_dollars?, max_wall_seconds?, max_depth?}`
+  — start a goal; returns the final answer.
+- `maverick_status` — list recent goals + open questions.
+- `maverick_resume` `{goal_id}` — resume a paused goal.
+- `maverick_answer` `{question_id, answer}` — answer a queued question.
+- `maverick_skill_install` `{source}` / `maverick_skills_list`.
+- `maverick_fact_set` `{key, value}` / `maverick_facts_get`.
+
+The ~70 in-kernel tools (web search, repo map, editor, Slack, S3, …)
+are **not** individually exposed over MCP — the swarm decides which to
+use while running a goal.
 
 ## What's gated
 

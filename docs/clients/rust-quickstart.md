@@ -39,8 +39,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tools = client.list_tools().await?;
     println!("Maverick exposes {} tools", tools.tools.len());
 
+    // maverick_start runs the swarm and returns the final answer.
     let out = client
-        .call_tool("shell", json!({ "command": "echo hello from rust" }))
+        .call_tool("maverick_start", json!({ "title": "Say hello from Rust", "max_dollars": 0.25 }))
         .await?;
     println!("{}", out.text());
 
