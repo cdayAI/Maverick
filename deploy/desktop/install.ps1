@@ -45,29 +45,59 @@ winget is not available (older Windows 10). Install these by hand, then re-run:
 "@
 }
 
-function Winget-Install($id) {
+function Winget-Install($id, $override) {
   Write-Step "Installing $id ..."
-  winget install -e --id $id --accept-source-agreements --accept-package-agreements --silent
+  # An $override replaces winget's default installer args entirely, so it
+  # must carry its own quiet flag. Used to force Python onto PATH.
+  if ($override) {
+    winget install -e --id $id --accept-source-agreements --accept-package-agreements --override $override
+  } else {
+    winget install -e --id $id --accept-source-agreements --accept-package-agreements --silent
+  }
   Refresh-Path
 }
 
-# Find a Python >= 3.10. Returns 'py', 'python', or $null.
+# Validate one interpreter: run it and confirm it reports >= 3.10. On
+# success, record how to invoke it ($script:PyExe / $script:PyPre).
+function Test-PyCandidate($exe, $pre) {
+  try {
+    $v = & $exe @($pre + @('-c', 'import sys;print("%d.%d"%sys.version_info[:2])')) 2>$null
+    if ($v -match '^(\d+)\.(\d+)$' -and
+        ([int]$Matches[1] -gt 3 -or ([int]$Matches[1] -eq 3 -and [int]$Matches[2] -ge 10))) {
+      $script:PyExe = $exe; $script:PyPre = $pre
+      return $true
+    }
+  } catch { }
+  return $false
+}
+
+# Find a usable Python >= 3.10. Checks PATH first, then well-known
+# install dirs: winget runs the python.org installer, which does NOT add
+# Python to PATH unless PrependPath is set, so a fresh install is often
+# only reachable on disk.
 function Resolve-Python {
-  foreach ($cand in @('py', 'python')) {
-    if (-not (Have $cand)) { continue }
-    $pre = if ($cand -eq 'py') { @('-3') } else { @() }
-    try {
-      $v = & $cand @($pre + @('-c', 'import sys;print("%d.%d"%sys.version_info[:2])')) 2>$null
-      if ($v -match '^(\d+)\.(\d+)$') {
-        $maj = [int]$Matches[1]; $min = [int]$Matches[2]
-        if ($maj -gt 3 -or ($maj -eq 3 -and $min -ge 10)) {
-          $script:PyExe = $cand; $script:PyPre = $pre
-          return $cand
-        }
-      }
-    } catch { }
+  if ((Have py)     -and (Test-PyCandidate 'py'     @('-3'))) { return $true }
+  if ((Have python) -and (Test-PyCandidate 'python' @()))     { return $true }
+
+  $globs = @(
+    (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python3*\python.exe'),
+    (Join-Path $env:ProgramFiles 'Python3*\python.exe'),
+    (Join-Path $env:ProgramFiles 'Python\Python3*\python.exe'),
+    'C:\Python3*\python.exe',
+    (Join-Path $env:LOCALAPPDATA 'Programs\Python\Launcher\py.exe'),
+    'C:\Windows\py.exe'
+  )
+  if (${env:ProgramFiles(x86)}) {
+    $globs += (Join-Path ${env:ProgramFiles(x86)} 'Python3*\python.exe')
   }
-  return $null
+  foreach ($g in $globs) {
+    $hits = Get-ChildItem -Path $g -ErrorAction SilentlyContinue | Sort-Object FullName -Descending
+    foreach ($hit in $hits) {
+      $pre = if ($hit.Name -ieq 'py.exe') { @('-3') } else { @() }
+      if (Test-PyCandidate $hit.FullName $pre) { return $true }
+    }
+  }
+  return $false
 }
 
 Write-Host ""
@@ -77,9 +107,11 @@ Write-Host ""
 # 1. Python 3.10+
 if (-not (Resolve-Python)) {
   Ensure-Winget
-  Winget-Install 'Python.Python.3.12'
+  # PrependPath puts python.org's install on PATH for future sessions;
+  # Resolve-Python also locates it on disk for the current one.
+  Winget-Install 'Python.Python.3.12' '/quiet PrependPath=1 InstallLauncherAllUsers=0'
   if (-not (Resolve-Python)) {
-    Die "Python installed, but I still can't find it. Open a NEW PowerShell window and re-run the command."
+    Die "Python installed but couldn't be located. Open a NEW PowerShell window and re-run the command."
   }
 }
 Write-Step ("Using Python " + (Py -c 'import sys;print(sys.version.split()[0])'))
