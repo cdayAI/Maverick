@@ -45,6 +45,7 @@ def _parse_field(field: str, lo: int, hi: int, names: dict | None = None) -> set
         if not part:
             continue
         step = 1
+        has_step = False
         if "/" in part:
             base, _, step_s = part.partition("/")
             try:
@@ -53,6 +54,7 @@ def _parse_field(field: str, lo: int, hi: int, names: dict | None = None) -> set
                 raise CronError(f"bad step in {field!r}") from e
             if step <= 0:
                 raise CronError(f"step must be > 0 in {field!r}")
+            has_step = True
             part = base or "*"
         if part == "*":
             rng = range(lo, hi + 1)
@@ -65,7 +67,10 @@ def _parse_field(field: str, lo: int, hi: int, names: dict | None = None) -> set
             rng = range(a, b + 1)
         else:
             v = _resolve(part, names)
-            rng = range(v, v + 1)
+            # `N/step` (single start + step) runs from N up to the field
+            # max, matching cron: '5/15' on minutes -> 5,20,35,50. Without
+            # a step, a bare N is just that single value.
+            rng = range(v, hi + 1) if has_step else range(v, v + 1)
         for i, val in enumerate(rng):
             if i % step == 0:
                 if not (lo <= val <= hi):
@@ -96,8 +101,10 @@ def parse_cron(expr: str) -> tuple[set[int], set[int], set[int], set[int], set[i
     hour = _parse_field(fields[1], 0, 23)
     dom = _parse_field(fields[2], 1, 31)
     mon = _parse_field(fields[3], 1, 12, _MONTHS)
-    dow = _parse_field(fields[4], 0, 6, _DOW)
-    # Normalize Sunday=7 to 0 if a user wrote 7.
+    # Allow 7 as a synonym for Sunday (both 0 and 7 are standard cron):
+    # parse with hi=7 so '7' and ranges like '5-7' don't trip the bound
+    # check, THEN fold 7 -> 0.
+    dow = _parse_field(fields[4], 0, 7, _DOW)
     if 7 in dow:
         dow.discard(7)
         dow.add(0)
@@ -108,13 +115,23 @@ def next_run(expr: str, *, after: Optional[float] = None) -> float:
     """Return the next epoch timestamp matching ``expr`` strictly after
     ``after`` (default: now). Searches up to ~4 years forward.
 
-    Day-of-month and day-of-week follow Vixie cron semantics: if BOTH
-    are restricted (not ``*``), a match on EITHER fires.
+    Cron fields are matched in **UTC** — ``0 0 * * *`` fires at 00:00
+    UTC, not host-local midnight. Pass a UTC epoch for ``after`` (the
+    default uses the current UTC time). Day-of-month and day-of-week
+    follow Vixie cron semantics: if BOTH are restricted (not ``*``), a
+    match on EITHER fires.
     """
     minute, hour, dom, mon, dow = parse_cron(expr)
-    base = _dt.datetime.fromtimestamp(
-        after if after is not None else _dt.datetime.now().timestamp()
+    # Match cron fields in UTC. Using timezone-aware UTC datetimes makes
+    # the "pass a UTC timestamp for UTC scheduling" contract literally
+    # true AND removes DST hazards: there is no spring-forward/fall-back
+    # in UTC, so the minute-by-minute walk below never lands on a
+    # non-existent or doubled wall-clock minute.
+    after_ts = (
+        after if after is not None
+        else _dt.datetime.now(_dt.timezone.utc).timestamp()
     )
+    base = _dt.datetime.fromtimestamp(after_ts, tz=_dt.timezone.utc)
     # Round up to the next whole minute.
     t = base.replace(second=0, microsecond=0) + _dt.timedelta(minutes=1)
 

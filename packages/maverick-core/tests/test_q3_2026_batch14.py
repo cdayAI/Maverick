@@ -67,14 +67,21 @@ def test_azure_requires_config(monkeypatch):
 
 
 @_needs_openai
-def test_azure_builds_deployment_url(monkeypatch):
+def test_azure_uses_dedicated_client(monkeypatch):
+    """The provider must build the SDK's AzureOpenAI client (which sends
+    the api-key header + api-version query), NOT a plain OpenAI client
+    with the api-version baked into base_url (the SDK drops it)."""
+    from openai import AzureOpenAI
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://res.openai.azure.com")
     monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "gpt5")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "k")
     from maverick.providers.azure_openai_provider import AzureOpenAIClient
     c = AzureOpenAIClient()
-    assert "deployments/gpt5" in c.base_url
-    assert "api-version=" in c.base_url
+    assert isinstance(c._sync, AzureOpenAI)
+    assert c.deployment == "gpt5"
+    assert c.api_version == "2024-10-21"
+    assert c.endpoint == "https://res.openai.azure.com"
     assert c.DEFAULT_MODEL == "gpt5"
 
 
@@ -400,29 +407,56 @@ def test_scheduler_step_syntax():
     assert minute == {0, 15, 30, 45}
 
 
-def test_scheduler_next_run_daily_9am():
+def test_scheduler_single_value_step_expands():
+    """'5/15' means 5,20,35,50 — not just {5}."""
+    from maverick.scheduler import parse_cron
+    minute, *_ = parse_cron("5/15 * * * *")
+    assert minute == {5, 20, 35, 50}
+
+
+def test_scheduler_sunday_as_7_accepted():
+    """'7' and ranges containing 7 are Sunday, folded to 0 — not rejected."""
+    from maverick.scheduler import parse_cron
+    *_, dow = parse_cron("0 9 * * 7")
+    assert dow == {0}
+    *_, dow2 = parse_cron("0 9 * * 5-7")
+    assert dow2 == {5, 6, 0}
+
+
+def test_scheduler_next_run_daily_9am_utc():
     import datetime as _dt
 
     from maverick.scheduler import next_run
-    # Monday 2026-06-01 08:00 -> next "0 9 * * *" is same day 09:00.
-    base = _dt.datetime(2026, 6, 1, 8, 0, 0).timestamp()
+    # Monday 2026-06-01 08:00 UTC -> next "0 9 * * *" is same day 09:00 UTC.
+    base = _dt.datetime(2026, 6, 1, 8, 0, tzinfo=_dt.timezone.utc).timestamp()
     ts = next_run("0 9 * * *", after=base)
-    got = _dt.datetime.fromtimestamp(ts)
+    got = _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc)
     assert got.hour == 9 and got.minute == 0
     assert got.date() == _dt.date(2026, 6, 1)
 
 
-def test_scheduler_next_run_weekday_only():
+def test_scheduler_next_run_weekday_only_utc():
     import datetime as _dt
 
     from maverick.scheduler import next_run
-    # Friday 2026-06-05 10:00, schedule "0 9 * * 1-5" -> next is
-    # Monday 2026-06-08 09:00 (skips the weekend).
-    base = _dt.datetime(2026, 6, 5, 10, 0, 0).timestamp()
+    # Friday 2026-06-05 10:00 UTC, "0 9 * * 1-5" -> Monday 2026-06-08 09:00.
+    base = _dt.datetime(2026, 6, 5, 10, 0, tzinfo=_dt.timezone.utc).timestamp()
     ts = next_run("0 9 * * 1-5", after=base)
-    got = _dt.datetime.fromtimestamp(ts)
+    got = _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc)
     assert got.weekday() == 0  # Monday
     assert got.date() == _dt.date(2026, 6, 8)
+
+
+def test_scheduler_next_run_is_utc():
+    """Fields match UTC regardless of host TZ — '0 0 * * *' is 00:00 UTC."""
+    import datetime as _dt
+
+    from maverick.scheduler import next_run
+    base = _dt.datetime(2026, 6, 1, 12, 0, tzinfo=_dt.timezone.utc).timestamp()
+    ts = next_run("0 0 * * *", after=base)
+    got = _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc)
+    assert got.hour == 0 and got.minute == 0
+    assert got.date() == _dt.date(2026, 6, 2)
 
 
 def test_scheduler_schedule_cron_enqueues(tmp_path):
