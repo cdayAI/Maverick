@@ -1614,6 +1614,64 @@ def _consumer_api_key() -> dict[str, str]:
     return {}
 
 
+def write_consumer_config(
+    *,
+    user_name: str,
+    keys: dict[str, str],
+    workdir: str,
+    budget: dict[str, float],
+) -> None:
+    """Write a consumer-mode config with the safety-seat safe defaults.
+
+    Single source of truth shared by the CLI consumer flow
+    (``run_consumer``) and the desktop installer sidecar
+    (``maverick_installer.bridge``) so the two front ends can't drift.
+    Creates the workspace dir. Raises on write failure (caller renders
+    the branded error).
+    """
+    Path(workdir).expanduser().mkdir(parents=True, exist_ok=True)
+    backend = "docker" if _docker_available() else "local"
+    # Computer + browser always require explicit opt-in (consumer is
+    # never asked). When there's no Docker sandbox to contain it, also
+    # deny the host-mutating tools — fail closed on the host. With
+    # Docker present, shell/write_file/apply_patch stay enabled because
+    # the container is the blast radius, not the user's machine.
+    denied_tools = ["computer", "browser"]
+    if backend == "local":
+        denied_tools.extend(["shell", "write_file", "apply_patch", "str_replace_editor"])
+    write_config(
+        "desktop",                 # deployment
+        ["anthropic"],             # providers
+        {},                        # role_models -> kernel defaults
+        {},                        # channels -> none in consumer mode
+        {
+            "profile": "strict",          # strictest shield
+            "block_threshold": "medium",  # block medium+ threats
+            "scan_input": True,
+            "scan_tool_calls": True,
+            "scan_output": True,
+        },
+        budget,
+        {
+            "backend": backend,
+            "workdir": str(Path(workdir).expanduser()),
+            "timeout": 60,
+        },
+        keys,
+        {"computer_use": False, "browser": False},  # capabilities
+        tool_acl={"denied_tools": denied_tools},
+        rate_limits={
+            "web_search": "5/60",
+            "http_fetch": "10/60",
+            "shell": "5/60",
+            "mcp_*": "20/60",
+        },
+        retention={"audit_days": 30, "episodes_days": 90, "events_days": 30},
+        persona={"name": "Maverick", "style": "balanced", "user_name": user_name},
+        web_search_enabled=True,
+    )
+
+
 def run_consumer() -> int:
     """Four-question consumer flow. Writes a minimal config with
     consumer-grade safe defaults, then prints a one-line demo command."""
@@ -1642,63 +1700,12 @@ def run_consumer() -> int:
         "Where can Maverick work?",
         default=str(Path.home() / "Documents" / "Maverick"),
     ).strip() or str(Path.home() / "Documents" / "Maverick")
-    Path(workdir).expanduser().mkdir(parents=True, exist_ok=True)
 
     budget = _consumer_budget()
 
-    # Consumer-mode safe defaults. The safety seat catalogued the
-    # full table in round 2; this is the minimum that doesn't expose
-    # a clueless user.
-    deployment = "desktop"
-    providers = ["anthropic"]
-    role_models: dict[str, str] = {}
-    channels: dict[str, Any] = {}
-    safety = {
-        "profile": "strict",          # strictest shield
-        "block_threshold": "medium",  # block medium+ threats
-        "scan_input": True,
-        "scan_tool_calls": True,
-        "scan_output": True,
-    }
-    sandbox = {
-        # Docker only when the daemon answers; falls back to local.
-        "backend": "docker" if _docker_available() else "local",
-        "workdir": str(Path(workdir).expanduser()),
-        "timeout": 60,
-    }
-    capabilities = {"computer_use": False, "browser": False}
-    denied_tools = ["computer", "browser"]
-    if sandbox["backend"] == "local":
-        # Fail closed on host execution in consumer mode when Docker
-        # is unavailable.
-        denied_tools.extend(["shell", "write_file", "apply_patch", "str_replace_editor"])
-    tool_acl = {
-        # Computer + browser require explicit opt-in; the wizard never
-        # asks the consumer those questions.
-        "denied_tools": denied_tools,
-    }
-    rate_limits = {
-        "web_search": "5/60",
-        "http_fetch": "10/60",
-        "shell": "5/60",
-        "mcp_*": "20/60",
-    }
-    retention = {
-        "audit_days": 30,
-        "episodes_days": 90,
-        "events_days": 30,
-    }
-    persona = {"name": "Maverick", "style": "balanced", "user_name": user_name}
-
     try:
-        write_config(
-            deployment, providers, role_models, channels, safety, budget,
-            sandbox, keys, capabilities,
-            tool_acl=tool_acl,
-            rate_limits=rate_limits,
-            retention=retention,
-            persona=persona,
-            web_search_enabled=True,
+        write_consumer_config(
+            user_name=user_name, keys=keys, workdir=workdir, budget=budget,
         )
     except Exception as e:
         show_install_failure(e)

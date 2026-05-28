@@ -6,12 +6,14 @@
     id: string;
     question: string;
     choices: string[];
+    kind?: string; // "text" | "secret" | "choice" | "error"
   };
 
   let step: WizardStep | null = null;
   let answer = '';
   let error: string | null = null;
   let done = false;
+  let doneMessage = 'Maverick is configured.';
 
   async function advance(value: string) {
     error = null;
@@ -19,7 +21,10 @@
       const next = await invoke<WizardStep>('wizard_next', { answer: value });
       if (next.id === '__done__') {
         done = true;
+        doneMessage = next.question || doneMessage;
         step = null;
+      } else if (next.id === '__error__') {
+        error = next.question;
       } else {
         step = next;
         answer = '';
@@ -41,7 +46,7 @@
   {#if done}
     <section class="done">
       <h2>Setup complete.</h2>
-      <p>Maverick is configured. Open a terminal and run <code>maverick serve</code> to start.</p>
+      <p>{doneMessage}</p>
     </section>
   {:else if step}
     <section>
@@ -55,7 +60,13 @@
           {/each}
         </ul>
       {:else}
-        <input bind:value={answer} on:keydown={(e) => e.key === 'Enter' && advance(answer)} />
+        <!-- secret steps (API keys) render as a password field -->
+        <input
+          type={step.kind === 'secret' ? 'password' : 'text'}
+          bind:value={answer}
+          on:keydown={(e) => e.key === 'Enter' && advance(answer)}
+          autofocus
+        />
         <button on:click={() => advance(answer)}>Next</button>
       {/if}
     </section>

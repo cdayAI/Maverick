@@ -12,26 +12,26 @@ Protocol (line-delimited JSON):
 When the wizard is complete, sidecar emits ``{"id": "__done__", ...}``
 and exits.
 
-This script is a thin layer over ``maverick_installer.wizard`` so the
-GUI and CLI stay in lockstep -- one wizard implementation, two front
-ends.
+The four questions mirror the CLI's consumer mode exactly (name,
+sign-in key, working directory, budget) and the resulting config is
+written by the SAME ``write_consumer_config`` helper the CLI uses, so
+the GUI and CLI can't drift.
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
+from pathlib import Path
 from typing import Any
 
-from . import models as catalog
-from .wizard import (
-    CHANNELS,
-    CONFIG_DIR,
-    write_config,
-)
+from .wizard import write_consumer_config
 
 
-def _step(id: str, question: str, choices: list[str]) -> dict[str, Any]:
-    return {"id": id, "question": question, "choices": choices}
+def _step(id: str, question: str, choices: list[str], *, kind: str = "choice") -> dict[str, Any]:
+    # `kind` lets the Svelte UI render the right control: a choice list,
+    # a free-text box, or a masked secret field.
+    return {"id": id, "question": question, "choices": choices, "kind": kind}
 
 
 def _send(step: dict[str, Any]) -> None:
@@ -43,122 +43,82 @@ def _recv() -> str:
     return sys.stdin.readline().strip()
 
 
-STEPS = [
-    "welcome",
-    "deployment",
-    "providers",
-    "models_default",
-    "channels_pick",
-    "safety",
-    "confirm",
-]
-
-
 def run() -> None:
-    """Sidecar entry point.
+    """Sidecar entry point: the four-question consumer flow.
 
-    Simplified linear flow vs. the CLI wizard's branching: the desktop
-    installer fills most settings with safe defaults and asks four
-    questions (name, sign-in, working directory, budget).
+    Matches ``maverick_installer.wizard.run_consumer`` question for
+    question. No jargon, no provider picker, no DevTools paste.
     """
-    state: dict[str, Any] = {
-        "deployment": "desktop",
-        "providers": ["anthropic"],
-        "role_models": {},
-        "channels": {},
-        "channel_envs": set(),
-        "safety": {
-            "profile": "balanced", "block_threshold": "high",
-            "scan_input": True, "scan_tool_calls": True, "scan_output": True,
-        },
-        "budget": {"max_dollars": 5.0, "max_wall_seconds": 3600.0, "max_tool_calls": 500},
-        "sandbox": {"backend": "local", "workdir": str(CONFIG_DIR.parent / "maverick-workspace"),
-                    "timeout": 60},
-        "keys": {},
+    default_name = os.environ.get("USER") or os.environ.get("USERNAME") or ""
+    default_workdir = str(Path.home() / "Documents" / "Maverick")
+
+    # The first invoke carries no answer; consume it and ask Q1.
+    _recv()
+
+    # Q1: name
+    _send(_step(
+        "name",
+        "What should we call you?",
+        [],
+        kind="text",
+    ))
+    user_name = _recv().strip() or default_name or "you"
+
+    # Q2: API key (sign-in). The UI shows the console.anthropic.com link
+    # and a masked field. Blank == skip (config saved without a key).
+    _send(_step(
+        "api_key",
+        "Paste your Anthropic API key. Get one at "
+        "https://console.anthropic.com/settings/keys (or leave blank to skip).",
+        [],
+        kind="secret",
+    ))
+    raw_key = _recv().strip()
+    keys: dict[str, str] = {"ANTHROPIC_API_KEY": raw_key} if raw_key else {}
+
+    # Q3: working directory
+    _send(_step(
+        "workdir",
+        "Where can Maverick work? (a folder it can create files in)",
+        [],
+        kind="text",
+    ))
+    workdir = _recv().strip() or default_workdir
+
+    # Q4: budget
+    _send(_step(
+        "budget",
+        "Stop after spending how much per task?",
+        ["$1", "$5", "$20"],
+    ))
+    budget_ans = _recv().strip() or "$5"
+    try:
+        dollars = float(budget_ans.lstrip("$"))
+    except ValueError:
+        dollars = 5.0
+    budget = {
+        "max_dollars": dollars,
+        "max_wall_seconds": 600.0,
+        "max_tool_calls": 100,
     }
 
-    # Step 1: welcome (no answer expected on first call)
-    _recv()
-    _send(_step(
-        "deployment",
-        "Where will Maverick run?",
-        [
-            "desktop (this computer)",
-            "docker (local container)",
-            "vps (remote server)",
-            "phone (companion via channels)",
-        ],
-    ))
-
-    ans = _recv()
-    state["deployment"] = ans.split()[0]
-    if state["deployment"] == "docker":
-        state["sandbox"]["backend"] = "docker"
-
-    # Step 2: providers
-    _send(_step(
-        "providers",
-        "Which AI providers? (Anthropic is recommended for beginners)",
-        [info["label"] for info in catalog.PROVIDERS.values()],
-    ))
-    ans = _recv()
-    # For the GUI we pick the matching provider id by label.
-    state["providers"] = [
-        prov_id for prov_id, info in catalog.PROVIDERS.items() if info["label"] == ans
-    ] or ["anthropic"]
-
-    # Step 3: API keys (one question per provider, free text)
-    for prov in state["providers"]:
-        info = catalog.PROVIDERS[prov]
-        env_name = info.get("env")
-        if env_name:
-            _send(_step(f"key_{env_name}", f"Paste your {env_name}", []))
-            key = _recv()
-            if key:
-                state["keys"][env_name] = key
-
-    # Step 4: channels
-    _send(_step(
-        "channels",
-        "Enable any messaging channels? (Comma-separated; blank for none)",
-        [f"{ch_id} ({label})" for ch_id, label, _ in CHANNELS],
-    ))
-    ans = _recv()
-    # parse "telegram, discord" etc.
-    if ans:
-        picked_ids = [a.strip().split()[0] for a in ans.split(",") if a.strip()]
-        for ch_id in picked_ids:
-            info = next((c for c in CHANNELS if c[0] == ch_id), None)
-            if info:
-                state["channels"][ch_id] = {"enabled": True}
-                state["channel_envs"].update(info[2])
-
-    # Step 5: safety
-    _send(_step(
-        "safety",
-        "Safety profile (recommended: balanced)",
-        ["strict", "balanced", "permissive", "off"],
-    ))
-    ans = _recv() or "balanced"
-    state["safety"]["profile"] = ans
-
-    # Final: write config
-    write_config(
-        state["deployment"],
-        state["providers"],
-        state["role_models"],
-        state["channels"],
-        state["safety"],
-        state["budget"],
-        state["sandbox"],
-        state["keys"],
+    write_consumer_config(
+        user_name=user_name, keys=keys, workdir=workdir, budget=budget,
     )
-    _send(_step("__done__", "Setup complete. Maverick is ready.", []))
+
+    if keys:
+        msg = f"Setup complete, {user_name}. Maverick is ready."
+    else:
+        msg = (
+            f"Setup saved, {user_name}. Add an API key later from Settings "
+            "or by running 'maverick init' again."
+        )
+    _send(_step("__done__", msg, []))
 
 
 if __name__ == "__main__":
     try:
         run()
     except Exception as e:
-        _send({"id": "__error__", "question": str(e), "choices": []})
+        _send({"id": "__error__", "question": str(e), "choices": [], "kind": "error"})
         sys.exit(1)

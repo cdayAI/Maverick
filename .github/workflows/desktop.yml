@@ -1,0 +1,101 @@
+name: Desktop bundle
+
+# Builds the Tauri desktop installer for macOS, Windows, and Linux.
+#
+# Status: produces UNSIGNED bundles. They run for development and
+# internal testing but trip SmartScreen (Windows) / Gatekeeper (macOS)
+# for end users. Code-signing + notarization are gated on the Apple
+# Developer Program / Azure Trusted Signing certs (Tier-3 calendar
+# work); the secret placeholders below are where they plug in once
+# available.
+#
+# Also note: the bundle currently shells out to the system Python for
+# the wizard sidecar. Until embedded Python (python-build-standalone)
+# lands, the produced bundle requires Python 3.10+ on the target
+# machine. Tracked separately.
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - 'desktop-v*'
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/installer-desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux bundle deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Enable pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/installer-desktop/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('apps/installer-desktop/src-tauri/Cargo.toml') }}
+
+      - name: Install frontend deps
+        run: pnpm install
+
+      - name: Generate icon variants from source icon
+        # Turns the committed src-tauri/icons/icon.png into the
+        # platform-specific 32x32 / 128x128 / icns / ico the bundler
+        # expects (referenced in tauri.conf.json).
+        run: pnpm tauri icon src-tauri/icons/icon.png
+
+      - name: Build bundle (unsigned)
+        run: pnpm tauri build
+        env:
+          # Signing identities plug in here once the certs exist.
+          # Empty = unsigned build, which is what we ship until Tier-3.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Upload bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: maverick-desktop-${{ matrix.target }}
+          path: |
+            apps/installer-desktop/src-tauri/target/release/bundle/**/*.dmg
+            apps/installer-desktop/src-tauri/target/release/bundle/**/*.app
+            apps/installer-desktop/src-tauri/target/release/bundle/**/*.msi
+            apps/installer-desktop/src-tauri/target/release/bundle/**/*.exe
+            apps/installer-desktop/src-tauri/target/release/bundle/**/*.AppImage
+            apps/installer-desktop/src-tauri/target/release/bundle/**/*.deb
+          if-no-files-found: warn
