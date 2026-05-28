@@ -213,6 +213,19 @@ async def bearer_auth(request: Request, call_next):
         # the network. Set MAVERICK_DASHBOARD_TOKEN to allow remote access.
         client_host = request.client.host if request.client else ""
         if _is_loopback_client(client_host):
+            # Loopback is served without a bearer, so a malicious page open in
+            # the user's browser could otherwise drive mutating endpoints via an
+            # ambient cross-site request (CSRF): cancel/resume goals, disable
+            # safety tools, arm the killswitch, purge caches. Gate unsafe methods
+            # behind the same-origin check centrally (the one /chat/send already
+            # enforces per-route) so every current and future /api/v1 mutation is
+            # covered. Token mode needs no such check — a cross-site page cannot
+            # attach the Authorization header.
+            if not _is_same_origin(request):
+                return JSONResponse(
+                    {"detail": "cross-site request blocked"},
+                    status_code=403,
+                )
             return await call_next(request)
         return JSONResponse(
             {"detail": "dashboard requires MAVERICK_DASHBOARD_TOKEN for non-loopback access"},

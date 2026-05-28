@@ -87,6 +87,50 @@ def test_safe_methods_skip_csrf(monkeypatch, tmp_path):
     assert resp.status_code == 200
 
 
+# ---------- same-origin now covers /api/v1 mutations (launch review) ----------
+
+def test_api_v1_mutation_blocks_forged_origin(monkeypatch, tmp_path):
+    """The /api/v1 mutating routes (cancel/resume/halt/disable/enable/purge,
+    POST facts) skipped the same-origin check that /chat/send enforced. In
+    no-token (loopback) mode a malicious page could disable safety tools, arm
+    the killswitch, or purge caches via an ambient cross-site POST. Now gated
+    centrally in bearer_auth."""
+    from maverick import world_model
+    monkeypatch.setattr(world_model, "DEFAULT_DB", tmp_path / "world.db")
+    monkeypatch.delenv("MAVERICK_DASHBOARD_TOKEN", raising=False)
+    client = _client()
+    resp = client.post(
+        "/api/v1/facts",
+        json={"key": "x", "value": "y"},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert resp.status_code == 403
+    assert "cross-site" in resp.json()["detail"]
+
+
+def test_api_v1_mutation_blocks_missing_origin(monkeypatch, tmp_path):
+    from maverick import world_model
+    monkeypatch.setattr(world_model, "DEFAULT_DB", tmp_path / "world.db")
+    monkeypatch.delenv("MAVERICK_DASHBOARD_TOKEN", raising=False)
+    client = _client()
+    resp = client.post("/api/v1/facts", json={"key": "x", "value": "y"})
+    assert resp.status_code == 403
+
+
+def test_api_v1_mutation_allows_matching_origin(monkeypatch, tmp_path):
+    """A legitimate same-origin request passes the gate and reaches the handler."""
+    from maverick import world_model
+    monkeypatch.setattr(world_model, "DEFAULT_DB", tmp_path / "world.db")
+    monkeypatch.delenv("MAVERICK_DASHBOARD_TOKEN", raising=False)
+    client = _client()
+    resp = client.post(
+        "/api/v1/facts",
+        json={"key": "city", "value": "Lisbon"},
+        headers={"Origin": "http://testserver"},
+    )
+    assert resp.status_code == 204
+
+
 # ---------- baseline security headers ----------
 
 def test_security_headers_present_on_every_response(monkeypatch, tmp_path):
