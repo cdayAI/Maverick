@@ -447,3 +447,54 @@ def test_compute_fallback_blocks_power_tower(monkeypatch):
     assert "ERROR" in out  # blocked, not a 370M-digit hang
     ok = compute().fn({"op": "evaluate", "expr": "2**8"})
     assert "256" in ok
+
+
+# ---------- replay_export: non-numeric goal_id skips, not crashes ----
+
+def test_replay_export_skips_bad_goal_id(tmp_path, monkeypatch):
+    import json as _json
+
+    import maverick.replay_export as rex
+    audit = tmp_path / "audit"
+    audit.mkdir()
+    f = audit / "2026-05-28.ndjson"
+    rows = [
+        {"goal_id": 7, "kind": "goal_start"},
+        {"goal_id": "not-a-number", "kind": "junk"},  # must not abort
+        {"goal_id": 7, "kind": "goal_end"},
+    ]
+    f.write_text("\n".join(_json.dumps(r) for r in rows) + "\n")
+    monkeypatch.setattr(rex, "_AUDIT_DIR", audit)
+    out_file = tmp_path / "r.json"
+    n = rex.export_json(7, out_file)
+    assert n == 2  # both goal-7 rows survived; the bad row was skipped
+
+
+# ---------- retention: only the known tables are purgeable ----------
+
+def test_retention_rejects_unknown_table(tmp_path):
+    import sqlite3
+
+    from maverick.audit.retention import _purge_table_by_time
+    db = tmp_path / "w.db"
+    sqlite3.connect(str(db)).close()
+    try:
+        _purge_table_by_time(db, "goals; DROP TABLE goals", "x", 0.0, dry_run=True)
+    except ValueError as e:
+        assert "unknown table/column" in str(e)
+        return
+    raise AssertionError("expected ValueError on non-whitelisted table")
+
+
+def test_retention_allows_known_table(tmp_path):
+    import sqlite3
+
+    from maverick.audit.retention import _purge_table_by_time
+    db = tmp_path / "w.db"
+    c = sqlite3.connect(str(db))
+    c.execute("CREATE TABLE episodes (id INTEGER, ended_at REAL)")
+    c.execute("INSERT INTO episodes VALUES (1, 100.0)")
+    c.commit()
+    c.close()
+    removed = _purge_table_by_time(db, "episodes", "ended_at", 200.0, dry_run=True)
+    assert removed == 1  # dry run counts the old row, doesn't delete

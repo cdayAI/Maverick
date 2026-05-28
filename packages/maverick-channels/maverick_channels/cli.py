@@ -25,7 +25,10 @@ class CLIChannel(Channel):
             if not text:
                 continue
             msg = IncomingMessage(user_id="local", text=text, channel="cli")
-            reply = await self.handler(msg)
+            try:
+                reply = await self.handler(msg)
+            except Exception as e:  # one bad run must not kill the session
+                reply = f"Sorry, I ran into an error: {e}"
             await self.send("local", reply)
 
     async def send(self, user_id: str, text: str) -> None:

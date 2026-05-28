@@ -93,8 +93,18 @@ def _purge_table_by_time(
 ) -> int:
     if not db_path.exists():
         return 0
+    # Table/column names can't be parameter-bound, so they MUST come from
+    # this fixed allow-set — never from caller/user input — to keep the
+    # f-string interpolation below injection-free.
+    _ALLOWED = {("episodes", "ended_at"), ("goal_events", "ts")}
+    if (table, time_col) not in _ALLOWED:
+        raise ValueError(
+            f"refusing to purge unknown table/column: {table!r}/{time_col!r}"
+        )
     conn = sqlite3.connect(str(db_path))
     try:
+        # The agent may be writing concurrently; wait rather than fail fast.
+        conn.execute("PRAGMA busy_timeout=5000")
         cur = conn.execute(
             f"SELECT COUNT(*) FROM {table} WHERE {time_col} IS NOT NULL AND {time_col} < ?",
             (cutoff_ts,),

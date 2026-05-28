@@ -88,7 +88,13 @@ class EmailChannel(Channel):
                     log.exception("handler error")
                     reply = f"⚠ error: {e}"
                 reply_subject = f"Re: {subject}" if subject else "Maverick"
-                await self.send(from_addr, reply, subject=reply_subject)
+                # A single SMTP send failure must not abort the batch —
+                # otherwise already-handled messages get reprocessed (and
+                # re-run the swarm) on the next poll.
+                try:
+                    await self.send(from_addr, reply, subject=reply_subject)
+                except Exception:
+                    log.exception("email send failed for %s", from_addr)
             await asyncio.sleep(self.poll_interval)
 
     def _fetch_unseen(self) -> list[tuple[str, str, str]]:

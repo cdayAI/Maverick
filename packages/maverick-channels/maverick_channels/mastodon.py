@@ -161,8 +161,32 @@ class MastodonChannel(Channel):
                     resp.status_code, resp.text[:200],
                 )
 
+    async def _seed_cursor(self) -> None:
+        """Set since_id to the newest existing notification so the first
+        poll only returns mentions that arrive AFTER startup — otherwise
+        a cold start replays up to 30 historical mentions (duplicate
+        swarm runs + replies)."""
+        if self._last_seen_id is not None:
+            return
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(
+                    f"{self._base_url}/api/v1/notifications",
+                    headers=self._headers(),
+                    params={"types[]": "mention", "limit": 1},
+                )
+                resp.raise_for_status()
+                latest = resp.json() or []
+            if latest:
+                self._last_seen_id = latest[0]["id"]
+        except Exception as e:
+            log.warning("mastodon cursor seed failed (will skip backlog "
+                        "filter on first poll): %s", e)
+
     async def start(self) -> None:
         self._running = True
+        await self._seed_cursor()
         log.info("Mastodon channel started (instance=%s)", self.instance)
         try:
             while not self._stop_event.is_set():

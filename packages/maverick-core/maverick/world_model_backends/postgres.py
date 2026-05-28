@@ -27,8 +27,9 @@ from __future__ import annotations
 import logging
 import os
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterator, Optional
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ SCHEMA: list[str] = [
       goal_id       INTEGER NOT NULL REFERENCES goals(id),
       started_at    DOUBLE PRECISION NOT NULL,
       ended_at      DOUBLE PRECISION,
+      summary       TEXT,
       outcome       TEXT,
       cost_dollars  DOUBLE PRECISION DEFAULT 0,
       input_tokens  INTEGER DEFAULT 0,
@@ -64,6 +66,8 @@ SCHEMA: list[str] = [
       tool_calls    INTEGER DEFAULT 0
     );
     """,
+    # Idempotent add for DBs created before `summary` existed.
+    "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS summary TEXT;",
     "CREATE INDEX IF NOT EXISTS idx_pg_episodes_goal_started ON episodes(goal_id, started_at DESC);",
     """
     CREATE TABLE IF NOT EXISTS goal_events (
@@ -125,17 +129,45 @@ class PostgresWorldModel:
         self.conn = psycopg.connect(self._dsn, autocommit=False)
         self._migrate()
 
+    def __enter__(self) -> "PostgresWorldModel":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    @contextmanager
+    def _tx(self) -> Iterator:
+        """Cursor scope that commits on success and ROLLS BACK on error.
+
+        Critical for autocommit=False: a single failed statement aborts
+        the transaction, and without a rollback every later statement on
+        this (shared, long-lived) connection fails with
+        InFailedSqlTransaction until the process restarts. Rolling back
+        keeps the connection usable.
+        """
+        cur = self.conn.cursor()
+        try:
+            yield cur
+            self.conn.commit()
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:  # pragma: no cover
+                pass
+            raise
+        finally:
+            cur.close()
+
     def _migrate(self) -> None:
-        with self.conn.cursor() as cur:
+        with self._tx() as cur:
             for stmt in SCHEMA:
                 cur.execute(stmt)
-        self.conn.commit()
 
     # ----- goal methods -----
 
     def create_goal(self, title: str, description: str = "", parent_id: Optional[int] = None) -> int:
         now = time.time()
-        with self.conn.cursor() as cur:
+        with self._tx() as cur:
             cur.execute(
                 "INSERT INTO goals(parent_id, title, description, status, "
                 "created_at, updated_at) VALUES(%s, %s, %s, 'pending', %s, %s) "
@@ -143,11 +175,10 @@ class PostgresWorldModel:
                 (parent_id, title, description, now, now),
             )
             row = cur.fetchone()
-        self.conn.commit()
         return int(row[0])
 
     def get_goal(self, goal_id: int) -> Optional[PGGoal]:
-        with self.conn.cursor() as cur:
+        with self._tx() as cur:
             cur.execute(
                 "SELECT id, parent_id, title, description, status, "
                 "created_at, updated_at, deadline, result FROM goals WHERE id=%s",
@@ -160,15 +191,14 @@ class PostgresWorldModel:
 
     def set_goal_status(self, goal_id: int, status: str, *, result: Optional[str] = None) -> None:
         now = time.time()
-        with self.conn.cursor() as cur:
+        with self._tx() as cur:
             cur.execute(
                 "UPDATE goals SET status=%s, result=%s, updated_at=%s WHERE id=%s",
                 (status, result, now, goal_id),
             )
-        self.conn.commit()
 
     def list_active_goals(self, limit: int = 50) -> list[PGGoal]:
-        with self.conn.cursor() as cur:
+        with self._tx() as cur:
             cur.execute(
                 "SELECT id, parent_id, title, description, status, "
                 "created_at, updated_at, deadline, result FROM goals "
@@ -182,14 +212,13 @@ class PostgresWorldModel:
     # ----- episodes -----
 
     def start_episode(self, goal_id: int) -> int:
-        with self.conn.cursor() as cur:
+        with self._tx() as cur:
             cur.execute(
                 "INSERT INTO episodes(goal_id, started_at) VALUES(%s, %s) "
                 "RETURNING id",
                 (goal_id, time.time()),
             )
             row = cur.fetchone()
-        self.conn.commit()
         return int(row[0])
 
     def end_episode(
@@ -203,33 +232,31 @@ class PostgresWorldModel:
         output_tokens: int = 0,
         tool_calls: int = 0,
     ) -> None:
-        with self.conn.cursor() as cur:
+        with self._tx() as cur:
             cur.execute(
-                "UPDATE episodes SET ended_at=%s, outcome=%s, "
+                "UPDATE episodes SET ended_at=%s, summary=%s, outcome=%s, "
                 "cost_dollars=%s, input_tokens=%s, output_tokens=%s, "
                 "tool_calls=%s WHERE id=%s",
-                (time.time(), outcome,
+                (time.time(), summary, outcome,
                  cost_dollars, input_tokens, output_tokens, tool_calls,
                  episode_id),
             )
-        self.conn.commit()
 
     # ----- events -----
 
     def append_event(self, goal_id: int, agent: str, kind: str, content: str) -> int:
-        with self.conn.cursor() as cur:
+        with self._tx() as cur:
             cur.execute(
                 "INSERT INTO goal_events(goal_id, agent, kind, content, ts) "
                 "VALUES(%s, %s, %s, %s, %s) RETURNING id",
                 (goal_id, agent, kind, content, time.time()),
             )
             row = cur.fetchone()
-        self.conn.commit()
         return int(row[0])
 
     def goal_events(self, goal_id: int, since_id: int = 0, limit: int = 200) -> list:
         from ..world_model import GoalEvent
-        with self.conn.cursor() as cur:
+        with self._tx() as cur:
             cur.execute(
                 "SELECT id, goal_id, agent, kind, content, ts FROM goal_events "
                 "WHERE goal_id=%s AND id > %s ORDER BY id ASC LIMIT %s",
