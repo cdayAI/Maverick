@@ -52,7 +52,6 @@ _IMPACT_SCHEMA: dict[str, Any] = {
             "type": "array", "items": {"type": "string"},
             "description": "Test directories to scan (default: tests, test).",
         },
-        "workdir": {"type": "string", "description": "Repo root (default: cwd)."},
     },
     "required": ["op"],
 }
@@ -134,9 +133,18 @@ def _walk_test_files(roots: Iterable[Path]) -> list[Path]:
 def _resolve_roots(workdir: Path, test_dirs: list[str]) -> list[Path]:
     roots: list[Path] = []
     for d in test_dirs:
-        for candidate in workdir.rglob(d):
-            if candidate.is_dir():
-                roots.append(candidate)
+        if not isinstance(d, str) or not d.strip():
+            continue
+        rel = Path(d.strip())
+        if rel.is_absolute() or ".." in rel.parts:
+            continue
+        candidate = (workdir / rel).resolve()
+        try:
+            candidate.relative_to(workdir)
+        except ValueError:
+            continue
+        if candidate.is_dir():
+            roots.append(candidate)
     return roots
 
 
@@ -181,7 +189,7 @@ def _run(args: dict[str, Any]) -> str:
     op = args.get("op")
     if not op:
         return "ERROR: op is required"
-    workdir = Path(args.get("workdir") or Path.cwd()).expanduser().resolve()
+    workdir = Path.cwd().resolve()
     test_dirs = args.get("test_dirs") or ["tests", "test"]
     try:
         if op == "analyze":
@@ -205,7 +213,7 @@ def test_impact() -> Tool:
             "ops: analyze (unified diff string -> impacted tests), "
             "analyze_files (explicit file list). Heuristic: walks "
             "tests/ matching imports + bare module references. "
-            "Optional test_dirs + workdir overrides."
+            "Optional test_dirs override."
         ),
         input_schema=_IMPACT_SCHEMA,
         fn=_run,

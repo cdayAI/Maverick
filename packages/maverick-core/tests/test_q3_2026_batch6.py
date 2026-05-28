@@ -30,21 +30,22 @@ def test_test_impact_requires_op():
     assert "op is required" in test_impact().fn({})
 
 
-def test_test_impact_analyze_files(tmp_path):
+def test_test_impact_analyze_files(tmp_path, monkeypatch):
     _seed_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
     from maverick.tools.test_impact import test_impact
     out = test_impact().fn({
         "op": "analyze_files",
         "paths": ["src/pkg/foo.py"],
-        "workdir": str(tmp_path),
     })
     assert "test_foo.py" in out
     assert "test_bar.py" not in out
     assert "test_unrelated.py" not in out
 
 
-def test_test_impact_parses_unified_diff(tmp_path):
+def test_test_impact_parses_unified_diff(tmp_path, monkeypatch):
     _seed_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
     diff = """diff --git a/src/pkg/bar.py b/src/pkg/bar.py
 --- a/src/pkg/bar.py
 +++ b/src/pkg/bar.py
@@ -56,28 +57,28 @@ def test_test_impact_parses_unified_diff(tmp_path):
     out = test_impact().fn({
         "op": "analyze",
         "diff": diff,
-        "workdir": str(tmp_path),
     })
     assert "test_bar.py" in out
     assert "test_foo.py" not in out
 
 
-def test_test_impact_empty_diff(tmp_path):
+def test_test_impact_empty_diff(tmp_path, monkeypatch):
     _seed_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
     from maverick.tools.test_impact import test_impact
     out = test_impact().fn({
-        "op": "analyze", "diff": "", "workdir": str(tmp_path),
+        "op": "analyze", "diff": "",
     })
     assert "no changed files" in out
 
 
-def test_test_impact_no_test_dir(tmp_path):
+def test_test_impact_no_test_dir(tmp_path, monkeypatch):
     (tmp_path / "src").mkdir()
+    monkeypatch.chdir(tmp_path)
     from maverick.tools.test_impact import test_impact
     out = test_impact().fn({
         "op": "analyze_files",
         "paths": ["src/x.py"],
-        "workdir": str(tmp_path),
     })
     assert "no test directories" in out
 
