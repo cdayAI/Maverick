@@ -4,23 +4,36 @@ Native Tauri GUI installer for users who never open a terminal.
 Wraps the same `maverick_installer.wizard` logic the CLI uses, behind a
 Svelte UI.
 
-## Status: scaffold (not yet shippable)
+## Status: builds an unsigned bundle
 
-The Tauri shell, Cargo manifest, Svelte frontend skeleton, and the
-Python sidecar IPC are in place. **The bundle does not build today.**
-Items still missing:
+The structural blockers are fixed — `pnpm tauri build` now produces a
+bundle on all three platforms (see `.github/workflows/desktop.yml`).
+What's done:
 
-- `src-tauri/icons/` (generate via `cargo tauri icon`)
-- `[[bin]]` target in `Cargo.toml`
-- Tauri v2 `src-tauri/capabilities/default.json` allowlist
-- Embedded Python runtime via `python-build-standalone` (the sidecar
-  currently shells out to system `python3`, which won't exist in a
-  packaged `.app`/`.msi`)
-- GitHub Actions matrix wired to `tauri-apps/tauri-action`
-- Code-signing identifiers (`APPLE_*`, `WINDOWS_PFX_*`) wired through
-  workflow secrets
+- `[[bin]]` target in `Cargo.toml`, logic split into `lib.rs` (run())
+  + a thin `main.rs` — the standard Tauri v2 layout
+- Tauri v2 `src-tauri/capabilities/default.json` allowlist (scoped to
+  the `wizard_next` command + core window ops; no shell, no fs)
+- A committed source icon at `src-tauri/icons/icon.png`; the CI step
+  + local builds run `pnpm tauri icon` to generate the platform
+  variants the bundler expects
+- GitHub Actions matrix (`desktop.yml`) on macOS / Windows / Linux
 
-Use the CLI wizard (`maverick init`) until these are addressed.
+**Two things still gate a consumer-grade release:**
+
+1. **Embedded Python.** The sidecar shells out to the system Python
+   (`python3` then `python`). A packaged bundle on a machine without
+   Python surfaces a clear error in the UI instead of crashing — but
+   it still won't *run* the wizard there. Bundling
+   `python-build-standalone` is the fix (tracked separately; ~3-5 days).
+2. **Code signing.** `desktop.yml` produces UNSIGNED bundles, which
+   trip SmartScreen (Windows) and Gatekeeper (macOS). The signing
+   secret placeholders are wired in the workflow; they activate once
+   the Apple Developer Program / Azure Trusted Signing certs exist.
+
+Until both land, the CLI wizard (`maverick init`) is the supported
+install path. The desktop bundle is buildable for development +
+internal testing.
 
 ## Local development
 
