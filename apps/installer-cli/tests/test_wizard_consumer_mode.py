@@ -1,8 +1,12 @@
 """Council round-2: consumer-mode flow + first-screen picker."""
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover -- Py 3.10 CI matrix
+    import tomli as tomllib  # type: ignore[no-redef]
 
 
 # ---------- pick_mode ----------
