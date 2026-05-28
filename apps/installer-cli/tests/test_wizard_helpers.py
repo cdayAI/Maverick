@@ -36,24 +36,11 @@ def test_docker_available_happy_path(monkeypatch):
     assert wizard._docker_available() is True
 
 
-# ---------- pick_sandbox default reacts to docker presence ----------
+# ---------- pick_sandbox default stays on docker ----------
 
-def test_pick_sandbox_defaults_local_without_docker(monkeypatch):
+def test_pick_sandbox_defaults_docker_when_unavailable(monkeypatch):
     from maverick_installer import wizard
     monkeypatch.setattr(wizard, "_docker_available", lambda: False)
-    captured = {}
-    def fake_select(message, choices, default=None):
-        captured["default"] = default
-        return choices[0]
-    monkeypatch.setattr(wizard, "_q_select", fake_select)
-    monkeypatch.setattr(wizard, "_q_text", lambda *a, **kw: "/tmp/ws")
-    wizard.pick_sandbox()
-    assert captured["default"].startswith("local")
-
-
-def test_pick_sandbox_defaults_docker_when_available(monkeypatch):
-    from maverick_installer import wizard
-    monkeypatch.setattr(wizard, "_docker_available", lambda: True)
     captured = {}
     def fake_select(message, choices, default=None):
         captured["default"] = default
