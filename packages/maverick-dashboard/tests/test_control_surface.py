@@ -170,12 +170,11 @@ def test_list_channels(monkeypatch, tmp_path: Path):
 
 def test_audit_tail_empty(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("MAVERICK_DASHBOARD_TOKEN", raising=False)
-    monkeypatch.setattr(
-        "maverick.audit.writer.DEFAULT_AUDIT_DIR", tmp_path / "audit",
-    )
-    # Also reset the singleton AuditLog so it picks up the new dir.
+    # AuditLog's default arg was bound at class-def time, so patching
+    # DEFAULT_AUDIT_DIR on the module is ineffective. Inject a fresh
+    # singleton with the explicit tmp dir.
     import maverick.audit.writer as w
-    w._default = None
+    w._default = w.AuditLog(audit_dir=tmp_path / "audit")
     client = _client()
     r = client.get("/api/v1/audit/tail")
     assert r.status_code == 200

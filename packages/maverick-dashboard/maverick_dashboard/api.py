@@ -75,9 +75,23 @@ class SkillOut(BaseModel):
     tools_needed: list[str]
 
 
+_world_cache: dict[str, object] = {}
+
+
 def _world():
+    """Return a per-DB-path cached WorldModel (council perf fix).
+
+    See ``maverick_dashboard.app._world`` for the rationale; both
+    modules share the same cache pattern but keep their own dicts to
+    avoid an import cycle.
+    """
     from maverick.world_model import DEFAULT_DB, WorldModel
-    return WorldModel(DEFAULT_DB)
+    key = str(DEFAULT_DB)
+    cached = _world_cache.get(key)
+    if cached is None:
+        cached = WorldModel(DEFAULT_DB)
+        _world_cache[key] = cached
+    return cached
 
 
 def _to_goal_out(g) -> GoalOut:
@@ -132,11 +146,17 @@ async def list_goals(
     limit: int = 50,
     offset: int = 0,
 ) -> list[GoalOut]:
+    """List goals (newest first), paginated.
+
+    Council perf fix: previous version pulled every goal ever into
+    Python via ``list_goals()``, then sliced. Now the LIMIT/OFFSET are
+    pushed to SQL.
+    """
     w = _world()
-    goals = w.list_goals(status=status)
-    if offset:
-        goals = goals[:-offset] if offset < len(goals) else []
-    return [_to_goal_out(g) for g in goals[-limit:]]
+    limit = max(1, min(int(limit or 50), 500))
+    offset = max(0, int(offset or 0))
+    goals = w.list_goals(status=status, limit=limit, offset=offset, order="desc")
+    return [_to_goal_out(g) for g in goals]
 
 
 @router.get("/goals/{goal_id}", response_model=GoalOut)
