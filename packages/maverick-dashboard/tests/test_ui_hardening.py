@@ -25,8 +25,17 @@ def test_csp_header_present_and_locked_down(monkeypatch, tmp_path):
     assert "form-action 'self'" in csp
     assert "object-src 'none'" in csp
     assert "base-uri 'none'" in csp
-    # No external origins permitted anywhere.
+    # Dashboard pages stay self-only.
     assert "http://" not in csp and "https://" not in csp
+
+
+def test_docs_csp_allows_fastapi_cdn_assets(monkeypatch):
+    monkeypatch.delenv("MAVERICK_DASHBOARD_TOKEN", raising=False)
+    docs_csp = _client().get("/docs").headers.get("Content-Security-Policy", "")
+    redoc_csp = _client().get("/redoc").headers.get("Content-Security-Policy", "")
+    assert "https://cdn.jsdelivr.net" in docs_csp
+    assert "https://cdn.jsdelivr.net" in redoc_csp
+    assert "connect-src 'self'" in docs_csp and "connect-src 'self'" in redoc_csp
 
 
 def test_csp_on_api_responses_too(monkeypatch, tmp_path):

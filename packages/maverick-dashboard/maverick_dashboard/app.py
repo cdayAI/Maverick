@@ -99,6 +99,30 @@ app = FastAPI(
 )
 app.include_router(api_router)
 
+_DOCS_CSP = (
+    "default-src 'self'; "
+    "img-src 'self' data: https:; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "object-src 'none'"
+)
+
+_DEFAULT_CSP = (
+    "default-src 'self'; "
+    "img-src 'self' data:; "
+    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "object-src 'none'"
+)
+
 
 @app.middleware("http")
 async def persist_theme(request: Request, call_next):
@@ -249,18 +273,8 @@ async def security_headers(request: Request, call_next):
     #   - object-src 'none', base-uri 'none' → kill plugin + <base> tricks
     # This matters because the dashboard renders agent-produced text;
     # if any of it ever reaches an HTML sink, CSP is the backstop.
-    response.headers.setdefault(
-        "Content-Security-Policy",
-        "default-src 'self'; "
-        "img-src 'self' data:; "
-        "style-src 'self' 'unsafe-inline'; "
-        "script-src 'self' 'unsafe-inline'; "
-        "connect-src 'self'; "
-        "frame-ancestors 'none'; "
-        "base-uri 'none'; "
-        "form-action 'self'; "
-        "object-src 'none'",
-    )
+    csp = _DOCS_CSP if request.url.path in {"/docs", "/redoc"} else _DEFAULT_CSP
+    response.headers.setdefault("Content-Security-Policy", csp)
     return response
 
 
