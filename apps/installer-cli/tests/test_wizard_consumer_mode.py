@@ -80,6 +80,8 @@ def test_run_consumer_writes_safe_defaults(monkeypatch, tmp_path: Path):
     assert config["sandbox"]["backend"] == "local"          # no docker
     assert "computer" in config["security"]["denied_tools"]
     assert "browser" in config["security"]["denied_tools"]
+    assert "shell" in config["security"]["denied_tools"]
+    assert "write_file" in config["security"]["denied_tools"]
     assert config["retention"]["audit_days"] == 30
     assert config["rate_limits"]["web_search"] == "5/60"
     assert config["persona"]["user_name"] == "Alex"
@@ -114,6 +116,18 @@ def test_run_consumer_docker_default_when_available(monkeypatch, tmp_path: Path)
     wizard.run_consumer()
     config = tomllib.loads((tmp_path / ".maverick" / "config.toml").read_text())
     assert config["sandbox"]["backend"] == "docker"
+
+
+def test_run_consumer_docker_mode_keeps_host_mutation_tools_enabled(monkeypatch, tmp_path: Path):
+    wizard = _stub_wizard_io(monkeypatch, tmp_path)
+    monkeypatch.setattr(wizard, "_docker_available", lambda: True)
+    wizard.run_consumer()
+    config = tomllib.loads((tmp_path / ".maverick" / "config.toml").read_text())
+    denied = config["security"]["denied_tools"]
+    assert "computer" in denied
+    assert "browser" in denied
+    assert "shell" not in denied
+    assert "write_file" not in denied
 
 
 def test_run_consumer_demo_command_uses_haiku(monkeypatch, tmp_path: Path, capsys):
