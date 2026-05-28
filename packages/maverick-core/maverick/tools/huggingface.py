@@ -21,8 +21,10 @@ import json
 import logging
 import os
 from typing import Any
+from urllib.parse import urlparse
 
 from . import Tool
+from .http_fetch import _is_private_ip
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +61,7 @@ _HF_SCHEMA: dict[str, Any] = {
 
 
 _API_BASE = "https://api-inference.huggingface.co/models"
+_MAX_IMAGE_FETCH_BYTES = 5_000_000
 
 
 def _token() -> str:
@@ -128,10 +131,20 @@ def _op_infer(model: str, inputs: Any, parameters: dict | None) -> str:
 def _op_image_classify(model: str, url: str) -> str:
     if not url:
         return "ERROR: image_classify requires url"
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return f"ERROR: only http/https supported; got scheme={parsed.scheme!r}"
+    if not parsed.netloc:
+        return "ERROR: missing host in URL"
+    if _is_private_ip(parsed.hostname or ""):
+        return f"ERROR: refusing to fetch private/loopback address {parsed.hostname!r}"
+
     import httpx
-    r = httpx.get(url, timeout=30.0, follow_redirects=True)
-    if r.status_code >= 400:
+    r = httpx.get(url, timeout=30.0, follow_redirects=False)
+    if r.status_code >= 300:
         return f"ERROR: image fetch {r.status_code}: {url}"
+    if len(r.content) > _MAX_IMAGE_FETCH_BYTES:
+        return f"ERROR: image too large ({len(r.content)} bytes > {_MAX_IMAGE_FETCH_BYTES})"
     content_type = r.headers.get("content-type", "application/octet-stream")
     code, body = _post_bytes(model, r.content, content_type)
     if code >= 400:
@@ -152,13 +165,10 @@ def _run(args: dict[str, Any]) -> str:
     model = (args.get("model") or "").strip()
     if not model:
         return "ERROR: model is required"
-    try:
-        import httpx  # noqa: F401
-    except ImportError:
-        return "ERROR: httpx not installed. Run: pip install 'maverick-agent[issue-trackers]'"
     parameters = args.get("parameters") or None
     try:
         if op == "infer":
+            import httpx  # noqa: F401
             inputs = args.get("inputs")
             if inputs is None:
                 return "ERROR: infer requires inputs"
@@ -167,6 +177,8 @@ def _run(args: dict[str, Any]) -> str:
             return _op_image_classify(model, args.get("url") or "")
         if op == "summarize":
             return _op_summarize(model, args.get("text") or "", parameters)
+    except ImportError:
+        return "ERROR: httpx not installed. Run: pip install 'maverick-agent[issue-trackers]'"
     except Exception as e:
         return f"ERROR: HF request failed: {type(e).__name__}: {e}"
     return f"ERROR: unknown op {op!r}"
