@@ -337,3 +337,113 @@ def test_podman_timeout_cleanup_swallows_cleanup_error(monkeypatch, tmp_path):
     result = backend.exec("sleep 999")
     assert result.exit_code == 124
     assert "TIMEOUT" in result.stderr
+
+
+# ---------- audit signing: tampered rows flagged, not crashed ----------
+
+def _crypto_available() -> bool:
+    try:
+        import cryptography.hazmat.primitives.asymmetric.ed25519  # noqa: F401
+        return True
+    except BaseException:
+        return False
+
+
+def test_audit_verify_flags_nonhex_sig_instead_of_crashing(tmp_path, monkeypatch):
+    if not _crypto_available():
+        return
+    import json as _json
+
+    from maverick.audit import signing
+    monkeypatch.setattr(signing, "KEY_DIR", tmp_path / "keys")
+    path = tmp_path / "audit.ndjson"
+    s = signing.AuditSigner(path)
+    s.write({"event": "a"})
+    s.write({"event": "b"})
+    # Corrupt line 1's sig to a non-hex string.
+    lines = path.read_text().splitlines()
+    row = _json.loads(lines[0])
+    row["sig"] = "zzzz-not-hex"
+    lines[0] = _json.dumps(row)
+    path.write_text("\n".join(lines) + "\n")
+    # Must return a ChainBreak (not raise), and still check later rows.
+    breaks = signing.verify_chain(path)
+    assert breaks  # did not crash
+    assert any(b.reason == "bad_signature" for b in breaks)
+
+
+def test_audit_verify_rejects_lone_pubkey(tmp_path, monkeypatch):
+    """A .pub with no sibling .key (attacker-dropped) is not trusted."""
+    if not _crypto_available():
+        return
+    import json as _json
+
+    from maverick.audit import signing
+    keydir = tmp_path / "keys"
+    monkeypatch.setattr(signing, "KEY_DIR", keydir)
+    path = tmp_path / "audit.ndjson"
+    s = signing.AuditSigner(path)
+    s.write({"event": "a"})
+    # Remove the private key, leaving only the .pub (simulating a
+    # verifier host that only has a dropped pubkey).
+    for keyfile in keydir.glob("*.key"):
+        keyfile.unlink()
+    breaks = signing.verify_chain(path)
+    assert any(b.reason == "no_pubkey" for b in breaks)
+    _ = _json  # silence
+
+
+# ---------- hackernews: null points on comment hits ----------
+
+def test_hackernews_handles_null_points(monkeypatch):
+    body = {"hits": [
+        {"title": None, "comment_text": "a comment", "points": None,
+         "objectID": "42"},
+    ]}
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json = MagicMock(return_value=body)
+    _fake_httpx(monkeypatch, get=MagicMock(return_value=resp))
+    from maverick.tools.hackernews import hackernews
+    out = hackernews().fn({"op": "search", "query": "x"})
+    assert "ERROR" not in out
+
+
+# ---------- calendar find_slot: latest_hour=23 must not crash ----------
+
+def test_calendar_find_slot_latest_hour_23(monkeypatch):
+    monkeypatch.setenv("CALDAV_URL", "https://cal.test")
+    monkeypatch.setenv("CALDAV_USER", "me@test")
+    monkeypatch.setenv("CALDAV_PASSWORD", "pw")
+    import sys as _sys
+    import types as _types
+    fake_caldav = _types.ModuleType("caldav")
+    fake_calendar = MagicMock()
+    fake_calendar.search = MagicMock(return_value=[])
+    fake_principal = MagicMock()
+    fake_principal.calendars = MagicMock(return_value=[fake_calendar])
+    fake_client = MagicMock()
+    fake_client.principal = MagicMock(return_value=fake_principal)
+    fake_caldav.DAVClient = MagicMock(return_value=fake_client)
+    monkeypatch.setitem(_sys.modules, "caldav", fake_caldav)
+    from maverick.tools.calendar_tool import calendar_tool
+    # earliest=23, latest=23 — previously max(24, min(23,23))=24 →
+    # cursor.replace(hour=24) ValueError. Must not crash now.
+    out = calendar_tool().fn({
+        "op": "find_slot", "earliest_hour": 23, "latest_hour": 23,
+    })
+    assert "hour must be in 0..23" not in out
+    assert "ValueError" not in out
+
+
+# ---------- compute fallback: power-tower CPU/memory DoS ----------
+
+def test_compute_fallback_blocks_power_tower(monkeypatch):
+    import sys as _sys
+    # Force the no-sympy fallback path.
+    monkeypatch.setitem(_sys.modules, "sympy", None)
+    from maverick.tools.compute import compute
+    out = compute().fn({"op": "evaluate", "expr": "9**9**9"})
+    assert "ERROR" in out  # blocked, not a 370M-digit hang
+    ok = compute().fn({"op": "evaluate", "expr": "2**8"})
+    assert "256" in ok

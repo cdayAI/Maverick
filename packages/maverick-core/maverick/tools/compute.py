@@ -85,6 +85,20 @@ def _evaluate_fallback(expr: str) -> str:
                 raise ValueError(f"function not allowed: {ast.dump(node.func)}")
         elif isinstance(node, (ast.Attribute, ast.Import, ast.ImportFrom)):
             raise ValueError("attribute access / imports not allowed")
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            # Bound exponentiation: without SymPy this is plain Python
+            # int ** int, so '9**9**9' (a ~370M-digit number) or
+            # '10**1000000' would hang the worker on CPU + memory. The
+            # exponent must be a small literal, and power-towers
+            # (Pow nested in a Pow operand) are rejected.
+            rt = node.right
+            if not (isinstance(rt, ast.Constant)
+                    and isinstance(rt.value, (int, float))
+                    and abs(rt.value) <= 100):
+                raise ValueError("exponent must be a constant <= 100 in fallback")
+            for operand in (node.left, node.right):
+                if isinstance(operand, ast.BinOp) and isinstance(operand.op, ast.Pow):
+                    raise ValueError("nested exponentiation not allowed in fallback")
     code = compile(tree, "<expr>", "eval")
     result = eval(code, {"__builtins__": {}}, safe_globals)
     return repr(result)
