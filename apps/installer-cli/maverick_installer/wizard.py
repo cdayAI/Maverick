@@ -1667,10 +1667,15 @@ def run_consumer() -> int:
         "timeout": 60,
     }
     capabilities = {"computer_use": False, "browser": False}
+    denied_tools = ["computer", "browser"]
+    if sandbox["backend"] == "local":
+        # Fail closed on host execution in consumer mode when Docker
+        # is unavailable.
+        denied_tools.extend(["shell", "write_file", "apply_patch", "str_replace_editor"])
     tool_acl = {
         # Computer + browser require explicit opt-in; the wizard never
         # asks the consumer those questions.
-        "denied_tools": ["computer", "browser"],
+        "denied_tools": denied_tools,
     }
     rate_limits = {
         "web_search": "5/60",
