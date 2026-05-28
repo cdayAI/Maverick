@@ -23,6 +23,65 @@
   </div>
 
   <div class="panel">
+    <form id="audit-search" style="display: flex; gap: 0.5rem; align-items: end; flex-wrap: wrap;">
+      <label style="flex: 1 1 300px;">
+        <div class="muted" style="font-size: 0.75rem; text-transform: uppercase;">search (regex)</div>
+        <input type="text" id="audit-pattern" placeholder="tool_call.*shell"
+               style="width: 100%; padding: 0.4rem 0.5rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text);" />
+      </label>
+      <label>
+        <div class="muted" style="font-size: 0.75rem; text-transform: uppercase;">day</div>
+        <input type="text" id="audit-search-day" value="{{ day or '' }}" placeholder="today"
+               style="padding: 0.4rem 0.5rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text);" />
+      </label>
+      <button type="submit"
+              style="padding: 0.45rem 1rem; background: var(--accent); color: #fff; border: 0; border-radius: 4px; cursor: pointer;">
+        search
+      </button>
+    </form>
+    <p id="audit-search-msg" class="muted" style="margin-top: 0.5rem; min-height: 1em; font-size: 0.85rem;"></p>
+    <pre id="audit-search-results" style="white-space: pre-wrap; margin: 0; max-height: 360px; overflow-y: auto; font-size: 0.8rem;"></pre>
+  </div>
+
+  <script>
+    (function() {
+      const form = document.getElementById('audit-search');
+      const pat = document.getElementById('audit-pattern');
+      const day = document.getElementById('audit-search-day');
+      const msg = document.getElementById('audit-search-msg');
+      const out = document.getElementById('audit-search-results');
+      form.addEventListener('submit', async function(ev) {
+        ev.preventDefault();
+        const p = pat.value.trim();
+        if (!p) { msg.textContent = 'Pattern required.'; return; }
+        msg.style.color = 'var(--muted)';
+        msg.textContent = 'Searching…';
+        out.textContent = '';
+        const url = new URL('/api/v1/audit/grep', window.location.origin);
+        url.searchParams.set('pattern', p);
+        if (day.value.trim()) url.searchParams.set('day', day.value.trim());
+        try {
+          const r = await fetch(url.toString());
+          if (!r.ok) {
+            const j = await r.json().catch(() => ({}));
+            msg.style.color = 'var(--danger)';
+            msg.textContent = j.detail || ('HTTP ' + r.status);
+            return;
+          }
+          const data = await r.json();
+          const events = data.events || [];
+          msg.textContent = events.length + ' match(es).';
+          out.textContent = events.map(e => JSON.stringify(e)).join('\n');
+        } catch (e) {
+          msg.style.color = 'var(--danger)';
+          msg.textContent = String(e);
+        }
+      });
+    })();
+  </script>
+  </div>
+
+  <div class="panel">
     {% if events %}
       <table>
         <thead>

@@ -421,6 +421,15 @@ async def tools_page(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/cache", response_class=HTMLResponse)
+async def cache_page(request: Request) -> HTMLResponse:
+    """In-process cache stats + purge buttons."""
+    from maverick.cache import stats
+    return templates.TemplateResponse(
+        request, "cache.html", {"stats": stats()},
+    )
+
+
 @app.get("/channels", response_class=HTMLResponse)
 async def channels_page(request: Request) -> HTMLResponse:
     """Configured + enabled channels."""
@@ -741,6 +750,90 @@ async def api_goal_events_legacy(goal_id: int, since: int = 0, limit: int = 200)
             for e in events
         ],
     }
+
+
+@app.get("/api/goal/{goal_id}/events/stream")
+async def api_goal_events_stream(goal_id: int, since: int = 0) -> StreamingResponse:
+    """Server-Sent Events stream of new goal events.
+
+    Council perf-seat fix: client polled this route every 2s (visible
+    tab) / 5s (hidden tab) over the lifetime of every open goal page,
+    burning 30 req/min/tab idle on a goal that finished an hour ago.
+    SSE holds one TCP connection open, server polls SQLite at 0.5s
+    cadence, yields ``data: {json}\\n\\n`` only when there's something
+    new. EventSource on the client reconnects automatically and goes
+    silent the moment status flips to done/cancelled/failed.
+
+    Terminal statuses close the stream with a final event so the
+    client knows it can stop listening (EventSource normally retries
+    forever).
+    """
+    import asyncio as _asyncio
+    import json as _json
+
+    w = _world()
+    if w.get_goal(goal_id) is None:
+        raise HTTPException(status_code=404, detail="no such goal")
+
+    TERMINAL = ("done", "cancelled", "failed")
+    POLL_INTERVAL = 0.5            # server-side cadence
+    IDLE_HEARTBEAT_EVERY = 30      # send a comment line so proxies don't time out
+    MAX_BATCH = 200
+
+    async def generate():
+        sid = since
+        idle_ticks = 0
+        # Initial flush: anything already on the board since `since`.
+        try:
+            while True:
+                events = w.goal_events(goal_id, since_id=sid, limit=MAX_BATCH)
+                g = w.get_goal(goal_id)
+                if g is None:
+                    yield "event: error\ndata: {\"detail\": \"goal vanished\"}\n\n"
+                    return
+                if events:
+                    sid = events[-1].id
+                    payload = {
+                        "status": g.status,
+                        "result": g.result or "",
+                        "next_id": sid,
+                        "events": [
+                            {"id": e.id, "agent": e.agent, "kind": e.kind,
+                             "content": e.content, "ts": e.ts}
+                            for e in events
+                        ],
+                    }
+                    yield f"data: {_json.dumps(payload)}\n\n"
+                    idle_ticks = 0
+                else:
+                    idle_ticks += 1
+                    if idle_ticks * POLL_INTERVAL >= IDLE_HEARTBEAT_EVERY:
+                        # SSE comment line; ignored by EventSource but keeps
+                        # intermediaries from closing the connection.
+                        yield ": heartbeat\n\n"
+                        idle_ticks = 0
+                if g.status in TERMINAL:
+                    payload = {
+                        "status": g.status,
+                        "result": g.result or "",
+                        "next_id": sid,
+                        "events": [],
+                        "terminal": True,
+                    }
+                    yield f"event: terminal\ndata: {_json.dumps(payload)}\n\n"
+                    return
+                await _asyncio.sleep(POLL_INTERVAL)
+        except _asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # nginx/caddy: disable response buffering
+        },
+    )
 
 
 @app.get("/livez")
