@@ -9,14 +9,14 @@ the multi-provider LLM facade.
 """
 
 ROLES: list[tuple[str, str]] = [
-    ("orchestrator",    "Plans, decomposes, verifies. Wants the smartest model."),
-    ("researcher",      "Searches, gathers info. Workhorse role."),
-    ("coder",           "Writes and tests code. Wants strong code performance."),
-    ("writer",          "Drafts long prose. Quality matters."),
-    ("analyst",         "Synthesizes findings. Reasoning-heavy."),
-    ("revisor",         "Second-pass review when verify fails. Smart model."),
-    ("verifier",        "Independent final-answer check; keep provider aligned with privacy needs."),
-    ("summarizer",      "Cheap distillation. Tiny model is fine."),
+    ("orchestrator",    "Plans, decomposes, verifies. Use a large model here."),
+    ("researcher",      "Searches and gathers information."),
+    ("coder",           "Writes and tests code."),
+    ("writer",          "Drafts longer-form prose."),
+    ("analyst",         "Synthesises findings; reasoning-heavy."),
+    ("revisor",         "Second-pass review when verification fails."),
+    ("verifier",        "Independent final-answer check."),
+    ("summarizer",      "Distillation. A small model is enough."),
     ("skill_distiller", "Turns trajectories into reusable skills."),
 ]
 

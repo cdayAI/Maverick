@@ -78,6 +78,18 @@ class SkillOut(BaseModel):
 _world_cache: dict[str, object] = {}
 
 
+_PROVIDER_ENV_VARS = (
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+    "OPENROUTER_API_KEY", "MOONSHOT_API_KEY", "DEEPSEEK_API_KEY",
+    "XAI_API_KEY",
+)
+
+
+def _any_provider_key_set() -> bool:
+    """True iff at least one supported provider's env var is populated."""
+    return any(os.environ.get(v) for v in _PROVIDER_ENV_VARS)
+
+
 def _world():
     """Return a per-DB-path cached WorldModel (council perf fix).
 
@@ -103,10 +115,14 @@ def _to_goal_out(g) -> GoalOut:
 
 @router.post("/goals", response_model=GoalOut, status_code=201)
 async def create_goal(payload: GoalIn, bg: BackgroundTasks) -> GoalOut:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not _any_provider_key_set():
         raise HTTPException(
             status_code=400,
-            detail="ANTHROPIC_API_KEY not set. Run `maverick init` first.",
+            detail=(
+                "No LLM provider key configured. Run 'maverick init', or "
+                "export ANTHROPIC_API_KEY / OPENAI_API_KEY / "
+                "GEMINI_API_KEY before starting the dashboard."
+            ),
         )
     title = payload.title
     description = payload.description

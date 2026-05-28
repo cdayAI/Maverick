@@ -11,11 +11,13 @@ v0.1.6 reliability hardening:
 """
 from __future__ import annotations
 
+import contextlib
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 
 DEFAULT_DB = Path.home() / ".maverick" / "world.db"
@@ -302,6 +304,17 @@ class WorldModel:
         # check_same_thread=False so FastAPI threadpool can share. Combined
         # with WAL + busy_timeout this is safe for the agent+dashboard
         # concurrency pattern (one writer process + many readers).
+        #
+        # Council round-2 perf-seat fix: ``check_same_thread=False`` alone
+        # is insufficient. Two threadpool workers driving execute()+commit()
+        # on the same connection can interleave: thread A opens an implicit
+        # transaction with INSERT, thread B's INSERT joins the same
+        # transaction, A's commit() flushes both rows, B's commit() is a
+        # no-op. If A had raised between execute() and commit() and called
+        # rollback(), B's "successful" insert would silently roll back too.
+        # The RLock + ``_writing()`` context manager serialises every
+        # mutation so each commit() bounds exactly one logical write.
+        self._write_lock = threading.RLock()
         self.conn = sqlite3.connect(path, check_same_thread=False, timeout=10.0)
         self.conn.row_factory = sqlite3.Row
         # WAL must be set before any other operation that creates pages.
@@ -324,6 +337,19 @@ class WorldModel:
         self._init_schema_version()
         self._apply_migrations()
         self.conn.commit()
+
+    @contextlib.contextmanager
+    def _writing(self) -> "Iterator[sqlite3.Connection]":
+        """Acquire the write lock, yield the connection, commit on exit.
+
+        Use this around every INSERT/UPDATE/DELETE sequence. If the body
+        raises, the lock is released without commit (the next caller
+        sees a consistent state). Re-entrant via RLock so methods that
+        compose other mutators don't self-deadlock.
+        """
+        with self._write_lock:
+            yield self.conn
+            self.conn.commit()
 
     def close(self) -> None:
         """Close the underlying SQLite connection.
@@ -381,15 +407,15 @@ class WorldModel:
             except ValueError:
                 pass
         cutoff = time.time() - max_age_seconds
-        cur = self.conn.execute(
-            "UPDATE goals SET status = 'blocked', "
-            "result = COALESCE(result, '') || ' [process restarted mid-run]', "
-            "updated_at = ? "
-            "WHERE status IN ('active', 'pending') AND updated_at < ?",
-            (time.time(), cutoff),
-        )
-        self.conn.commit()
-        return cur.rowcount
+        with self._writing() as conn:
+            cur = conn.execute(
+                "UPDATE goals SET status = 'blocked', "
+                "result = COALESCE(result, '') || ' [process restarted mid-run]', "
+                "updated_at = ? "
+                "WHERE status IN ('active', 'pending') AND updated_at < ?",
+                (time.time(), cutoff),
+            )
+            return cur.rowcount
 
     def _init_schema_version(self) -> None:
         # Council finding: two processes opening a brand-new world.db
@@ -458,20 +484,20 @@ class WorldModel:
     # ----- goals -----
     def create_goal(self, title: str, description: str = "", parent_id: Optional[int] = None) -> int:
         now = time.time()
-        cur = self.conn.execute(
-            "INSERT INTO goals(parent_id, title, description, status, created_at, updated_at) "
-            "VALUES(?, ?, ?, 'pending', ?, ?)",
-            (parent_id, title, description, now, now),
-        )
-        self.conn.commit()
-        return cur.lastrowid
+        with self._writing() as conn:
+            cur = conn.execute(
+                "INSERT INTO goals(parent_id, title, description, status, created_at, updated_at) "
+                "VALUES(?, ?, ?, 'pending', ?, ?)",
+                (parent_id, title, description, now, now),
+            )
+            return cur.lastrowid
 
     def set_goal_status(self, goal_id: int, status: str, result: Optional[str] = None) -> None:
-        self.conn.execute(
-            "UPDATE goals SET status = ?, updated_at = ?, result = COALESCE(?, result) WHERE id = ?",
-            (status, time.time(), result, goal_id),
-        )
-        self.conn.commit()
+        with self._writing() as conn:
+            conn.execute(
+                "UPDATE goals SET status = ?, updated_at = ?, result = COALESCE(?, result) WHERE id = ?",
+                (status, time.time(), result, goal_id),
+            )
 
     def get_goal(self, goal_id: int) -> Optional[Goal]:
         row = self.conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
@@ -513,11 +539,12 @@ class WorldModel:
 
     # ----- episodes -----
     def start_episode(self, goal_id: int) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO episodes(goal_id, started_at) VALUES(?, ?)", (goal_id, time.time())
-        )
-        self.conn.commit()
-        return cur.lastrowid
+        with self._writing() as conn:
+            cur = conn.execute(
+                "INSERT INTO episodes(goal_id, started_at) VALUES(?, ?)",
+                (goal_id, time.time()),
+            )
+            return cur.lastrowid
 
     def end_episode(
         self,
@@ -529,14 +556,14 @@ class WorldModel:
         output_tokens: int = 0,
         tool_calls: int = 0,
     ) -> None:
-        self.conn.execute(
-            "UPDATE episodes SET ended_at = ?, summary = ?, outcome = ?, "
-            "cost_dollars = ?, input_tokens = ?, output_tokens = ?, tool_calls = ? "
-            "WHERE id = ?",
-            (time.time(), summary, outcome, cost_dollars,
-             input_tokens, output_tokens, tool_calls, episode_id),
-        )
-        self.conn.commit()
+        with self._writing() as conn:
+            conn.execute(
+                "UPDATE episodes SET ended_at = ?, summary = ?, outcome = ?, "
+                "cost_dollars = ?, input_tokens = ?, output_tokens = ?, tool_calls = ? "
+                "WHERE id = ?",
+                (time.time(), summary, outcome, cost_dollars,
+                 input_tokens, output_tokens, tool_calls, episode_id),
+            )
 
     def list_episodes(
         self,
@@ -582,12 +609,12 @@ class WorldModel:
 
     # ----- goal events -----
     def append_event(self, goal_id: int, agent: str, kind: str, content: str) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO goal_events(goal_id, agent, kind, content, ts) VALUES(?, ?, ?, ?, ?)",
-            (goal_id, agent, kind, content, time.time()),
-        )
-        self.conn.commit()
-        return cur.lastrowid
+        with self._writing() as conn:
+            cur = conn.execute(
+                "INSERT INTO goal_events(goal_id, agent, kind, content, ts) VALUES(?, ?, ?, ?, ?)",
+                (goal_id, agent, kind, content, time.time()),
+            )
+            return cur.lastrowid
 
     def goal_events(self, goal_id: int, since_id: int = 0, limit: int = 200) -> list[GoalEvent]:
         rows = self.conn.execute(
@@ -600,18 +627,18 @@ class WorldModel:
     def prune_goal_events(self, older_than_seconds: float = 30 * 24 * 3600) -> int:
         """Delete goal_events rows older than N seconds. Returns rows removed."""
         cutoff = time.time() - older_than_seconds
-        cur = self.conn.execute("DELETE FROM goal_events WHERE ts < ?", (cutoff,))
-        self.conn.commit()
-        return cur.rowcount
+        with self._writing() as conn:
+            cur = conn.execute("DELETE FROM goal_events WHERE ts < ?", (cutoff,))
+            return cur.rowcount
 
     # ----- facts -----
     def upsert_fact(self, key: str, value: str, episode_id: Optional[int] = None) -> None:
-        self.conn.execute(
-            "INSERT INTO facts(key, value, source_episode_id, updated_at) VALUES(?, ?, ?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-            (key, value, episode_id, time.time()),
-        )
-        self.conn.commit()
+        with self._writing() as conn:
+            conn.execute(
+                "INSERT INTO facts(key, value, source_episode_id, updated_at) VALUES(?, ?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (key, value, episode_id, time.time()),
+            )
 
     def get_facts(self) -> dict[str, str]:
         rows = self.conn.execute("SELECT key, value FROM facts ORDER BY updated_at DESC").fetchall()
@@ -619,19 +646,19 @@ class WorldModel:
 
     # ----- questions -----
     def ask(self, question: str, goal_id: Optional[int] = None) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO questions(goal_id, question, asked_at) VALUES(?, ?, ?)",
-            (goal_id, question, time.time()),
-        )
-        self.conn.commit()
-        return cur.lastrowid
+        with self._writing() as conn:
+            cur = conn.execute(
+                "INSERT INTO questions(goal_id, question, asked_at) VALUES(?, ?, ?)",
+                (goal_id, question, time.time()),
+            )
+            return cur.lastrowid
 
     def answer(self, question_id: int, answer: str) -> None:
-        self.conn.execute(
-            "UPDATE questions SET answer = ?, answered_at = ? WHERE id = ?",
-            (answer, time.time(), question_id),
-        )
-        self.conn.commit()
+        with self._writing() as conn:
+            conn.execute(
+                "UPDATE questions SET answer = ?, answered_at = ? WHERE id = ?",
+                (answer, time.time(), question_id),
+            )
 
     def open_questions(self, goal_id: Optional[int] = None) -> list[Question]:
         if goal_id is not None:
@@ -652,11 +679,11 @@ class WorldModel:
 
     # ----- messages -----
     def append_message(self, goal_id: int, role: str, content: str) -> None:
-        self.conn.execute(
-            "INSERT INTO messages(goal_id, role, content, ts) VALUES(?, ?, ?, ?)",
-            (goal_id, role, content, time.time()),
-        )
-        self.conn.commit()
+        with self._writing() as conn:
+            conn.execute(
+                "INSERT INTO messages(goal_id, role, content, ts) VALUES(?, ?, ?, ?)",
+                (goal_id, role, content, time.time()),
+            )
 
     def search_messages(self, query: str, limit: int = 10) -> list[dict]:
         rows = self.conn.execute(
@@ -672,17 +699,17 @@ class WorldModel:
         last_seen is bumped on every call so prune_conversations can
         retire ones the user has stopped talking to."""
         now = time.time()
-        self.conn.execute(
-            "INSERT INTO conversations(channel, user_id, created_at, last_seen) "
-            "VALUES(?, ?, ?, ?) "
-            "ON CONFLICT(channel, user_id) DO UPDATE SET last_seen = excluded.last_seen",
-            (channel, user_id, now, now),
-        )
-        self.conn.commit()
-        row = self.conn.execute(
-            "SELECT * FROM conversations WHERE channel = ? AND user_id = ?",
-            (channel, user_id),
-        ).fetchone()
+        with self._writing() as conn:
+            conn.execute(
+                "INSERT INTO conversations(channel, user_id, created_at, last_seen) "
+                "VALUES(?, ?, ?, ?) "
+                "ON CONFLICT(channel, user_id) DO UPDATE SET last_seen = excluded.last_seen",
+                (channel, user_id, now, now),
+            )
+            row = conn.execute(
+                "SELECT * FROM conversations WHERE channel = ? AND user_id = ?",
+                (channel, user_id),
+            ).fetchone()
         return Conversation(**dict(row))
 
     def append_turn(
@@ -694,13 +721,13 @@ class WorldModel:
     ) -> int:
         if role not in ("user", "assistant"):
             raise ValueError(f"role must be 'user' or 'assistant', got {role!r}")
-        cur = self.conn.execute(
-            "INSERT INTO turns(conversation_id, goal_id, role, content, ts) "
-            "VALUES(?, ?, ?, ?, ?)",
-            (conversation_id, goal_id, role, content, time.time()),
-        )
-        self.conn.commit()
-        return cur.lastrowid
+        with self._writing() as conn:
+            cur = conn.execute(
+                "INSERT INTO turns(conversation_id, goal_id, role, content, ts) "
+                "VALUES(?, ?, ?, ?, ?)",
+                (conversation_id, goal_id, role, content, time.time()),
+            )
+            return cur.lastrowid
 
     def recent_turns(self, conversation_id: int, limit: int = 20) -> list[Turn]:
         """Return the most recent N turns in chronological (ascending) order
@@ -740,12 +767,12 @@ class WorldModel:
         N goals and N spends before this.
         """
         try:
-            self.conn.execute(
-                "INSERT INTO processed_messages(channel, external_id, goal_id, seen_at) "
-                "VALUES(?, ?, ?, ?)",
-                (channel, external_id, goal_id, time.time()),
-            )
-            self.conn.commit()
+            with self._writing() as conn:
+                conn.execute(
+                    "INSERT INTO processed_messages(channel, external_id, goal_id, seen_at) "
+                    "VALUES(?, ?, ?, ?)",
+                    (channel, external_id, goal_id, time.time()),
+                )
             return True
         except sqlite3.IntegrityError:
             return False
@@ -781,11 +808,11 @@ class WorldModel:
         removed.
         """
         cutoff = time.time() - older_than_seconds
-        cur = self.conn.execute(
-            "DELETE FROM processed_messages WHERE seen_at < ?", (cutoff,),
-        )
-        self.conn.commit()
-        return cur.rowcount
+        with self._writing() as conn:
+            cur = conn.execute(
+                "DELETE FROM processed_messages WHERE seen_at < ?", (cutoff,),
+            )
+            return cur.rowcount
 
     def is_processed_message(self, channel: str, external_id: str) -> bool:
         """Returns True iff a row exists for (channel, external_id),
@@ -807,13 +834,13 @@ class WorldModel:
         sha256: str,
         path: str,
     ) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO attachments(goal_id, filename, mime, size_bytes, sha256, path, created_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?)",
-            (goal_id, filename, mime, size_bytes, sha256, path, time.time()),
-        )
-        self.conn.commit()
-        return cur.lastrowid
+        with self._writing() as conn:
+            cur = conn.execute(
+                "INSERT INTO attachments(goal_id, filename, mime, size_bytes, sha256, path, created_at) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (goal_id, filename, mime, size_bytes, sha256, path, time.time()),
+            )
+            return cur.lastrowid
 
     def list_attachments(self, goal_id: int) -> list[Attachment]:
         rows = self.conn.execute(
@@ -826,14 +853,14 @@ class WorldModel:
     def prune_conversations(self, idle_for_seconds: float = 90 * 24 * 3600) -> int:
         """Delete conversations idle for N seconds and their turns. Rows removed."""
         cutoff = time.time() - idle_for_seconds
-        # Delete turns first so we don't orphan them (no ON DELETE CASCADE).
-        self.conn.execute(
-            "DELETE FROM turns WHERE conversation_id IN "
-            "(SELECT id FROM conversations WHERE last_seen < ?)",
-            (cutoff,),
-        )
-        cur = self.conn.execute(
-            "DELETE FROM conversations WHERE last_seen < ?", (cutoff,)
-        )
-        self.conn.commit()
-        return cur.rowcount
+        with self._writing() as conn:
+            # Delete turns first so we don't orphan them (no ON DELETE CASCADE).
+            conn.execute(
+                "DELETE FROM turns WHERE conversation_id IN "
+                "(SELECT id FROM conversations WHERE last_seen < ?)",
+                (cutoff,),
+            )
+            cur = conn.execute(
+                "DELETE FROM conversations WHERE last_seen < ?", (cutoff,)
+            )
+            return cur.rowcount

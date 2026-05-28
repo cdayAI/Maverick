@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org)
 
-An open-source AI agent you fully control. Powerful enough for engineers, simple enough for everyone else.
+An open-source AI agent that runs locally on your machine.
 
 Maverick combines two projects into one safest-by-default assistant:
 
@@ -15,7 +15,7 @@ The wizard walks you through every choice. Deploy on desktop, in Docker, on a VP
 
 ## Status
 
-Early alpha. Foundation complete. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the technical map and [`docs/getting-started.md`](./docs/getting-started.md) for the install flow.
+Early alpha. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the technical map and [`docs/getting-started.md`](./docs/getting-started.md) for the install flow.
 
 ## What works today vs. planned
 

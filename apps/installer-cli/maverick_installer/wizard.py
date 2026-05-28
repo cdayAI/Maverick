@@ -1,6 +1,6 @@
 """Maverick interactive installer.
 
-A friendly, opinionated walk-through. Sets up:
+Configures Maverick for a fresh install. Sets up:
   - deployment target
   - AI providers and per-role models
   - channels (Telegram, Discord, Slack, Signal, WhatsApp, SMS, Email,
@@ -281,6 +281,118 @@ _VALIDATORS = {
 }
 
 
+# ---------- validation cache ----------
+
+VALIDATION_CACHE_PATH = CONFIG_DIR / "validation-cache.json"
+_VALIDATION_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
+
+def _key_fingerprint(env_name: str, key: str) -> str:
+    import hashlib
+    digest = hashlib.sha256(f"{env_name}\x00{key}".encode()).hexdigest()
+    return digest[:32]
+
+
+def _load_validation_cache() -> dict[str, Any]:
+    try:
+        import json as _json
+        return _json.loads(VALIDATION_CACHE_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_validation_cache(cache: dict[str, Any]) -> None:
+    import json as _json
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        VALIDATION_CACHE_PATH.write_text(_json.dumps(cache, default=str))
+        try:
+            os.chmod(VALIDATION_CACHE_PATH, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def _cached_validation(env_name: str, key: str) -> tuple[bool, str] | None:
+    """Return cached (ok, msg) if the same key was validated within the TTL."""
+    import time as _time
+    if not key.strip():
+        return None
+    cache = _load_validation_cache()
+    fp = _key_fingerprint(env_name, key)
+    entry = cache.get(fp)
+    if not entry:
+        return None
+    ts = float(entry.get("ts", 0))
+    if (_time.time() - ts) > _VALIDATION_TTL_SECONDS:
+        return None
+    return bool(entry.get("ok", False)), str(entry.get("msg", "cached"))
+
+
+def _remember_validation(env_name: str, key: str, ok: bool, msg: str) -> None:
+    import time as _time
+    if not key.strip():
+        return
+    cache = _load_validation_cache()
+    cache[_key_fingerprint(env_name, key)] = {
+        "ts": _time.time(),
+        "ok": ok,
+        "msg": msg,
+    }
+    _save_validation_cache(cache)
+
+
+# ---------- error UI ----------
+
+def show_bad_key_error(env_name: str, msg: str) -> None:
+    """Council UX seat error screen #1: provider rejected the key."""
+    console.print()
+    console.print(Panel.fit(
+        f"[bold]That {env_name.split('_')[0].title()} key didn't work.[/bold]\n\n"
+        f"{msg}\n\n"
+        "Common causes:\n"
+        "  1. Typo (the secret is long; copy/paste, don't retype).\n"
+        "  2. The key was deleted from your account.\n"
+        "  3. Billing isn't set up on the provider.",
+        border_style="red",
+    ))
+
+
+def show_network_error(provider: str, exception_type: str) -> None:
+    """Council UX seat error screen #2: validator couldn't reach the provider."""
+    console.print()
+    console.print(Panel.fit(
+        f"[bold]Couldn't reach {provider} to check the key ({exception_type}).[/bold]\n\n"
+        "Usually a network block or proxy. Your key is saved either way;\n"
+        "if it's wrong the first goal you run will say so.",
+        border_style="yellow",
+    ))
+
+
+def show_install_failure(exc: BaseException) -> None:
+    """Council UX seat error screen #3: catch-all for unexpected setup failures."""
+    console.print()
+    console.print(Panel.fit(
+        "[bold]Setup hit a problem and stopped.[/bold]\n\n"
+        f"{type(exc).__name__}: {exc}\n\n"
+        "Nothing was changed. Try again, or report the issue with the\n"
+        "diagnostic output of [bold]maverick doctor[/bold].",
+        border_style="red",
+    ))
+
+
+def show_browser_capture_timeout(provider: str) -> None:
+    """Council UX seat error screen #4: browser session capture timed out."""
+    console.print()
+    console.print(Panel.fit(
+        f"[bold]Sign-in to {provider} didn't complete in time.[/bold]\n\n"
+        "Try again, or pick a different option (paste an API key, or use a\n"
+        "local model).",
+        border_style="yellow",
+    ))
+
+
 # ---------- wizard steps ----------
 
 def welcome() -> None:
@@ -331,7 +443,7 @@ def pick_models_per_role(providers: list[str]) -> dict[str, str]:
     console.print()
     console.print(
         "[bold]Pick a model for each agent role.[/bold] "
-        "Heavy roles (orchestrator, revisor) benefit from larger models; "
+        "Large models (orchestrator, revisor) suit big roles; "
         "cheap roles (summarizer) can use smaller ones.\n"
     )
 
@@ -453,7 +565,7 @@ def pick_channels(deployment: str) -> tuple[dict[str, dict[str, Any]], set[str]]
 
 def pick_safety() -> dict[str, Any]:
     pick = _q_select(
-        "Safety profile (powered by Agent Shield):",
+        "Safety profile:",
         [
             "strict     - Block on any medium+ threat. Best for sensitive use.",
             "balanced   - Block on high+ threats. Recommended default.",
@@ -517,7 +629,32 @@ def pick_capabilities() -> dict[str, bool]:
     }
 
 
+def _docker_available() -> bool:
+    """Return True iff the `docker` binary is on PATH AND the daemon
+    responds. Used to pick a safe sandbox default in consumer mode and
+    to choose the wizard's default in dev mode."""
+    if not shutil.which("docker"):
+        return False
+    try:
+        subprocess.run(
+            ["docker", "version"],
+            capture_output=True, timeout=2, check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def pick_sandbox() -> dict[str, Any]:
+    # Default to docker only when it actually works on this machine.
+    # Council UX seat: defaulting to docker on a fresh Windows laptop
+    # without Docker installed makes the first goal hang on container
+    # pull or fail outright.
+    docker_default = (
+        "docker - Throwaway Docker container (recommended)"
+        if _docker_available()
+        else "local  - Subprocess on this machine (fastest, least isolated)"
+    )
     pick = _q_select(
         "Sandbox backend (where the agent runs shell commands):",
         [
@@ -527,7 +664,7 @@ def pick_sandbox() -> dict[str, Any]:
             "devcontainer - Reuse a .devcontainer config",
             "ssh    - Remote machine",
         ],
-        default="docker - Throwaway Docker container (recommended)",
+        default=docker_default,
     )
     backend = pick.split()[0]
     workdir = _q_text("  Workspace directory", default=str(Path.home() / "maverick-workspace"))
@@ -743,7 +880,7 @@ def pick_notifications() -> tuple[dict[str, Any], list[str]]:
     backend = pick.split()[0]
     if backend == "ntfy":
         topic = _q_text(
-            "  ntfy topic (any unique string; treat as a password)",
+            "  ntfy topic (a unique string that acts as the channel name)",
             default="",
         ).strip()
         return ({"backend": "ntfy", "topic": topic}, []) if topic else ({}, [])
@@ -793,12 +930,20 @@ def collect_api_keys(providers: list[str], channel_envs: set[str]) -> dict[str, 
                 keys[env_name] = current
             continue
 
-        # Validate when we know how.
+        # Validate when we know how, with a 7-day cache so re-runs of
+        # the wizard don't burn an API round-trip on every key.
         validator = _VALIDATORS.get(env_name)
         if validator:
-            ok, msg = validator(val)
-            marker = "[green]✓[/green]" if ok else "[red]✗[/red]"
-            console.print(f"    {marker} {msg}")
+            cached = _cached_validation(env_name, val)
+            if cached is not None:
+                ok, msg = cached
+                marker = "[green]ok[/green]" if ok else "[red]x[/red]"
+                console.print(f"    {marker} {msg} (cached)")
+            else:
+                ok, msg = validator(val)
+                marker = "[green]ok[/green]" if ok else "[red]x[/red]"
+                console.print(f"    {marker} {msg}")
+                _remember_validation(env_name, val, ok, msg)
             if not ok and not _q_confirm("Save anyway?", default=False):
                 continue
         keys[env_name] = val
@@ -1333,7 +1478,7 @@ def run_fast() -> int:
         )
         return 1
     console.print(
-        "[bold]Fast setup:[/bold] using recommended defaults. "
+        "[bold]Fast setup:[/bold] using safe defaults. "
         "Run `maverick init` (no --fast) anytime to customize.\n"
     )
     deployment = "desktop"
@@ -1370,7 +1515,7 @@ def run_fast() -> int:
     smoke_test()
     console.print()
     console.print(Panel.fit(
-        "[bold green]Fast setup complete.[/bold green]\n\n"
+        "[bold green]Fast setup finished.[/bold green]\n\n"
         "Try: [bold]maverick start \"hello\"[/bold]\n"
         "(If ANTHROPIC_API_KEY wasn't set, edit ~/.maverick/.env first.)",
         border_style="green",
@@ -1378,10 +1523,213 @@ def run_fast() -> int:
     return 0
 
 
+CONSUMER_DEMO_GOAL = "Write me a haiku about Tuesday."
+CONSUMER_DEMO_MODEL = "anthropic:claude-haiku-4-5"
+
+
+def pick_mode() -> str:
+    """First-screen picker: consumer vs advanced.
+
+    Council round-2 design: every launch starts here so a non-technical
+    user lands in a four-question flow with safe defaults, and a power
+    user can opt straight into the full wizard.
+    """
+    console.print()
+    console.print(Panel.fit(
+        "[bold]How do you want to set this up?[/bold]\n\n"
+        "  consumer  Four questions, safe defaults. About a minute.\n"
+        "  advanced  Pick every model, channel, safety level, budget.",
+        border_style="cyan",
+    ))
+    pick = _q_select(
+        "Pick a mode:",
+        [
+            "consumer - just get me running",
+            "advanced - let me configure everything",
+        ],
+        default="consumer - just get me running",
+    )
+    return pick.split()[0]
+
+
+def _consumer_budget() -> dict[str, float]:
+    """Single-question budget chip picker for consumer mode."""
+    pick = _q_select(
+        "Stop after spending how much per task?",
+        ["$1", "$5", "$20", "custom"],
+        default="$5",
+    )
+    if pick == "custom":
+        dollars = _safe_float(_q_text("  Custom cap ($)", default="5.0"), default=5.0)
+    else:
+        dollars = float(pick.lstrip("$"))
+    return {
+        "max_dollars": dollars,
+        "max_wall_seconds": 600.0,
+        "max_tool_calls": 100,
+    }
+
+
+def _consumer_api_key() -> dict[str, str]:
+    """Single-screen Anthropic key collection for consumer mode.
+
+    No DevTools paste, no jargon. Three escape hatches:
+      1. Paste the key (the default).
+      2. Skip for now (write config without keys; user can re-run later).
+      3. Open the console in a browser to make a key.
+    """
+    console.print()
+    console.print(
+        "Maverick needs an account with Claude (Anthropic). "
+        "Get a key at: [cyan]https://console.anthropic.com/settings/keys[/cyan]\n"
+        "[dim]It looks like 'sk-ant-...' and is about 100 characters long.[/dim]",
+    )
+    val = _q_secret("  Paste your Anthropic API key (leave blank to skip):")
+    if not val.strip():
+        console.print(
+            "[yellow]Skipped.[/yellow] You can add one later by running "
+            "[bold]maverick init[/bold] again."
+        )
+        return {}
+    # Validate with the 7-day cache.
+    cached = _cached_validation("ANTHROPIC_API_KEY", val)
+    if cached is not None:
+        ok, msg = cached
+    else:
+        ok, msg = _validate_anthropic_key(val)
+        _remember_validation("ANTHROPIC_API_KEY", val, ok, msg)
+    if ok:
+        console.print(f"  [green]ok[/green] {msg}")
+        return {"ANTHROPIC_API_KEY": val}
+    # On failure, surface the branded error and let the user decide.
+    show_bad_key_error("ANTHROPIC_API_KEY", msg)
+    if _q_confirm("Save the key anyway and continue?", default=False):
+        return {"ANTHROPIC_API_KEY": val}
+    return {}
+
+
+def run_consumer() -> int:
+    """Four-question consumer flow. Writes a minimal config with
+    consumer-grade safe defaults, then prints a one-line demo command."""
+    console.print()
+    console.print(Panel.fit(
+        "[bold]Maverick setup[/bold]\n\n"
+        "Four questions. About a minute. You can change anything later\n"
+        "by running [bold]maverick init[/bold] again.",
+        border_style="cyan",
+    ))
+
+    if not preflight():
+        console.print(
+            "[red]Setup can't continue.[/red] Fix the issues above and try again."
+        )
+        return 1
+
+    user_name = _q_text(
+        "What should we call you?",
+        default=os.environ.get("USER") or os.environ.get("USERNAME") or "",
+    ).strip() or "you"
+
+    keys = _consumer_api_key()
+
+    workdir = _q_text(
+        "Where can Maverick work?",
+        default=str(Path.home() / "Documents" / "Maverick"),
+    ).strip() or str(Path.home() / "Documents" / "Maverick")
+    Path(workdir).expanduser().mkdir(parents=True, exist_ok=True)
+
+    budget = _consumer_budget()
+
+    # Consumer-mode safe defaults. The safety seat catalogued the
+    # full table in round 2; this is the minimum that doesn't expose
+    # a clueless user.
+    deployment = "desktop"
+    providers = ["anthropic"]
+    role_models: dict[str, str] = {}
+    channels: dict[str, Any] = {}
+    safety = {
+        "profile": "strict",          # strictest shield
+        "block_threshold": "medium",  # block medium+ threats
+        "scan_input": True,
+        "scan_tool_calls": True,
+        "scan_output": True,
+    }
+    sandbox = {
+        # Docker only when the daemon answers; falls back to local.
+        "backend": "docker" if _docker_available() else "local",
+        "workdir": str(Path(workdir).expanduser()),
+        "timeout": 60,
+    }
+    capabilities = {"computer_use": False, "browser": False}
+    tool_acl = {
+        # Computer + browser require explicit opt-in; the wizard never
+        # asks the consumer those questions.
+        "denied_tools": ["computer", "browser"],
+    }
+    rate_limits = {
+        "web_search": "5/60",
+        "http_fetch": "10/60",
+        "shell": "5/60",
+        "mcp_*": "20/60",
+    }
+    retention = {
+        "audit_days": 30,
+        "episodes_days": 90,
+        "events_days": 30,
+    }
+    persona = {"name": "Maverick", "style": "balanced", "user_name": user_name}
+
+    try:
+        write_config(
+            deployment, providers, role_models, channels, safety, budget,
+            sandbox, keys, capabilities,
+            tool_acl=tool_acl,
+            rate_limits=rate_limits,
+            retention=retention,
+            persona=persona,
+            web_search_enabled=True,
+        )
+    except Exception as e:
+        show_install_failure(e)
+        return 1
+
+    # First-goal nudge. Don't run the goal here (the kernel doesn't
+    # stream into a wizard window today, and shelling out from inside
+    # the installer is ugly); print the one-liner instead. The Haiku
+    # model keeps the demo under $0.01 and finishes in a couple of
+    # seconds even on cold connections.
+    console.print()
+    if keys:
+        console.print(Panel.fit(
+            f"[bold green]Setup complete, {user_name}.[/bold green]\n\n"
+            "Try your first goal:\n"
+            f"  [bold]maverick start \"{CONSUMER_DEMO_GOAL}\" --model {CONSUMER_DEMO_MODEL}[/bold]\n\n"
+            "Then:\n"
+            "  [bold]maverick dashboard[/bold]   web UI at http://127.0.0.1:8765",
+            border_style="green",
+        ))
+    else:
+        console.print(Panel.fit(
+            f"[bold yellow]Setup saved without an API key, {user_name}.[/bold yellow]\n\n"
+            "Add one later by exporting ANTHROPIC_API_KEY or by running\n"
+            "[bold]maverick init[/bold] again.",
+            border_style="yellow",
+        ))
+    _clear_partial()
+    return 0
+
+
 def run(fast: bool = False, resume: bool = False) -> int:
     if fast:
         return run_fast()
     welcome()
+    # Council round-2: mode picker on every launch. Consumer is default.
+    # Skip the picker on --resume since it implies an in-progress
+    # advanced flow.
+    if not resume:
+        mode = pick_mode()
+        if mode == "consumer":
+            return run_consumer()
     if not preflight():
         console.print(
             "[red]Preflight failed.[/red] Fix the issues above and re-run `maverick init`."
@@ -1520,7 +1868,7 @@ def run(fast: bool = False, resume: bool = False) -> int:
         console.print()
         next_step = "maverick serve" if channels else 'maverick start "hello"'
         console.print(Panel.fit(
-            "[bold green]All set.[/bold green]\n\n"
+            "[bold green]Setup complete.[/bold green]\n\n"
             "Try:\n"
             f"  [bold]{next_step}[/bold]\n"
             "  [bold]maverick status[/bold]\n"

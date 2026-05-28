@@ -139,7 +139,7 @@
           const j = await r.json();
           armed = !!j.active;
           pill.classList.toggle('armed', armed);
-          label.textContent = armed ? 'HALTED — click to resume' : 'halt';
+          label.textContent = armed ? 'HALTED. Click to resume.' : 'halt';
           pill.setAttribute('aria-pressed', armed ? 'true' : 'false');
         } catch (e) { label.textContent = 'halt'; }
       }

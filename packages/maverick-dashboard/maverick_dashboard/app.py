@@ -236,6 +236,22 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+_PROVIDER_ENV_VARS = (
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+    "OPENROUTER_API_KEY", "MOONSHOT_API_KEY", "DEEPSEEK_API_KEY",
+    "XAI_API_KEY",
+)
+
+
+def _any_provider_key_set() -> bool:
+    """True if at least one supported provider's env var is populated.
+
+    Council UX fix: the dashboard used to hard-fail on missing
+    ANTHROPIC_API_KEY even when the user had OpenAI or Gemini set up.
+    """
+    return any(os.environ.get(v) for v in _PROVIDER_ENV_VARS)
+
+
 _world_cache: dict[str, Any] = {}
 
 
@@ -438,8 +454,15 @@ async def chat_send(
 ) -> RedirectResponse:
     if not _is_same_origin(request):
         raise HTTPException(status_code=403, detail="cross-site form post blocked")
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY not set.")
+    if not _any_provider_key_set():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No LLM provider key configured. Run 'maverick init', or "
+                "export ANTHROPIC_API_KEY / OPENAI_API_KEY before starting "
+                "the dashboard."
+            ),
+        )
     w = _world()
     goal_id = w.create_goal(title.strip()[:200], title.strip())
     # Use the shared runner so this path gets the same concurrency cap,
