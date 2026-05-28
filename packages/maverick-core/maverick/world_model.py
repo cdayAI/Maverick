@@ -315,6 +315,7 @@ class WorldModel:
         # The RLock + ``_writing()`` context manager serialises every
         # mutation so each commit() bounds exactly one logical write.
         self._write_lock = threading.RLock()
+        self._write_depth = 0
         self.conn = sqlite3.connect(path, check_same_thread=False, timeout=10.0)
         self.conn.row_factory = sqlite3.Row
         # WAL must be set before any other operation that creates pages.
@@ -340,16 +341,27 @@ class WorldModel:
 
     @contextlib.contextmanager
     def _writing(self) -> "Iterator[sqlite3.Connection]":
-        """Acquire the write lock, yield the connection, commit on exit.
+        """Acquire the write lock, yield the connection, commit on clean exit.
 
         Use this around every INSERT/UPDATE/DELETE sequence. If the body
-        raises, the lock is released without commit (the next caller
-        sees a consistent state). Re-entrant via RLock so methods that
-        compose other mutators don't self-deadlock.
+        raises, outermost scope rolls back so the next caller sees a
+        consistent state. Re-entrant via RLock so methods that compose
+        other mutators don't self-deadlock; nested scopes share one
+        transaction and only the outermost scope commits/rolls back.
         """
         with self._write_lock:
-            yield self.conn
-            self.conn.commit()
+            is_outermost = self._write_depth == 0
+            self._write_depth += 1
+            try:
+                yield self.conn
+                if is_outermost:
+                    self.conn.commit()
+            except Exception:
+                if is_outermost:
+                    self.conn.rollback()
+                raise
+            finally:
+                self._write_depth -= 1
 
     def close(self) -> None:
         """Close the underlying SQLite connection.

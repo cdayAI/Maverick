@@ -135,6 +135,30 @@ def test_writing_helper_releases_lock_on_exception(tmp_path: Path):
         wm.close()
 
 
+def test_writing_rolls_back_successful_dml_when_later_code_raises(tmp_path: Path):
+    """A successful statement must not leak into a later writer's commit."""
+    db = tmp_path / "world.db"
+    wm = WorldModel(db)
+    try:
+        try:
+            with wm._writing() as conn:
+                conn.execute(
+                    "INSERT INTO goals(title, description, status, created_at, updated_at) "
+                    "VALUES(?, ?, 'pending', ?, ?)",
+                    ("stale-from-failed-write", "", 1.0, 1.0),
+                )
+                raise RuntimeError("boom after successful insert")
+        except RuntimeError:
+            pass
+
+        wm.create_goal("next-successful-writer", "")
+        titles = {g.title for g in wm.list_goals()}
+        assert "next-successful-writer" in titles
+        assert "stale-from-failed-write" not in titles
+    finally:
+        wm.close()
+
+
 def test_rlock_allows_nested_calls(tmp_path: Path):
     """RLock (not Lock) means a method that calls another mutator from
     within its own _writing() block doesn't self-deadlock.
@@ -158,5 +182,31 @@ def test_rlock_allows_nested_calls(tmp_path: Path):
         events = wm.goal_events(gid)
         assert len(events) == 1
         assert events[0].content == "nested write ok"
+    finally:
+        wm.close()
+
+
+def test_nested_writing_does_not_commit_outer_transaction_early(tmp_path: Path):
+    """Inner mutators must not commit outer writes before outer scope exits."""
+    db = tmp_path / "world.db"
+    wm = WorldModel(db)
+    try:
+        with wm._writing() as conn:
+            cur = conn.execute(
+                "INSERT INTO goals(title, description, status, created_at, updated_at) "
+                "VALUES(?, ?, 'pending', ?, ?)",
+                ("outer", "", 1.0, 1.0),
+            )
+            gid = cur.lastrowid
+            wm.append_event(gid, "agent", "plan", "nested write ok")
+
+            # While still inside outer _writing(), a separate reader must not
+            # observe data yet (i.e., inner call did not commit early).
+            reader = WorldModel(db)
+            try:
+                assert reader.conn.execute("SELECT COUNT(*) FROM goals").fetchone()[0] == 0
+                assert reader.conn.execute("SELECT COUNT(*) FROM goal_events").fetchone()[0] == 0
+            finally:
+                reader.close()
     finally:
         wm.close()
