@@ -5,15 +5,29 @@ Installed as the ``maverick-init`` console script. Also reachable via
 """
 from __future__ import annotations
 
+import argparse
 import sys
 
 from .wizard import run
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="maverick-init",
+        description="Interactive setup wizard for Maverick.",
+    )
+    parser.add_argument(
+        "--fast", action="store_true",
+        help="Skip every prompt; use recommended defaults.",
+    )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume from the last unanswered wizard question.",
+    )
+    args = parser.parse_args(argv)
     try:
-        return run()
-    except KeyboardInterrupt:
+        return run(fast=args.fast, resume=args.resume)
+    except (KeyboardInterrupt, EOFError):
         print("\nAborted. Re-run `maverick init` any time.")
         return 130
 

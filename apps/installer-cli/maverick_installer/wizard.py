@@ -78,6 +78,22 @@ def _safe_float(s: str, *, default: float) -> float:
 
 # ---------- prompt primitives ----------
 
+def _ask(question: Any) -> Any:
+    """Run a questionary prompt, treating a ``None`` answer as an abort.
+
+    questionary's ``.ask()`` returns ``None`` when the user presses
+    Ctrl-C / Ctrl-D or when there's no interactive TTY (e.g. stdin is a
+    pipe). Every call site then did ``.split()`` / ``.strip()`` on the
+    result and crashed with an opaque ``AttributeError``. Convert that
+    to ``KeyboardInterrupt`` so the entry point prints a clean "Aborted"
+    message and exits 130 instead of dumping a traceback.
+    """
+    answer = question.ask()
+    if answer is None:
+        raise KeyboardInterrupt
+    return answer
+
+
 def _q_select(message: str, choices: list[str], default: str | None = None) -> str:
     if questionary is None:
         print(message)
@@ -90,14 +106,14 @@ def _q_select(message: str, choices: list[str], default: str | None = None) -> s
                 return default
             if choice.isdigit() and 1 <= int(choice) <= len(choices):
                 return choices[int(choice) - 1]
-    return questionary.select(message, choices=choices, default=default).ask()
+    return _ask(questionary.select(message, choices=choices, default=default))
 
 
 def _q_text(message: str, default: str = "") -> str:
     if questionary is None:
         val = input(f"{message} [{default}]: ").strip()
         return val or default
-    return questionary.text(message, default=default).ask()
+    return _ask(questionary.text(message, default=default))
 
 
 def _q_secret(message: str) -> str:
@@ -119,7 +135,16 @@ def _q_checkbox(message: str, choices: list[str], default: list[str] | None = No
             return default or []
         picks = [c.strip() for c in raw.split(",")]
         return [choices[int(p) - 1] for p in picks if p.isdigit() and 1 <= int(p) <= len(choices)]
-    return questionary.checkbox(message, choices=choices, default=default).ask()
+    # questionary.checkbox ignores `default` (it's documented "not used by
+    # checkbox"). To actually pre-select the defaults, wrap them as
+    # pre-checked Choice objects whose value is the title string -- so
+    # callers still get back the same strings they passed in.
+    default_set = set(default or [])
+    q_choices: Any = (
+        [questionary.Choice(c, checked=c in default_set) for c in choices]
+        if default_set else choices
+    )
+    return _ask(questionary.checkbox(message, choices=q_choices))
 
 
 def _q_confirm(message: str, default: bool = True) -> bool:
@@ -128,7 +153,7 @@ def _q_confirm(message: str, default: bool = True) -> bool:
         if not val:
             return default
         return val.startswith("y")
-    return questionary.confirm(message, default=default).ask()
+    return _ask(questionary.confirm(message, default=default))
 
 
 # ---------- preflight ----------
@@ -398,8 +423,9 @@ def show_browser_capture_timeout(provider: str) -> None:
 def welcome() -> None:
     console.print(Panel.fit(
         "[bold]Maverick installer[/bold]\n\n"
-        "You'll be asked about deployment, providers, channels, safety\n"
-        "profile, sandbox, and budget. Re-run any time with\n"
+        "Next you'll pick a setup mode: a quick consumer flow (a few\n"
+        "questions, safe defaults) or advanced (configure every model,\n"
+        "channel, safety level, and budget). Re-run any time with\n"
         "[bold]maverick init[/bold].",
         border_style="cyan",
     ))
