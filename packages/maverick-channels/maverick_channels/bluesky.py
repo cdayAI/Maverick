@@ -186,6 +186,16 @@ class BlueskyChannel(Channel):
     async def start(self) -> None:
         self._running = True
         await self._ensure_session()
+        # Seed the cursor to "now" so the first poll only dispatches
+        # notifications that arrive AFTER startup. Without this, a cold
+        # start (or any restart) re-runs the agent swarm on the last 50
+        # mentions in history — duplicate replies + real LLM spend.
+        if self._last_seen_indexed_at is None:
+            import datetime as _dt
+            self._last_seen_indexed_at = (
+                _dt.datetime.now(_dt.timezone.utc)
+                .strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            )
         log.info("Bluesky channel started (handle=%s)", self.handle)
         try:
             while not self._stop_event.is_set():

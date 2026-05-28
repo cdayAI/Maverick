@@ -209,8 +209,15 @@ def verify_chain(path: Path, pubkey_hex: Optional[str] = None) -> list[ChainBrea
         if pubkey_hex:
             obj = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(pubkey_hex))
         else:
+            # Trust a local .pub only when its private .key sibling also
+            # exists — i.e. this host actually generated that keypair.
+            # That closes the "attacker drops a lone forged <id>.pub and
+            # re-signs rows" vector while still honoring legitimate key
+            # rotation (which always writes both .key and .pub). For
+            # third-party tamper-evidence, callers should pass the
+            # trusted pubkey_hex explicitly.
             p = KEY_DIR / f"{key_id}.pub"
-            if not p.exists():
+            if not p.exists() or not (KEY_DIR / f"{key_id}.key").exists():
                 return None
             obj = ed25519.Ed25519PublicKey.from_public_bytes(p.read_bytes())
         pubkey_cache[key_id] = obj
@@ -254,6 +261,12 @@ def verify_chain(path: Path, pubkey_hex: Optional[str] = None) -> list[ChainBrea
                     pub.verify(bytes.fromhex(sig), bytes.fromhex(row_hash))
                 except InvalidSignature:
                     breaks.append(ChainBreak(n, "bad_signature", "Ed25519 verify failed"))
+                except ValueError as e:
+                    # A tampered sig/hash that isn't valid hex must be
+                    # flagged as a break, NOT crash the verifier (which
+                    # would skip every later row — the opposite of what
+                    # a tamper-evidence tool should do).
+                    breaks.append(ChainBreak(n, "bad_signature", f"malformed sig/hash: {e}"))
             prev = row_hash
     return breaks
 

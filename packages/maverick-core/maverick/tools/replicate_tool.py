@@ -79,7 +79,16 @@ def _resolve_version(model: str) -> str | None:
     code, data = _get(f"/models/{model}")
     if code >= 400 or not isinstance(data, dict):
         return None
-    return ((data.get("latest_version") or {}).get("id"))
+    vid = (data.get("latest_version") or {}).get("id")
+    if vid:
+        return vid
+    # Some models don't expose latest_version on the model object;
+    # fall back to the /versions list and take the most recent.
+    c2, d2 = _get(f"/models/{model}/versions")
+    if c2 >= 400 or not isinstance(d2, dict):
+        return None
+    results = d2.get("results") or []
+    return results[0].get("id") if results else None
 
 
 def _fmt_prediction(p: dict) -> str:
@@ -144,12 +153,26 @@ def _op_cancel(args: dict) -> str:
 
 
 def _op_models(args: dict) -> str:
+    import httpx
     q = (args.get("query") or "").strip()
     if not q:
         return "ERROR: models requires query"
-    code, data = _get("/models", {"query": q})
+    # Replicate's catalog search is the HTTP QUERY method with the
+    # plaintext search string as the body — GET /models is the
+    # (unfiltered) list endpoint and ignores any query param, so it
+    # would silently return the whole catalog instead of matches.
+    r = httpx.request(
+        "QUERY", f"{_API}/models",
+        headers={"Authorization": f"Bearer {_token()}",
+                 "Content-Type": "text/plain"},
+        content=q, timeout=30.0,
+    )
+    code = r.status_code
+    try:
+        data = r.json()
+    except ValueError:
+        data = r.text[:300]
     if code >= 400 or not isinstance(data, dict):
-        # The search endpoint historically used QUERY method; fall back.
         return f"ERROR: models ({code}): {data}"
     rows = data.get("results") or []
     if not rows:

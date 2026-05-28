@@ -56,9 +56,10 @@ func main() {
     }
     fmt.Printf("Maverick exposes %d tools\n", len(tools.Tools))
 
+    // maverick_start runs the swarm and returns the final answer.
     out, err := c.CallTool(ctx, client.CallToolParams{
-        Name:      "shell",
-        Arguments: json.RawMessage(`{"command": "echo hello from go"}`),
+        Name:      "maverick_start",
+        Arguments: json.RawMessage(`{"title": "Say hello from Go", "max_dollars": 0.25}`),
     })
     if err != nil {
         log.Fatal(err)

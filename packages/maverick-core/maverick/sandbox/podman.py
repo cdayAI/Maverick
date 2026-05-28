@@ -88,11 +88,18 @@ class PodmanBackend:
                 exit_code=result.returncode,
             )
         except subprocess.TimeoutExpired as e:
-            subprocess.run(
-                ["podman", "rm", "-f", container_name],
-                capture_output=True,
-                timeout=10,
-            )
+            # Best-effort cleanup. A hung daemon could make `rm` itself
+            # time out / raise; swallow it so we still return the
+            # TIMEOUT ExecResult instead of masking it with a cleanup
+            # exception.
+            try:
+                subprocess.run(
+                    ["podman", "rm", "-f", container_name],
+                    capture_output=True,
+                    timeout=10,
+                )
+            except Exception:
+                pass
             stdout = e.stdout or ""
             if isinstance(stdout, bytes):
                 stdout = stdout.decode("utf-8", errors="replace")

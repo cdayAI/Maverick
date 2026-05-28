@@ -158,13 +158,11 @@ def record_metric(
         return
     labels = labels or {}
     try:
-        if hasattr(metric, "labels"):
-            metric.labels(**labels).inc(value) if hasattr(metric.labels(**labels), "inc") else None
-        # Histograms expose observe(); counters expose inc().
-        if labels:
-            scoped = metric.labels(**labels)
-        else:
-            scoped = metric
+        # Resolve the label child once. Calling metric.labels() with the
+        # wrong (or empty) label set raises in prometheus_client, so only
+        # scope when labels are actually provided.
+        scoped = metric.labels(**labels) if labels else metric
+        # Histograms expose observe(); counters expose inc(); gauges set().
         if hasattr(scoped, "observe"):
             scoped.observe(value)
         elif hasattr(scoped, "inc"):

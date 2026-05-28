@@ -668,6 +668,7 @@ def pick_sandbox() -> dict[str, Any]:
             "docker - Throwaway Docker container (recommended)",
             "podman - Throwaway Podman container (rootless)",
             "devcontainer - Reuse a .devcontainer config",
+            "kubernetes - Pod-per-command in a cluster (kubectl)",
             "ssh    - Remote machine",
         ],
         default=docker_default,

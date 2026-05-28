@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import Optional
 
 from ._envparse import env_float, env_int
 
@@ -31,6 +32,12 @@ log = logging.getLogger(__name__)
 # BoundedSemaphore(0) raises ValueError, so clamp to at least 1.
 MAX_CONCURRENT_GOALS = max(1, env_int("MAVERICK_MAX_CONCURRENT_GOALS", 3))
 _run_semaphore = threading.BoundedSemaphore(MAX_CONCURRENT_GOALS)
+
+# Cap how long a caller will block waiting for a concurrency slot. Without
+# this, a single wedged goal holding a permit blocks the worker's loop
+# thread forever (the daemon stops draining the queue entirely). On
+# timeout we refuse the run and let the job queue retry later.
+_ACQUIRE_TIMEOUT = env_float("MAVERICK_GOAL_ACQUIRE_TIMEOUT", 300.0)
 
 
 DEFAULT_MAX_DOLLARS = env_float("MAVERICK_DEFAULT_MAX_DOLLARS", 2.0)
@@ -43,20 +50,34 @@ def run_goal_in_thread(
     max_dollars: float = DEFAULT_MAX_DOLLARS,
     max_wall_seconds: float = DEFAULT_MAX_WALL_SECONDS,
     max_depth: int = DEFAULT_MAX_DEPTH,
-) -> None:
+) -> Optional[str]:
     """Synchronously run a goal under the global concurrency semaphore.
 
     Designed to be passed to ``fastapi.BackgroundTasks.add_task`` or any
-    threadpool. Acquires the semaphore (blocking if cap is reached),
-    runs the swarm, releases the semaphore, and never re-raises -- the
-    caller's API contract (return a goal id, poll for result) doesn't
-    surface mid-run exceptions.
+    threadpool. Acquires the semaphore (blocking up to
+    ``_ACQUIRE_TIMEOUT`` if the cap is reached), runs the swarm, releases
+    the semaphore, and never re-raises -- the FastAPI / channel callers'
+    contract (return a goal id, poll for result) doesn't surface mid-run
+    exceptions.
+
+    Returns the goal's terminal status string (``"done"`` / ``"blocked"``
+    / ...) so the worker daemon can decide whether the *job* succeeded:
+    a goal that ends ``blocked``/``failed`` -- or ``None`` when the run
+    could not even start (no slot) -- must surface as a job failure so the
+    queue's retry/backoff actually runs. Polling callers ignore the value.
 
     Acquires a fresh WorldModel + LLM + Sandbox per call so each
     background goal gets its own connection (SQLite WAL + check_same_thread
-    handles the concurrency).
+    handles the concurrency), and always closes the WorldModel so the
+    per-goal connection + WAL handle don't leak for the process lifetime.
     """
-    _run_semaphore.acquire()
+    if not _run_semaphore.acquire(timeout=_ACQUIRE_TIMEOUT):
+        log.error(
+            "run_goal_in_thread: no concurrency slot within %.0fs "
+            "(goal_id=%s); refusing run", _ACQUIRE_TIMEOUT, goal_id,
+        )
+        return None
+    world = None
     try:
         from .budget import Budget
         from .llm import LLM
@@ -81,9 +102,22 @@ def run_goal_in_thread(
                 world.set_goal_status(goal_id, "blocked", result="internal error")
             except Exception:  # pragma: no cover
                 log.exception("failed to reclaim goal #%s after crash", goal_id)
+        # Read back the terminal status so the worker can decide retry.
+        try:
+            g = world.get_goal(goal_id)
+            return g.status if g else None
+        except Exception:  # pragma: no cover
+            log.exception("run_goal_in_thread: status read-back failed (goal_id=%s)", goal_id)
+            return None
     except Exception:
         log.exception("background goal run failed (goal_id=%s)", goal_id)
+        return None
     finally:
+        if world is not None:
+            try:
+                world.close()
+            except Exception:  # pragma: no cover
+                log.debug("run_goal_in_thread: world.close() failed", exc_info=True)
         _run_semaphore.release()
 
 
@@ -92,7 +126,7 @@ def run_goal_in_background(
     max_dollars: float = DEFAULT_MAX_DOLLARS,
     max_wall_seconds: float = DEFAULT_MAX_WALL_SECONDS,
     max_depth: int = DEFAULT_MAX_DEPTH,
-) -> None:
+) -> Optional[str]:
     """Alias for run_goal_in_thread. Reserved for future change to a
     proper task queue (Celery / arq / RQ) without breaking callers."""
     return run_goal_in_thread(

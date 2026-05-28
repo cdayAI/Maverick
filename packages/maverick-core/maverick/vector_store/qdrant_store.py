@@ -93,6 +93,16 @@ class QdrantStore:
         import uuid as _uuid
         if ids is None:
             ids = [str(_uuid.uuid4()) for _ in documents]
+        # Fail fast with a clear message rather than a backend-internal
+        # error deep in the upsert when the parallel arrays don't line up.
+        if len(ids) != len(documents):
+            raise ValueError(
+                f"ids length {len(ids)} != documents length {len(documents)}"
+            )
+        if metadatas is not None and len(metadatas) != len(documents):
+            raise ValueError(
+                f"metadatas length {len(metadatas)} != documents length {len(documents)}"
+            )
         kwargs: dict = {
             "collection_name": self._collection,
             "documents": documents,
@@ -103,10 +113,16 @@ class QdrantStore:
         self._client.add(**kwargs)
 
     def query(self, text: str, *, top_k: int = 5) -> list[dict]:
-        """Top-k similarity search. Returns list of {id, document, distance, metadata}.
+        """Top-k similarity search. Returns list of
+        {id, document, score, distance, metadata}.
 
-        ``distance`` is ``1 - score`` so callers comparing Chroma and
-        Qdrant adapters see consistent "lower = closer" semantics.
+        Results come back highest-similarity-first from Qdrant. ``score``
+        is the raw similarity from the collection's metric; ``distance``
+        is ``1 - score`` for "lower = closer" parity with the Chroma
+        adapter. NOTE: ``1 - score`` only orders correctly for the
+        default cosine (0..1) metric; for a DOT/EUCLID collection, sort
+        by raw ``score`` (already similarity-ordered by the backend)
+        rather than ``distance``.
         """
         if not text:
             return []
@@ -118,10 +134,12 @@ class QdrantStore:
         out: list[dict] = []
         for r in results:
             score = getattr(r, "score", None)
-            distance = (1.0 - score) if isinstance(score, (int, float)) else None
+            score_f = float(score) if isinstance(score, (int, float)) else None
+            distance = (1.0 - score_f) if score_f is not None else None
             out.append({
                 "id": str(getattr(r, "id", "")),
                 "document": getattr(r, "document", "") or "",
+                "score": score_f,
                 "distance": distance,
                 "metadata": getattr(r, "metadata", None) or None,
             })

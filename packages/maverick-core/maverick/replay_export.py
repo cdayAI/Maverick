@@ -88,7 +88,15 @@ def _iter_events_for_goal(goal_id: int, files: Optional[Iterable[Path]] = None) 
                     except json.JSONDecodeError:
                         continue
                     gid = ev.get("goal_id")
-                    if gid is None or int(gid) != int(goal_id):
+                    if gid is None:
+                        continue
+                    # A non-numeric goal_id (tampering, a future non-int
+                    # id, an unrelated row) must skip the row, not abort
+                    # the whole export with a ValueError.
+                    try:
+                        if int(gid) != int(goal_id):
+                            continue
+                    except (TypeError, ValueError):
                         continue
                     yield ev
         except OSError:

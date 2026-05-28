@@ -119,7 +119,7 @@ def _op_sources(args: dict) -> str:
     if not rows:
         return "no sources"
     return "\n".join(
-        f"  {s.get('id'):<25}  {(s.get('name') or '')[:40]}  ({s.get('category', '?')})"
+        f"  {(s.get('id') or '?'):<25}  {(s.get('name') or '')[:40]}  ({s.get('category', '?')})"
         for s in rows[:50]
     )
 

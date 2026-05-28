@@ -84,8 +84,11 @@ class TelegramChannel(Channel):
                         getattr(update.effective_user, "id", None),
                         getattr(update.effective_chat, "id", None))
             return
+        # effective_user is None for channel posts / anonymous admins;
+        # _is_authorized handles that via allowed_chat_ids, so guard here
+        # too rather than AttributeError after auth passed.
         msg = IncomingMessage(
-            user_id=str(update.effective_user.id),
+            user_id=str(update.effective_user.id) if update.effective_user else "",
             text=update.message.text,
             channel="telegram",
             raw=update,

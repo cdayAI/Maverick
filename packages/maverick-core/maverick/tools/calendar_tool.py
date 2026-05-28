@@ -186,8 +186,11 @@ def _create_event(args: dict[str, Any]) -> str:
 def _find_slot(args: dict[str, Any]) -> str:
     duration_min = max(15, min(int(args.get("duration_minutes") or 30), 480))
     search_days = max(1, min(int(args.get("search_days") or 7), 60))
-    earliest = max(0, min(int(args.get("earliest_hour") or 9), 23))
-    latest = max(earliest + 1, min(int(args.get("latest_hour") or 18), 23))
+    # Clamp latest to a real hour first (<=23), then keep earliest
+    # strictly below it. Doing earliest first let latest become 24 when
+    # earliest=23 (max(24, ...)) → a later cursor.replace(hour=24) crash.
+    latest = max(1, min(int(args.get("latest_hour") or 18), 23))
+    earliest = max(0, min(int(args.get("earliest_hour") or 9), latest - 1))
     now = datetime.now(tz=timezone.utc).replace(second=0, microsecond=0)
     window_end = now + timedelta(days=search_days)
     try:

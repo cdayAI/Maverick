@@ -111,7 +111,14 @@ class VoiceChannel(Channel):
         # Vapi sends webhook events with a `type` field: "function-call",
         # "end-of-call-report", "transcript", "speech-update", etc.
         # We only care about transcripts that resolve into agent turns.
-        payload = await request.json()
+        try:
+            payload = await request.json()
+        except Exception:
+            # Malformed / non-JSON body: 400, don't 500 (which Vapi
+            # retries, amplifying load).
+            raise HTTPException(status_code=400, detail="invalid JSON body")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="expected a JSON object")
         ev_type = payload.get("message", {}).get("type", "")
 
         if ev_type == "transcript":

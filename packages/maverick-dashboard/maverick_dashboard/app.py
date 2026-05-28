@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import ipaddress
 import logging
 import os
 import threading
@@ -160,11 +161,38 @@ def _is_same_origin(request: Request) -> bool:
     return False
 
 
+def _is_loopback_client(host: str) -> bool:
+    """True for in-process/loopback callers (safe to serve without a token)."""
+    if not host:
+        return False
+    # Starlette's in-process TestClient reports host="testclient"; a real
+    # network peer can never present that (request.client.host is the
+    # socket peer, set by the server, not user-controllable).
+    if host in ("localhost", "testclient"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):
     expected = os.environ.get("MAVERICK_DASHBOARD_TOKEN")
-    if not expected or request.url.path in _AUTH_EXEMPT:
+    if request.url.path in _AUTH_EXEMPT:
         return await call_next(request)
+    if not expected:
+        # No token configured: serve loopback only. An operator who binds
+        # --host 0.0.0.0 without setting a token must NOT silently expose
+        # run history, spend, and the control surface unauthenticated to
+        # the network. Set MAVERICK_DASHBOARD_TOKEN to allow remote access.
+        client_host = request.client.host if request.client else ""
+        if _is_loopback_client(client_host):
+            return await call_next(request)
+        return JSONResponse(
+            {"detail": "dashboard requires MAVERICK_DASHBOARD_TOKEN for non-loopback access"},
+            status_code=401,
+        )
     auth = request.headers.get("authorization", "")
     header_token = auth[7:] if auth.startswith("Bearer ") else ""
     # ``?token=`` query auth was removed: it leaks the bearer through

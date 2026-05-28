@@ -119,12 +119,16 @@ class KubernetesBackend:
                 exit_code=result.returncode,
             )
         except subprocess.TimeoutExpired as e:
-            # Best-effort cleanup; ignore errors.
-            subprocess.run(
-                [*self._kubectl_prefix(), "delete", "pod", pod_name,
-                 "--ignore-not-found=true", "--grace-period=0", "--force"],
-                capture_output=True, timeout=10,
-            )
+            # Best-effort cleanup; ignore errors (incl. a hung kubectl
+            # that would otherwise raise over the TIMEOUT result).
+            try:
+                subprocess.run(
+                    [*self._kubectl_prefix(), "delete", "pod", pod_name,
+                     "--ignore-not-found=true", "--grace-period=0", "--force"],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                pass
             stdout = e.stdout or ""
             if isinstance(stdout, bytes):
                 stdout = stdout.decode("utf-8", errors="replace")

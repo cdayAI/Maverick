@@ -89,7 +89,7 @@ def _op_list(args: dict) -> str:
                        "metadataHeaders": ["From", "Subject"]})
         if c2 >= 400 or not isinstance(d2, dict):
             continue
-        headers = {h["name"]: h["value"]
+        headers = {h.get("name", ""): h.get("value", "")
                    for h in ((d2.get("payload") or {}).get("headers") or [])}
         out.append(
             f"  {m['id']}  {headers.get('From', '?')[:30]:<30}  "
@@ -124,7 +124,8 @@ def _op_get(args: dict) -> str:
     if code >= 400 or not isinstance(data, dict):
         return f"ERROR: get ({code}): {data}"
     payload = data.get("payload") or {}
-    headers = {h["name"]: h["value"] for h in (payload.get("headers") or [])}
+    headers = {h.get("name", ""): h.get("value", "")
+               for h in (payload.get("headers") or [])}
     body = _extract_plain(payload) or data.get("snippet", "")
     return (
         f"From:    {headers.get('From', '?')}\n"
@@ -160,7 +161,7 @@ def _op_labels(_args: dict) -> str:
         return f"ERROR: labels ({code}): {data}"
     rows = data.get("labels") or []
     return "\n".join(
-        f"  {lbl.get('id'):<25}  {lbl.get('name')}" for lbl in rows
+        f"  {(lbl.get('id') or '?'):<25}  {lbl.get('name')}" for lbl in rows
     ) or "no labels"
 
 

@@ -109,18 +109,35 @@ def _to_markdown(html: str) -> str:
 
 
 def _is_private_ip(host: str) -> bool:
-    """Best-effort: refuse private/loopback addrs unless explicitly allowed."""
+    """Refuse private/loopback/link-local/reserved addrs (SSRF guard).
+
+    Covers the cloud metadata endpoint (169.254.169.254 is link-local)
+    plus reserved/multicast/unspecified ranges (0.0.0.0, 224.0.0.0/4,
+    240.0.0.0/4, ...) that the previous version missed.
+
+    NOTE: a name that fails to resolve here still returns False (httpx
+    then errors meaningfully). Failing closed on resolution error does
+    NOT stop DNS rebinding — that needs resolve-once-then-pin-the-
+    connection, tracked as the centralized-SSRF-client rebuild item.
+    """
     try:
         addrs = socket.getaddrinfo(host, None)
     except socket.gaierror:
-        return False  # Can't resolve -- httpx will error meaningfully.
+        return False
     for fam, _stype, _proto, _name, sockaddr in addrs:
         ip_str = sockaddr[0]
         try:
             ip = ipaddress.ip_address(ip_str)
         except ValueError:
             continue
-        if ip.is_private or ip.is_loopback or ip.is_link_local:
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
             return True
     return False
 
@@ -176,12 +193,22 @@ def _run_fetch(args: dict[str, Any]) -> str:
     if os.environ.get("MAVERICK_FETCH_ALLOW_PRIVATE") != "1":
         if _is_private_ip(parsed.hostname or ""):
             return (
-                f"ERROR: refusing to fetch private/loopback address {parsed.hostname!r}. "
+                f"ERROR: refusing to fetch {parsed.hostname!r}: it resolves to a "
+                "private/loopback/link-local/reserved address. "
                 "Set MAVERICK_FETCH_ALLOW_PRIVATE=1 to override."
             )
     if os.environ.get("MAVERICK_FETCH_RESPECT_ROBOTS") == "1":
         if not _check_robots(url):
             return f"ERROR: blocked by robots.txt for {url!r}"
+
+    # Chaos hook: the harness advertises an `http_fetch` failure stage
+    # (MAVERICK_CHAOS=http_fetch:NN); wire it here so resilience tests can
+    # actually exercise network failures instead of it being a silent no-op.
+    try:
+        from ..chaos import maybe_fail
+        maybe_fail("http_fetch", message=f"chaos: http_fetch on {url[:60]!r}")
+    except ImportError:
+        pass
 
     try:
         import httpx

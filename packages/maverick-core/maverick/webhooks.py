@@ -113,7 +113,14 @@ def fire(
         "ts": time.time(),
         "payload": payload,
     }
-    body = json.dumps(body_obj, default=str).encode("utf-8")
+    # Serialize defensively: fire() promises never to raise into the run
+    # loop, so a non-serializable payload must degrade to a no-op, not
+    # crash the caller.
+    try:
+        body = json.dumps(body_obj, default=str).encode("utf-8")
+    except (TypeError, ValueError) as e:
+        log.warning("webhook: payload not serializable, skipping: %s", e)
+        return 0
     headers = {
         "Content-Type": "application/json",
         "User-Agent": "Maverick-Webhook/1.0",

@@ -39,6 +39,12 @@ class UnknownJobKind(Exception):
     """Raised when no handler is registered for a job.kind."""
 
 
+class GoalRunFailed(Exception):
+    """Raised by the built-in run_goal handler when the goal did not reach
+    a successful terminal status, so run_once() routes it through the
+    queue's retry/backoff path instead of marking the job done."""
+
+
 class Worker:
     def __init__(
         self,
@@ -65,11 +71,17 @@ class Worker:
             goal_id = job.payload.get("goal_id")
             if not goal_id:
                 raise ValueError("run_goal payload requires goal_id")
-            # Sync wait so the queue waits before claiming the next job.
+            # Sync run so the queue waits before claiming the next job.
             from .runner import run_goal_in_thread
-            t = run_goal_in_thread(int(goal_id))
-            if hasattr(t, "join"):
-                t.join()
+            status = run_goal_in_thread(int(goal_id))
+            # A goal that ended 'blocked'/'failed' -- or couldn't start
+            # (None) -- must raise so run_once() routes it through
+            # queue.fail() and the retry/backoff path. Returning normally
+            # here would mark a crashed goal as a successful job.
+            if status is None or status in ("blocked", "failed", "error"):
+                raise GoalRunFailed(
+                    f"goal {goal_id} terminal status={status!r}"
+                )
         self._handlers["run_goal"] = _run_goal
 
     def stop(self) -> None:
@@ -142,4 +154,4 @@ class Worker:
             pass
 
 
-__all__ = ["Worker", "UnknownJobKind"]
+__all__ = ["Worker", "UnknownJobKind", "GoalRunFailed"]
