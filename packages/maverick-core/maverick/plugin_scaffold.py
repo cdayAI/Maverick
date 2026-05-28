@@ -80,11 +80,11 @@ license          = "MIT"
 repository       = "https://github.com/your-org/{slug}"
 summary          = "A {kind} plugin for Maverick"
 
-[permissions]
+[plugin.permissions]
 # Declare what your plugin actually needs. The kernel uses these to
 # warn users on install (and, eventually, to gate at runtime).
 network     = {network}
-filesystem  = false
+fs_write    = false
 subprocess  = false
 '''
 
