@@ -421,6 +421,77 @@ async def tools_page(request: Request) -> HTMLResponse:
     )
 
 
+def _permissions_snapshot() -> dict:
+    """Aggregate everything the agent is currently allowed to do.
+
+    Read-only view assembled from config + the live registry + the
+    dashboard's runtime overrides. Powers the /permissions page and
+    GET /api/v1/permissions.
+    """
+    snap: dict = {
+        "tools": [], "capabilities": {}, "channels": [], "sandbox": {},
+        "budget": {}, "network": "open", "plugins": [], "providers": [],
+        "retention": {}, "overlay_denied": [], "error": None,
+    }
+    try:
+        from maverick.config import load_config
+        cfg = load_config() or {}
+    except Exception as e:
+        snap["error"] = f"config read failed: {type(e).__name__}: {e}"
+        cfg = {}
+
+    snap["capabilities"] = cfg.get("capabilities") or {}
+    snap["budget"] = cfg.get("budget") or {}
+    snap["retention"] = cfg.get("retention") or {}
+    snap["sandbox"] = cfg.get("sandbox") or {}
+    snap["providers"] = sorted((cfg.get("providers") or {}).keys())
+    snap["channels"] = [
+        {"name": n, "enabled": bool(c.get("enabled", True))}
+        for n, c in (cfg.get("channels") or {}).items()
+    ]
+    sec = cfg.get("security") or {}
+    snap["network"] = (sec.get("network_policy") or "open")
+
+    try:
+        from maverick.runtime_overrides import denied_tools as _overlay
+        snap["overlay_denied"] = sorted(_overlay())
+    except Exception:
+        snap["overlay_denied"] = []
+
+    # Live registry = the true set of tools after ACL + rate-limit +
+    # overlay filtering. A tool present here is genuinely callable.
+    try:
+        from maverick.tools import base_registry
+        from maverick.sandbox import build_sandbox
+        from maverick.world_model import DEFAULT_DB, WorldModel
+        wm = WorldModel(DEFAULT_DB)
+        reg = base_registry(world=wm, sandbox=build_sandbox())
+        enabled = {t.name for t in reg.all()}
+    except Exception as e:
+        snap["error"] = (snap["error"] or "") + f" registry: {type(e).__name__}: {e}"
+        enabled = set()
+    # Show enabled tools + the overlay-denied ones (so the user can re-enable).
+    names = sorted(enabled | set(snap["overlay_denied"]))
+    snap["tools"] = [
+        {"name": n, "enabled": n in enabled} for n in names
+    ]
+
+    try:
+        from maverick.plugins import installed_plugins
+        snap["plugins"] = installed_plugins()
+    except Exception:
+        snap["plugins"] = {}
+    return snap
+
+
+@app.get("/permissions", response_class=HTMLResponse)
+async def permissions_page(request: Request) -> HTMLResponse:
+    """What Maverick can do — tools, capabilities, channels, data flow."""
+    return templates.TemplateResponse(
+        request, "permissions.html", {"perm": _permissions_snapshot()},
+    )
+
+
 @app.get("/cache", response_class=HTMLResponse)
 async def cache_page(request: Request) -> HTMLResponse:
     """In-process cache stats + purge buttons."""

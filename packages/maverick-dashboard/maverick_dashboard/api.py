@@ -621,6 +621,37 @@ async def audit_grep(pattern: str, day: Optional[str] = None) -> dict:
     return {"events": default_audit_log().grep(pattern, day=day)}
 
 
+@router.get("/permissions")
+async def permissions() -> dict:
+    """Everything the agent is currently allowed to do (read-only)."""
+    from maverick_dashboard.app import _permissions_snapshot
+    return _permissions_snapshot()
+
+
+@router.post("/permissions/tools/{name}/disable", status_code=204)
+async def disable_tool(name: str) -> None:
+    """Disable a tool via the dashboard runtime overlay.
+
+    Writes ~/.maverick/runtime-overrides.toml (NOT config.toml), which
+    the kernel unions into the deny-list. Takes effect on the next goal
+    with no restart.
+    """
+    from maverick.runtime_overrides import disable_tool as _disable
+    _disable(name)
+
+
+@router.post("/permissions/tools/{name}/enable", status_code=204)
+async def enable_tool(name: str) -> None:
+    """Clear a dashboard-set tool override.
+
+    Only clears overrides set here; a tool denied in config.toml itself
+    stays denied (the response is still 204 — the overlay no longer
+    denies it, config does).
+    """
+    from maverick.runtime_overrides import enable_tool as _enable
+    _enable(name)
+
+
 @router.get("/cache/stats")
 async def cache_stats() -> dict:
     """In-process cache sizes (file reads, repo-map, skill embeddings).
