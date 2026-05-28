@@ -1,6 +1,6 @@
 """Maverick interactive installer.
 
-A friendly, opinionated walk-through. Sets up:
+Configures Maverick for a fresh install. Sets up:
   - deployment target
   - AI providers and per-role models
   - channels (Telegram, Discord, Slack, Signal, WhatsApp, SMS, Email,
@@ -331,7 +331,7 @@ def pick_models_per_role(providers: list[str]) -> dict[str, str]:
     console.print()
     console.print(
         "[bold]Pick a model for each agent role.[/bold] "
-        "Heavy roles (orchestrator, revisor) benefit from larger models; "
+        "Large models (orchestrator, revisor) suit big roles; "
         "cheap roles (summarizer) can use smaller ones.\n"
     )
 
@@ -453,7 +453,7 @@ def pick_channels(deployment: str) -> tuple[dict[str, dict[str, Any]], set[str]]
 
 def pick_safety() -> dict[str, Any]:
     pick = _q_select(
-        "Safety profile (powered by Agent Shield):",
+        "Safety profile:",
         [
             "strict     - Block on any medium+ threat. Best for sensitive use.",
             "balanced   - Block on high+ threats. Recommended default.",
@@ -743,7 +743,7 @@ def pick_notifications() -> tuple[dict[str, Any], list[str]]:
     backend = pick.split()[0]
     if backend == "ntfy":
         topic = _q_text(
-            "  ntfy topic (any unique string; treat as a password)",
+            "  ntfy topic (a unique string that acts as the channel name)",
             default="",
         ).strip()
         return ({"backend": "ntfy", "topic": topic}, []) if topic else ({}, [])
@@ -1333,7 +1333,7 @@ def run_fast() -> int:
         )
         return 1
     console.print(
-        "[bold]Fast setup:[/bold] using recommended defaults. "
+        "[bold]Fast setup:[/bold] using safe defaults. "
         "Run `maverick init` (no --fast) anytime to customize.\n"
     )
     deployment = "desktop"
@@ -1370,7 +1370,7 @@ def run_fast() -> int:
     smoke_test()
     console.print()
     console.print(Panel.fit(
-        "[bold green]Fast setup complete.[/bold green]\n\n"
+        "[bold green]Fast setup finished.[/bold green]\n\n"
         "Try: [bold]maverick start \"hello\"[/bold]\n"
         "(If ANTHROPIC_API_KEY wasn't set, edit ~/.maverick/.env first.)",
         border_style="green",
@@ -1520,7 +1520,7 @@ def run(fast: bool = False, resume: bool = False) -> int:
         console.print()
         next_step = "maverick serve" if channels else 'maverick start "hello"'
         console.print(Panel.fit(
-            "[bold green]All set.[/bold green]\n\n"
+            "[bold green]Setup complete.[/bold green]\n\n"
             "Try:\n"
             f"  [bold]{next_step}[/bold]\n"
             "  [bold]maverick status[/bold]\n"

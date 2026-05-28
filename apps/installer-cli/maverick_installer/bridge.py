@@ -57,9 +57,9 @@ STEPS = [
 def run() -> None:
     """Sidecar entry point.
 
-    Simplified linear flow vs. the CLI wizard's branching; the desktop
-    installer is opinionated for non-technical users -- it picks sensible
-    defaults and asks fewer questions.
+    Simplified linear flow vs. the CLI wizard's branching: the desktop
+    installer fills most settings with safe defaults and asks four
+    questions (name, sign-in, working directory, budget).
     """
     state: dict[str, Any] = {
         "deployment": "desktop",
@@ -153,7 +153,7 @@ def run() -> None:
         state["sandbox"],
         state["keys"],
     )
-    _send(_step("__done__", "All set. Maverick is configured.", []))
+    _send(_step("__done__", "Setup complete. Maverick is ready.", []))
 
 
 if __name__ == "__main__":

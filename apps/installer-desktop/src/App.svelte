@@ -34,13 +34,13 @@
 
 <main>
   <header>
-    <h1>Maverick Installer</h1>
-    <p class="sub">An AI agent you fully control — pick your models, your safety level, your channels.</p>
+    <h1>Maverick installer</h1>
+    <p class="sub">Set up Maverick on this machine.</p>
   </header>
 
   {#if done}
     <section class="done">
-      <h2>You're all set.</h2>
+      <h2>Setup complete.</h2>
       <p>Maverick is configured. Open a terminal and run <code>maverick serve</code> to start.</p>
     </section>
   {:else if step}
