@@ -198,7 +198,7 @@ async def goal_events(
     g = w.get_goal(goal_id)
     if g is None:
         raise HTTPException(status_code=404, detail="no such goal")
-    events = w.goal_events(goal_id, since_id=since, limit=limit)
+    events = w.goal_events(goal_id, since_id=since, limit=max(1, min(limit, 500)))
     return GoalEventsResponse(
         status=g.status,
         result=g.result,
@@ -608,8 +608,9 @@ async def list_channels() -> dict:
 async def audit_tail(n: int = 100, day: Optional[str] = None) -> dict:
     """Tail the audit log (NDJSON at ~/.maverick/audit/YYYY-MM-DD.ndjson)."""
     from maverick.audit import default_audit_log
+    from maverick_dashboard.app import safe_audit_day
     n = max(1, min(int(n or 100), 1000))
-    return {"events": default_audit_log().tail(n, day=day)}
+    return {"events": default_audit_log().tail(n, day=safe_audit_day(day))}
 
 
 @router.get("/audit/grep")
@@ -629,7 +630,8 @@ async def audit_grep(pattern: str, day: Optional[str] = None) -> dict:
     except re.error as e:
         raise HTTPException(status_code=400, detail=f"bad regex: {e}")
     from maverick.audit import default_audit_log
-    return {"events": default_audit_log().grep(pattern, day=day)}
+    from maverick_dashboard.app import safe_audit_day
+    return {"events": default_audit_log().grep(pattern, day=safe_audit_day(day))}
 
 
 @router.get("/permissions")
