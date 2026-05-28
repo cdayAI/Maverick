@@ -15,11 +15,13 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse,
     StreamingResponse,
 )
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .api import router as api_router
 
@@ -169,6 +171,51 @@ async def bearer_auth(request: Request, call_next):
     if header_token and hmac.compare_digest(header_token, expected):
         return await call_next(request)
     return JSONResponse({"detail": "unauthorized"}, status_code=401)
+
+
+def _wants_html(request: Request) -> bool:
+    """True when the client prefers HTML (browser nav) over JSON (API)."""
+    accept = (request.headers.get("accept") or "").lower()
+    if request.url.path.startswith(("/api/", "/openapi", "/healthz", "/livez", "/readyz", "/metrics")):
+        return False
+    return "text/html" in accept or "*/*" in accept
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Branded HTML for browser 404s; JSON for API callers."""
+    if exc.status_code == 404 and _wants_html(request):
+        return templates.TemplateResponse(
+            request, "404.html",
+            {"path": request.url.path},
+            status_code=404,
+        )
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """422 for browser nav becomes 400 with the branded error page."""
+    if _wants_html(request):
+        return templates.TemplateResponse(
+            request, "500.html",
+            {"path": request.url.path, "detail": str(exc.errors())},
+            status_code=400,
+        )
+    return JSONResponse({"detail": exc.errors()}, status_code=422)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Catch-all so we never serve the default white "Internal Server Error"."""
+    log.exception("unhandled dashboard exception on %s", request.url.path)
+    if _wants_html(request):
+        return templates.TemplateResponse(
+            request, "500.html",
+            {"path": request.url.path, "detail": f"{type(exc).__name__}: {exc}"},
+            status_code=500,
+        )
+    return JSONResponse({"detail": "internal server error"}, status_code=500)
 
 
 @app.middleware("http")

@@ -285,13 +285,10 @@ _VALIDATORS = {
 
 def welcome() -> None:
     console.print(Panel.fit(
-        "[bold cyan]Welcome to Maverick.[/bold cyan]\n\n"
-        "An AI agent you fully control — pick your models, your safety\n"
-        "level, your deployment target, and your channels. Privacy-first,\n"
-        "safety by default.\n\n"
-        "This wizard takes about 3 minutes. You can re-run it any time:\n"
-        "  [bold]maverick init[/bold]",
-        title="Maverick Installer",
+        "[bold]Maverick installer[/bold]\n\n"
+        "You'll be asked about deployment, providers, channels, safety\n"
+        "profile, sandbox, and budget. Re-run any time with\n"
+        "[bold]maverick init[/bold].",
         border_style="cyan",
     ))
 
@@ -316,7 +313,7 @@ def pick_providers() -> list[str]:
         choices.append(f"{prov_id:10} {tag} - {info['label']}")
 
     picks = _q_checkbox(
-        "Which AI providers do you want to use? (API keys requested only for the ones you pick.)",
+        "Which AI providers do you want to use?",
         choices,
         default=[choices[0]],
     )
@@ -326,19 +323,17 @@ def pick_providers() -> list[str]:
 def pick_models_per_role(providers: list[str]) -> dict[str, str]:
     console.print()
     if _q_confirm(
-        "Use recommended defaults for per-role models? (Yes = skip the 8-question gauntlet)",
+        "Use the default model for each role?",
         default=True,
     ):
         return {}
 
     console.print()
-    console.print(Panel.fit(
-        "[bold]Per-role model assignment[/bold]\n\n"
-        "Maverick is a swarm — different roles do different work. Heavy roles\n"
-        "(orchestrator, revisor) benefit from a smart model; cheap roles\n"
-        "(summarizer) can use a small one. Pick what you want for each.",
-        border_style="cyan",
-    ))
+    console.print(
+        "[bold]Pick a model for each agent role.[/bold] "
+        "Heavy roles (orchestrator, revisor) benefit from larger models; "
+        "cheap roles (summarizer) can use smaller ones.\n"
+    )
 
     role_models: dict[str, str] = {}
     for role, hint in catalog.ROLES:
@@ -501,31 +496,19 @@ def pick_budget() -> dict[str, float]:
 
 
 def pick_capabilities() -> dict[str, bool]:
-    """Opt-in to high-impact tools the wizard ships disabled by default.
+    """Opt-in to high-impact tools that ship disabled.
 
-    Computer-use and browser tools are Devin/Hermes/OpenClaw-class
-    capabilities. They're heavy on deps and have real safety implications
-    (the agent can drive your mouse/keyboard or open external sites), so
-    users explicitly enable them.
+    Computer-use and browser tools have real safety side effects
+    (mouse/keyboard control or arbitrary navigation), so they default
+    to off until you explicitly enable them.
     """
     console.print()
-    console.print(Panel.fit(
-        "[bold]Advanced capabilities[/bold]\n\n"
-        "Optional tools that extend what the agent can do. Each\n"
-        "requires an optional dep and has real side effects:\n\n"
-        "  • [bold]computer-use[/bold]: agent sees your screen and drives\n"
-        "    mouse + keyboard (matches Anthropic's computer_20250124 spec)\n"
-        "  • [bold]browser[/bold]: agent navigates the web via Playwright\n"
-        "    (discrete navigate / click / type / extract actions)\n\n"
-        "You can change these later in ~/.maverick/config.toml.",
-        border_style="cyan",
-    ))
     use_computer = _q_confirm(
-        "Enable computer-use tool? (agent controls your mouse/keyboard)",
+        "Enable computer-use? Lets the agent see your screen and drive the mouse/keyboard.",
         default=False,
     )
     use_browser = _q_confirm(
-        "Enable browser tool? (agent can open web pages via Playwright)",
+        "Enable browser? Lets the agent navigate the web via Playwright.",
         default=False,
     )
     return {
