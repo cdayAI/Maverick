@@ -153,21 +153,26 @@ def base_registry(
     from .preview_diff import preview_diff
     from .kv_memory import kv_memory
     from .a11y import a11y
+    from .airtable_tool import airtable_tool
     from .android import android
     from .apply_patch import apply_patch
     from .arxiv import arxiv
+    from .asana_tool import asana_tool
     from .calendar_tool import calendar_tool
     from .cloudflare_tool import cloudflare_tool
+    from .clickup_tool import clickup_tool
     from .compute import compute
     from .currency import currency
     from .datadog_tool import datadog_tool
     from .diagnose import diagnose
     from .discord_bot import discord_bot
     from .dns_lookup import dns_lookup
+    from .dynamodb_tool import dynamodb_tool
     from .elasticsearch_tool import elasticsearch_tool
     from .email_tool import email_tool
     from .embeddings import embeddings
     from .file_watcher import file_watcher
+    from .gdrive_tool import gdrive_tool
     from .geocode import geocode
     from .git_advanced import git_advanced
     from .github_actions import github_actions
@@ -177,6 +182,7 @@ def base_registry(
     from .huggingface import huggingface
     from .ios_sim import ios_sim
     from .jira import jira
+    from .lambda_tool import lambda_tool
     from .mongodb_tool import mongodb_tool
     from .linear import linear
     from .notify import notify_tool
@@ -198,6 +204,7 @@ def base_registry(
     from .test_impact import test_impact
     from .translate import translate
     from .twilio_tool import twilio_tool
+    from .vercel_tool import vercel_tool
     from .wikipedia import wikipedia
     from .youtube import youtube
     reg.register(recall())
@@ -257,6 +264,13 @@ def base_registry(
     reg.register(s3_tool())
     reg.register(elasticsearch_tool())
     reg.register(github_actions())
+    reg.register(airtable_tool())
+    reg.register(asana_tool())
+    reg.register(clickup_tool())
+    reg.register(lambda_tool())
+    reg.register(dynamodb_tool())
+    reg.register(vercel_tool())
+    reg.register(gdrive_tool())
 
     # Voice tools (opt-in extra; tool factories raise ImportError only
     # when called without the required API key OR SDK; registering is
