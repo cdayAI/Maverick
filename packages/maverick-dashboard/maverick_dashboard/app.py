@@ -408,9 +408,30 @@ async def tools_page(request: Request) -> HTMLResponse:
 @app.get("/channels", response_class=HTMLResponse)
 async def channels_page(request: Request) -> HTMLResponse:
     """Configured + enabled channels."""
+    sensitive_markers = (
+        "token", "secret", "password", "passwd", "api_key", "apikey", "auth",
+        "credential", "cookie", "session",
+    )
+
+    def _display_channels(channels: dict) -> dict:
+        out: dict = {}
+        for name, cfg in (channels or {}).items():
+            if not isinstance(cfg, dict):
+                out[name] = {"enabled": bool(cfg)}
+                continue
+            safe_cfg: dict = {}
+            for key, value in cfg.items():
+                key_l = str(key).lower()
+                if any(marker in key_l for marker in sensitive_markers):
+                    safe_cfg[key] = "[redacted]"
+                else:
+                    safe_cfg[key] = value
+            out[name] = safe_cfg
+        return out
+
     try:
         from maverick.config import load_config
-        channels = (load_config() or {}).get("channels") or {}
+        channels = _display_channels((load_config() or {}).get("channels") or {})
     except Exception:
         channels = {}
     return templates.TemplateResponse(

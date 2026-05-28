@@ -230,6 +230,33 @@ def test_channels_page_renders(monkeypatch):
     assert "channel" in r.text.lower()
 
 
+def test_channels_page_redacts_sensitive_values(monkeypatch):
+    monkeypatch.delenv("MAVERICK_DASHBOARD_TOKEN", raising=False)
+    import maverick.config as _cfg
+    monkeypatch.setattr(
+        _cfg,
+        "load_config",
+        lambda: {
+            "channels": {
+                "slack": {
+                    "enabled": True,
+                    "bot_token": "xoxb-real-secret",
+                    "app_token": "xapp-real-secret",
+                    "workspace": "ops",
+                }
+            }
+        },
+    )
+    client = _client()
+    r = client.get("/channels")
+    assert r.status_code == 200
+    assert "workspace=ops" in r.text
+    assert "bot_token=[redacted]" in r.text
+    assert "app_token=[redacted]" in r.text
+    assert "xoxb-real-secret" not in r.text
+    assert "xapp-real-secret" not in r.text
+
+
 # ---------- nav + halt UI present in base.html ----------
 
 def test_base_nav_includes_new_pages(monkeypatch, tmp_path):
