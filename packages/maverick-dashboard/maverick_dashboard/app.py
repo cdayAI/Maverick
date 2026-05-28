@@ -248,6 +248,103 @@ async def providers_page(request: Request) -> HTMLResponse:
     )
 
 
+# ----- Control surface pages (council pass) -----
+
+@app.get("/audit", response_class=HTMLResponse)
+async def audit_page(request: Request) -> HTMLResponse:
+    """Tail of the local audit log."""
+    from maverick.audit import default_audit_log
+    n = max(1, min(int(request.query_params.get("n") or 200), 1000))
+    day = request.query_params.get("day") or None
+    events = default_audit_log().tail(n, day=day)
+    return templates.TemplateResponse(
+        request, "audit.html",
+        {"events": events, "n": n, "day": day},
+    )
+
+
+@app.get("/plugins", response_class=HTMLResponse)
+async def plugins_page(request: Request) -> HTMLResponse:
+    """Discovered + enabled plugins."""
+    try:
+        from maverick.plugins import _entry_points, _allowed_plugin_names
+    except Exception:
+        return templates.TemplateResponse(
+            request, "plugins.html",
+            {"groups": {}, "allowlist_active": False, "error": "plugin discovery failed"},
+        )
+    allow = _allowed_plugin_names()
+    groups: dict[str, list[dict]] = {}
+    for label, group in (
+        ("tools",    "maverick.tools"),
+        ("channels", "maverick.channels"),
+        ("skills",   "maverick.skills"),
+        ("personas", "maverick.personas"),
+    ):
+        items: list[dict] = []
+        try:
+            for ep in _entry_points(group):
+                items.append({
+                    "name": ep.name,
+                    "module": getattr(ep, "value", str(ep)),
+                    "enabled": allow is None or ep.name in allow,
+                })
+        except Exception:
+            pass
+        groups[label] = items
+    return templates.TemplateResponse(
+        request, "plugins.html",
+        {"groups": groups, "allowlist_active": allow is not None, "error": None},
+    )
+
+
+@app.get("/mcp", response_class=HTMLResponse)
+async def mcp_page(request: Request) -> HTMLResponse:
+    """Configured MCP servers."""
+    try:
+        from maverick.config import load_config
+        servers = (load_config() or {}).get("mcp_servers") or {}
+    except Exception:
+        servers = {}
+    return templates.TemplateResponse(
+        request, "mcp.html", {"servers": servers},
+    )
+
+
+@app.get("/tools", response_class=HTMLResponse)
+async def tools_page(request: Request) -> HTMLResponse:
+    """Tools the agent currently has registered (post-ACL, post-rate-limit)."""
+    tools: list[dict] = []
+    error = None
+    try:
+        from maverick.tools import base_registry
+        from maverick.sandbox import build_sandbox
+        from maverick.world_model import DEFAULT_DB, WorldModel
+        wm = WorldModel(DEFAULT_DB)
+        sb = build_sandbox()
+        reg = base_registry(world=wm, sandbox=sb)
+        tools = [{"name": t.name, "description": (t.description or "")[:240]}
+                 for t in sorted(reg.all(), key=lambda x: x.name)]
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+    return templates.TemplateResponse(
+        request, "tools.html", {"tools": tools, "error": error},
+    )
+
+
+@app.get("/channels", response_class=HTMLResponse)
+async def channels_page(request: Request) -> HTMLResponse:
+    """Configured + enabled channels."""
+    try:
+        from maverick.config import load_config
+        channels = (load_config() or {}).get("channels") or {}
+    except Exception:
+        channels = {}
+    return templates.TemplateResponse(
+        request, "channels.html", {"channels": channels},
+    )
+
+
 @app.get("/api/v1/providers")
 async def providers_api() -> JSONResponse:
     from maverick.provider_health import get as _health
