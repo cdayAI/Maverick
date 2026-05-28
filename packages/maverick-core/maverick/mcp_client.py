@@ -369,6 +369,15 @@ async def start_mcp_clients(specs: list[MCPServerSpec]) -> list[MCPClient]:
             return c
         except Exception as e:
             log.error("MCP server %r failed to start: %s", c.spec.name, e)
+            # start() spawns the subprocess + a stderr-drain task BEFORE
+            # the initialize/tools-list calls that can fail. A failed
+            # client is dropped from the returned list, so nothing else
+            # will ever reap it — clean it up here to avoid a zombie
+            # process + orphaned task per failed start.
+            try:
+                await c.stop()
+            except Exception:  # pragma: no cover -- best-effort cleanup
+                pass
             return None
 
     results = await asyncio.gather(*(_try_start(c) for c in clients))

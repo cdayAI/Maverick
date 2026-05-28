@@ -76,6 +76,16 @@ class ChromaStore:
         import uuid as _uuid
         if ids is None:
             ids = [str(_uuid.uuid4()) for _ in documents]
+        # Fail fast on mismatched parallel arrays instead of a confusing
+        # backend-internal error.
+        if len(ids) != len(documents):
+            raise ValueError(
+                f"ids length {len(ids)} != documents length {len(documents)}"
+            )
+        if metadatas is not None and len(metadatas) != len(documents):
+            raise ValueError(
+                f"metadatas length {len(metadatas)} != documents length {len(documents)}"
+            )
         kwargs: dict[str, Any] = {"documents": documents, "ids": ids}
         if metadatas:
             kwargs["metadatas"] = metadatas

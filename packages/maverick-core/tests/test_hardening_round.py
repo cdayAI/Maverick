@@ -498,3 +498,71 @@ def test_retention_allows_known_table(tmp_path):
     c.close()
     removed = _purge_table_by_time(db, "episodes", "ended_at", 200.0, dry_run=True)
     assert removed == 1  # dry run counts the old row, doesn't delete
+
+
+# ---------- verifier: fail CLOSED on LLM error ----------
+
+def test_verifier_fails_closed_on_llm_error():
+    import asyncio
+
+    from maverick.budget import Budget
+    from maverick.verifier import verify_proposal
+
+    class _Boom:
+        async def complete_async(self, **kw):
+            raise RuntimeError("provider down")
+
+    v = asyncio.run(verify_proposal("brief", "some proposal", _Boom(), Budget()))
+    # Contract: any failure -> reject (NOT the old accepts=True fail-open).
+    assert v.accepts is False
+
+
+def test_verifier_propagates_budget_exceeded():
+    import asyncio
+
+    from maverick.budget import Budget, BudgetExceeded
+    from maverick.verifier import verify_proposal
+
+    class _OverBudget:
+        async def complete_async(self, **kw):
+            raise BudgetExceeded("$5 > $5")
+
+    try:
+        asyncio.run(verify_proposal("brief", "p", _OverBudget(), Budget()))
+    except BudgetExceeded:
+        return  # budget is a control signal, must propagate
+    raise AssertionError("expected BudgetExceeded to propagate")
+
+
+# ---------- edit_format: fuzzy match safety ----------
+
+def test_edit_format_indent_match_slice_actually_matches():
+    """When step 3 returns an indent_norm match, the mapped-back slice
+    must really indent-match the needle (the recheck guard)."""
+    from maverick.edit_format import _find_with_fuzzy, _normalise_indent
+    content = (
+        "def a():\n"
+        "    x = 1\n"
+        "    return x\n"
+        "\n"
+        "class C:\n"
+        "    def a(self):\n"
+        "        y = 2\n"
+        "        return y\n"
+    )
+    needle = "x = 1\nreturn x\n"  # uniquely indent-matches the first block
+    start, end, strategy = _find_with_fuzzy(content, needle)
+    assert start is not None
+    needle_ni, _ = _normalise_indent(needle)
+    assert _normalise_indent(content[start:end])[0].startswith(needle_ni)
+
+
+def test_edit_format_refuses_two_identical_blocks():
+    """Two byte-identical blocks → fuzzy tiers must refuse (ambiguous),
+    never silently pick the first."""
+    from maverick.edit_format import _find_with_fuzzy
+    content = "    x = 1\n    return x\n\n    x = 1\n    return x\n"
+    needle = "x = 1\nreturn x\n"
+    start, end, strategy = _find_with_fuzzy(content, needle)
+    assert strategy == "ambiguous"
+    assert start is None and end is None

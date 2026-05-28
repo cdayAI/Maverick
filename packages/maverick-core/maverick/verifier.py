@@ -32,7 +32,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .budget import Budget
+from .budget import Budget, BudgetExceeded
 from .llm import LLM, model_for_role
 
 log = logging.getLogger(__name__)
@@ -181,12 +181,18 @@ async def verify_proposal(
             max_tokens=max_tokens,
             model=model,
         )
-    except Exception as e:  # pragma: no cover -- network/budget errors
-        log.warning("verifier LLM call failed: %s; treating as low-confidence pass", e)
-        return VerifierVerdict(
-            confidence=0.5, accepts=True,
-            critique=f"verifier call failed: {e}", issues=[],
-        )
+    except BudgetExceeded:
+        # Budget exhaustion is a control-flow signal for the budget
+        # layer, not a verifier outcome — let it propagate.
+        raise
+    except Exception as e:  # pragma: no cover -- network errors
+        # Fail CLOSED, per this module's contract ("any failure →
+        # reject; a flaky verifier can only make the system MORE
+        # careful, not less"). The previous fail-open (accepts=True)
+        # silently disabled the safety gate exactly when the system was
+        # least healthy.
+        log.warning("verifier LLM call failed: %s; rejecting (fail-closed)", e)
+        return VerifierVerdict.reject(f"verifier call failed: {e}")
     return _parse(resp.text)
 
 
@@ -254,10 +260,13 @@ async def verify_proposal_ensemble(
                 model=model,
             )
             return _parse(resp.text)
+        except BudgetExceeded:
+            raise
         except Exception as e:  # pragma: no cover
+            # Fail closed, same contract as verify_proposal. One panel
+            # member erroring must not auto-accept.
             log.warning("MAV verifier %s failed: %s", model, e)
-            return VerifierVerdict(confidence=0.5, accepts=True,
-                                   critique=f"failed: {e}")
+            return VerifierVerdict.reject(f"verifier {model} failed: {e}")
 
     verdicts = await asyncio.gather(*(_one(m) for m in panel))
     return _combine(verdicts, weighted=weighted)

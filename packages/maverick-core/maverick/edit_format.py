@@ -266,33 +266,47 @@ def _find_with_fuzzy(content: str, needle: str) -> tuple[Optional[int], Optional
     needle_ni, _ = _normalise_indent(needle)
     content_ni, _ = _normalise_indent(content)
     idx = content_ni.find(needle_ni)
-    if idx >= 0:
-        # Best-effort: re-locate via line numbers in original.
+    # Only accept an UNAMBIGUOUS indent-normalised match: if the
+    # normalised needle occurs more than once (e.g. two same-bodied
+    # blocks at different indent depths), picking the first by `find`
+    # would silently edit the wrong location. Fall through to the
+    # later strategies (which have their own ambiguity guard) instead.
+    if idx >= 0 and needle_ni and content_ni.count(needle_ni) == 1:
         target_line = content_ni[:idx].count("\n")
         original_lines = content.split("\n")
         start = sum(len(ln) + 1 for ln in original_lines[:target_line])
         end_line = target_line + needle_ni.count("\n") + 1
         end = sum(len(ln) + 1 for ln in original_lines[:end_line])
-        return start, end, "indent_norm"
+        # Re-verify the mapped-back slice still indent-matches (mirror
+        # step 2's recheck) before committing to it.
+        if _normalise_indent(content[start:end])[0].startswith(needle_ni):
+            return start, end, "indent_norm"
 
     # 4. Full whitespace-collapse match.
     needle_wc = _whitespace_collapse(needle)
     if needle_wc and needle_wc in _whitespace_collapse(content):
         # We can't locate the exact bytes after collapsing, so fall back
         # to: find the first line of needle (rstrip) in content and use
-        # a Levenshtein window of the right size.
+        # a window of the right size.
         first_line = needle.split("\n", 1)[0].strip()
         if first_line:
-            for line_idx, ln in enumerate(content.split("\n")):
+            original_lines = content.split("\n")
+            needle_lines = needle.count("\n") + 1
+            # Collect EVERY window that ws-collapse-matches, so we can
+            # refuse rather than silently edit the first of several
+            # equally-valid (or worse, different) locations.
+            matches: list[tuple[int, int]] = []
+            for line_idx, ln in enumerate(original_lines):
                 if first_line in ln:
-                    original_lines = content.split("\n")
                     start = sum(len(li) + 1 for li in original_lines[:line_idx])
-                    needle_lines = needle.count("\n") + 1
                     end_line = line_idx + needle_lines
                     end = sum(len(li) + 1 for li in original_lines[:end_line])
-                    if (_whitespace_collapse(content[start:end])
-                            == needle_wc):
-                        return start, end, "ws_collapse"
+                    if _whitespace_collapse(content[start:end]) == needle_wc:
+                        matches.append((start, end))
+            if len(matches) > 1:
+                return None, None, "ambiguous"
+            if matches:
+                return matches[0][0], matches[0][1], "ws_collapse"
 
     # 5. Levenshtein ≥ 0.9 — last-resort fuzzy window.
     # May 26 council fix (SR audit #3): scan ALL windows scoring near
