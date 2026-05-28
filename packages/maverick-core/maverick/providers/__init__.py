@@ -28,6 +28,8 @@ _PROVIDER_ALIASES = {
     "ollama":     ("local",),
     "tgi":        ("huggingface-tgi", "hf-tgi"),
     "vllm":       (),
+    "azure":      ("azure-openai",),
+    "bedrock":    ("aws-bedrock",),
 }
 
 
@@ -75,6 +77,12 @@ def get_provider_client(name: str, api_key: Optional[str] = None) -> Any:
     if canon == "vllm":
         from .vllm_provider import VLLMClient
         return VLLMClient(api_key=api_key)
+    if canon == "azure":
+        from .azure_openai_provider import AzureOpenAIClient
+        return AzureOpenAIClient(api_key=api_key)
+    if canon == "bedrock":
+        from .bedrock_provider import BedrockClient
+        return BedrockClient(api_key=api_key)
     raise ValueError(
         f"unknown provider {name!r}. Available: "
         + ", ".join(KNOWN_PROVIDERS)
@@ -84,6 +92,7 @@ def get_provider_client(name: str, api_key: Optional[str] = None) -> Any:
 KNOWN_PROVIDERS = (
     "anthropic", "openai", "moonshot", "xai", "gemini",
     "deepseek", "openrouter", "ollama", "tgi", "vllm",
+    "azure", "bedrock",
 )
 
 

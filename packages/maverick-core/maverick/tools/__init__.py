@@ -166,6 +166,14 @@ def base_registry(
     from .cloudflare_tool import cloudflare_tool
     from .clickup_tool import clickup_tool
     from .compute import compute
+    from .confluence_tool import confluence_tool
+    from .dropbox_tool import dropbox_tool
+    from .gmail_tool import gmail_tool
+    from .msgraph_tool import msgraph_tool
+    from .newsapi_tool import newsapi_tool
+    from .replicate_tool import replicate_tool
+    from .trello_tool import trello_tool
+    from .wolfram_tool import wolfram_tool
     from .currency import currency
     from .datadog_tool import datadog_tool
     from .diagnose import diagnose
@@ -289,6 +297,14 @@ def base_registry(
     reg.register(dynamodb_tool())
     reg.register(vercel_tool())
     reg.register(gdrive_tool())
+    reg.register(trello_tool())
+    reg.register(confluence_tool())
+    reg.register(replicate_tool())
+    reg.register(newsapi_tool())
+    reg.register(wolfram_tool())
+    reg.register(dropbox_tool())
+    reg.register(msgraph_tool())
+    reg.register(gmail_tool())
     reg.register(plausible_tool())
     reg.register(mixpanel_tool())
     reg.register(calendly_tool())
