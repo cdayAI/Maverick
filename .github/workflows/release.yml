@@ -124,9 +124,11 @@ jobs:
           path: dist/${{ matrix.artifact }}
 
   release:
-    needs: [docker-image, binaries, pypi]
+    # PyPI publish lives in publish.yml on the same tag; this workflow
+    # only owns Docker images, single-file binaries, and the GitHub
+    # release that bundles them.
+    needs: [docker-image, binaries]
     runs-on: ubuntu-latest
-    # Run if binaries built. PyPI failure (missing token) doesn't block release.
     if: always() && needs.docker-image.result == 'success' && needs.binaries.result == 'success'
     steps:
       - uses: actions/checkout@v4
