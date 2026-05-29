@@ -24,7 +24,7 @@ import logging
 import os
 from pathlib import Path
 
-from .budget import Budget
+from .budget import budget_from_config
 from .config import load_config
 from .llm import LLM
 from .orchestrator import run_goal
@@ -87,7 +87,7 @@ class Server:
         title = msg.text[:80]
         goal_id = self.world.create_goal(title, msg.text)
 
-        budget = Budget()
+        budget = budget_from_config()
         try:
             result = await run_goal(
                 self.llm, self.world, budget, goal_id,
