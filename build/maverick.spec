@@ -1,12 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+
+# Bundle the .dist-info metadata so `maverick version` can read the
+# installed package versions from inside the frozen binary.
+_datas = collect_data_files('maverick_dashboard')
+for _dist in (
+    'maverick-agent', 'maverick-shield', 'maverick-channels',
+    'maverick-dashboard', 'maverick-mcp-server', 'maverick-installer',
+):
+    try:
+        _datas += copy_metadata(_dist)
+    except Exception:
+        pass  # not every dist is installed in every build env
 
 a = Analysis(
     ['pyinstaller_entry.py'],
     pathex=[],
     binaries=[],
-    datas=collect_data_files('maverick_dashboard'),
+    datas=_datas,
     hiddenimports=[
         'sqlite3',
         '_sqlite3',
@@ -24,7 +36,7 @@ a = Analysis(
         'asyncio.queues',
         'asyncio.subprocess',
         'multipart',
-    ],
+    ] + collect_submodules('maverick'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

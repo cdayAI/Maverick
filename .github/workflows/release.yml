@@ -70,12 +70,16 @@ jobs:
       - name: Install Maverick + deps
         shell: bash
         run: |
-          pip install -e ./packages/maverick-core
-          pip install --no-deps -e ./packages/maverick-shield
-          pip install --no-deps -e ./packages/maverick-channels
-          pip install --no-deps -e ./packages/maverick-dashboard
-          pip install --no-deps -e ./packages/maverick-mcp
-          pip install --no-deps -e ./apps/installer-cli
+          # NOT editable (-e): PyInstaller can't collect editable installs,
+          # which is why the binary crashed with "No module named 'maverick'".
+          # A regular install puts the packages in site-packages where the
+          # analyzer (and the spec's collect_submodules) can find them.
+          pip install ./packages/maverick-core
+          pip install --no-deps ./packages/maverick-shield
+          pip install --no-deps ./packages/maverick-channels
+          pip install --no-deps ./packages/maverick-dashboard
+          pip install --no-deps ./packages/maverick-mcp
+          pip install --no-deps ./apps/installer-cli
           # Bundled deps the --no-deps installs above skipped:
           pip install 'questionary>=2.0' 'rich>=13.7'
           pip install 'fastapi>=0.110' 'uvicorn>=0.27' 'jinja2>=3.1' 'python-multipart>=0.0.9'
