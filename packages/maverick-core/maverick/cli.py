@@ -385,6 +385,9 @@ def start(
         stop_poll.set()
         if poller is not None:
             poller.join(timeout=2.0)
+        # Close so WorldModel.close()'s WAL TRUNCATE checkpoint runs; the
+        # poller thread (already joined) used its own connection.
+        world.close()
     click.echo("")
     click.echo(result)
 
@@ -440,7 +443,8 @@ def _stream_progress(db_path, goal_id: int, stop) -> None:
         except Exception:
             pass
         if stop.wait(timeout=1.5):
-            return
+            break
+    wm.close()
 
 
 @main.command()
@@ -590,11 +594,15 @@ def serve(max_depth: int, verbose: bool) -> None:
         asyncio.run(server.stop())
 
 
-@main.command()
+@main.command("history")
 @click.option("--limit", default=20, type=int)
 @click.pass_context
-def logs(ctx, limit: int) -> None:
-    """Show recent goal + episode history."""
+def history(ctx, limit: int) -> None:
+    """Show recent goal + episode history.
+
+    Registered as ``history`` (not ``logs``): a second ``@main.command("logs")``
+    for the audit log silently shadowed this one. ``logs`` now unambiguously
+    means the audit log; this goal/episode view is ``maverick history``."""
     world = WorldModel(ctx.obj["db"])
     goals = world.list_goals()
     if not goals:
@@ -949,9 +957,11 @@ def session_clear(provider: str) -> None:
 @click.option("--yes", is_flag=True, help="Skip confirmation.")
 @click.pass_context
 def erase(ctx, channel: str, user: str, yes: bool) -> None:
-    """GDPR Art. 17 right-to-erasure: delete everything Maverick knows
-    about a given (channel, user_id) — conversations, turns, attachments
-    on disk, and the conversation row itself."""
+    """Erase everything Maverick knows about a (channel, user_id) pair.
+
+    GDPR Art. 17 right-to-erasure: removes conversations, turns,
+    attachments on disk, and the conversation row itself. (First line kept
+    abbreviation-free so Click's short help isn't truncated at "Art.".)"""
     world = WorldModel(ctx.obj["db"])
     convs = [
         c for c in world.list_conversations(channel)
@@ -1057,15 +1067,19 @@ def erase(ctx, channel: str, user: str, yes: bool) -> None:
     )
 
 
-@main.command()
+@main.command("export-user")
 @click.option("--channel", required=True, help="Channel name.")
 @click.option("--user", required=True, help="The channel user_id to export.")
 @click.option("--output", "-o", type=click.Path(), default=None,
               help="Write JSON to file (default stdout).")
 @click.pass_context
-def export(ctx, channel: str, user: str, output) -> None:
-    """GDPR Art. 15 right-of-access: dump everything Maverick knows about
-    a given (channel, user_id) as JSON."""
+def export_user(ctx, channel: str, user: str, output) -> None:
+    """Export everything Maverick knows about a (channel, user_id) as JSON.
+
+    GDPR Art. 15 right-of-access. Registered as ``export-user`` so it does
+    not collide with ``export`` (the goal-trajectory bundle below); a
+    duplicate Click command name silently shadowed this one, making the
+    data-subject export unreachable from the CLI."""
     import json
     world = WorldModel(ctx.obj["db"])
     convs = [
