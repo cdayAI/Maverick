@@ -232,3 +232,49 @@ class Budget:
             f"tokens in={self.input_tokens} out={self.output_tokens} "
             f"$={self.dollars:.3f} tools={self.tool_calls} wall={self.elapsed():.0f}s"
         )
+
+
+_BUDGET_KEY_TYPES = {
+    "max_input_tokens": int,
+    "max_output_tokens": int,
+    "max_dollars": float,
+    "max_wall_seconds": float,
+    "max_tool_calls": int,
+}
+
+
+def budget_from_config(*, defaults: Optional[dict] = None, **overrides) -> "Budget":
+    """Build a Budget that honors the ``[budget]`` section of config.toml.
+
+    Precedence, lowest to highest:
+      ``defaults`` (a caller's own fallback, e.g. the background runner's
+      conservative caps) < the ``[budget]`` config section < explicit
+      ``overrides`` (e.g. a CLI ``--max-dollars`` flag). A ``None`` value
+      in either ``defaults`` or ``overrides`` is treated as "unset", so a
+      caller can pass an optional flag straight through.
+
+    ``config.get_budget_overrides()`` already existed but was never wired,
+    so the ``[budget]`` section had no effect on any run. This is the single
+    funnel that fixes that; malformed values are skipped (keep prior layer)
+    rather than crashing the run.
+    """
+    kwargs: dict = {}
+    if defaults:
+        for key, val in defaults.items():
+            if key in _BUDGET_KEY_TYPES and val is not None:
+                kwargs[key] = val
+    try:
+        from .config import get_budget_overrides
+        cfg = get_budget_overrides() or {}
+    except Exception:
+        cfg = {}
+    for key, caster in _BUDGET_KEY_TYPES.items():
+        if cfg.get(key) is not None:
+            try:
+                kwargs[key] = caster(cfg[key])
+            except (TypeError, ValueError):
+                pass  # malformed config value -> fall back to prior layer
+    for key, val in overrides.items():
+        if val is not None and key in _BUDGET_KEY_TYPES:
+            kwargs[key] = val
+    return Budget(**kwargs)
