@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       built: ${{ steps.list.outputs.dirs }}
+      names: ${{ steps.names.outputs.names }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -57,6 +58,15 @@ jobs:
           done
           ls -la dist-all
 
+      - id: names
+        name: List distribution names for the publish matrix
+        run: |
+          # Distinct dist-name prefixes from the built wheels (underscores,
+          # e.g. maverick_agent). Drives one publish job per package so a
+          # package without a trusted publisher yet can't abort the rest.
+          names=$(ls dist-all/*.whl | sed 's#.*/##; s/-[0-9].*//' | sort -u)
+          echo "names=$(printf '%s\n' $names | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -65,15 +75,31 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    # One job per package. fail-fast: false means a package that has no
+    # trusted publisher yet (or otherwise 4xx's) fails only its own job --
+    # it can't abort the others the way a single `twine upload dist/*` did.
+    # Re-running after you register more publishers picks up the rest;
+    # skip-existing makes already-published packages a no-op.
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.build.outputs.names) }}
+    permissions:
+      contents: read
+      id-token: write   # PyPI OIDC, per job
     environment:
       name: pypi
-      url: https://pypi.org/p/maverick-agent
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: dist
-          path: dist/
-      - name: Publish to PyPI
+          path: dist-all/
+      - name: Stage only ${{ matrix.package }}
+        run: |
+          mkdir -p dist
+          cp dist-all/${{ matrix.package }}-* dist/
+          ls -la dist/
+      - name: Publish ${{ matrix.package }} to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
