@@ -92,7 +92,38 @@ def _make_run(sandbox):
         ) as tmp:
             tmp.write(patch_text)
             tmp_path = tmp.name
+        # CLAUDE.md rule 4: route git through sandbox.exec so the patch
+        # applies on the configured backend's filesystem (ssh/k8s/fc),
+        # not the host. exec runs a shell string at workdir and returns
+        # exit_code/stderr, which is all `git apply` needs. The tempfile
+        # was written into workdir, so we reference it by basename. Fall
+        # back to host subprocess (env-scrubbed) when there's no exec.
+        rel = os.path.basename(tmp_path)
+        use_exec = hasattr(sandbox, "exec")
         try:
+            if use_exec:
+                try:
+                    res = sandbox.exec(f"git apply --check {rel}", timeout=30)
+                except Exception as e:
+                    return f"ERROR: cannot run git: {e}"
+                if getattr(res, "exit_code", 1) != 0:
+                    return (
+                        "ERROR: patch rejected by git apply --check:\n"
+                        f"{(res.stderr or '')[:1000]}"
+                    )
+                if dry_run:
+                    return (
+                        f"DRY RUN: would touch {len(files)} file(s):\n  "
+                        + "\n  ".join(files)
+                    )
+                res2 = sandbox.exec(f"git apply {rel}", timeout=60)
+                if getattr(res2, "exit_code", 1) != 0:
+                    return f"ERROR: git apply failed:\n{(res2.stderr or '')[:1000]}"
+                return (
+                    f"applied to {len(files)} file(s):\n  "
+                    + "\n  ".join(files)
+                )
+
             check_cmd = ["git", "-C", str(workdir), "apply", "--check", tmp_path]
             try:
                 proc = subprocess.run(check_cmd, capture_output=True, timeout=30, env=_scrub())

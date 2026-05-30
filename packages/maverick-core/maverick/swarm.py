@@ -13,6 +13,7 @@ Children inherit the parent's context but get their own brief, role, and depth.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -59,6 +60,23 @@ class SwarmContext:
     user_id: Optional[str] = None
     max_total_spawns: int = field(default_factory=_default_max_total_spawns)
     _spawns_used: int = 0
+    _workdir_lock: Optional[asyncio.Lock] = field(default=None, repr=False)
+
+    @property
+    def workdir_lock(self) -> asyncio.Lock:
+        """Serialize the coding-mode apply/test/reset critical section.
+
+        ``spawn_swarm`` runs coder children concurrently via
+        ``asyncio.gather``; they all share one ``sandbox.workdir`` and
+        mutate its git tree (apply patch -> run tests -> reset). Without
+        a lock, two children stomp each other's working tree. Created
+        lazily: a raw ``asyncio.Lock`` as a dataclass default would bind
+        to whatever loop exists at construction (often none), so we make
+        it on first access, which always happens inside a running loop.
+        """
+        if self._workdir_lock is None:
+            self._workdir_lock = asyncio.Lock()
+        return self._workdir_lock
 
     def try_reserve_spawns(self, n: int) -> bool:
         """Reserve ``n`` child-agent slots for this goal.
