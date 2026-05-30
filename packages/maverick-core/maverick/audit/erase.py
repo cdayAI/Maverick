@@ -24,6 +24,7 @@ Matching: an event matches a user iff its payload contains
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -32,6 +33,11 @@ from pathlib import Path
 from .writer import DEFAULT_AUDIT_DIR
 
 log = logging.getLogger(__name__)
+
+
+def _subject_digest(channel: str, user_id: str) -> str:
+    """Return a short, non-reversible identifier for erase log messages."""
+    return hashlib.sha256(f"{channel}:{user_id}".encode()).hexdigest()[:16]
 
 
 def _event_matches(event: dict, channel: str, user_id: str) -> bool:
@@ -119,8 +125,8 @@ def scrub_user(
         total_matched += m
         total_scanned += w
     log.info(
-        "audit erase (scrub): channel=%s user_id=%s matched=%d scanned=%d",
-        channel, user_id, total_matched, total_scanned,
+        "audit erase (scrub): subject_hash=%s matched=%d scanned=%d",
+        _subject_digest(channel, user_id), total_matched, total_scanned,
     )
     return total_matched, total_scanned
 
@@ -141,8 +147,8 @@ def delete_user(
         total_matched += m
         total_scanned += w
     log.info(
-        "audit erase (delete): channel=%s user_id=%s matched=%d scanned=%d",
-        channel, user_id, total_matched, total_scanned,
+        "audit erase (delete): subject_hash=%s matched=%d scanned=%d",
+        _subject_digest(channel, user_id), total_matched, total_scanned,
     )
     return total_matched, total_scanned
 
