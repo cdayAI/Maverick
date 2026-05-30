@@ -121,6 +121,7 @@ class Agent:
             goal_id=self.ctx.goal_id,
             channel=self.ctx.channel,
             user_id=self.ctx.user_id,
+            budget=self.ctx.budget,
         )
         if self.depth < self.ctx.max_depth:
             reg.register(spawn_subagent_tool(self))
