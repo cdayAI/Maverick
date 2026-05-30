@@ -23,6 +23,12 @@ from typing import Any
 
 from . import Tool
 
+
+
+def _scrub() -> dict:
+    """Child env with secrets stripped (shared tools.scrub_child_env)."""
+    from . import scrub_child_env
+    return scrub_child_env()
 log = logging.getLogger(__name__)
 
 
@@ -89,7 +95,7 @@ def _make_run(sandbox):
         try:
             check_cmd = ["git", "-C", str(workdir), "apply", "--check", tmp_path]
             try:
-                proc = subprocess.run(check_cmd, capture_output=True, timeout=30)
+                proc = subprocess.run(check_cmd, capture_output=True, timeout=30, env=_scrub())
             except subprocess.TimeoutExpired:
                 return "ERROR: git apply --check timed out (30s)"
             except OSError as e:
@@ -106,7 +112,7 @@ def _make_run(sandbox):
 
             apply_cmd = ["git", "-C", str(workdir), "apply", tmp_path]
             try:
-                proc2 = subprocess.run(apply_cmd, capture_output=True, timeout=60)
+                proc2 = subprocess.run(apply_cmd, capture_output=True, timeout=60, env=_scrub())
             except subprocess.TimeoutExpired:
                 return "ERROR: git apply timed out (60s)"
             if proc2.returncode != 0:

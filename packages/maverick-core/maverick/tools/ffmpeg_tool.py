@@ -22,6 +22,12 @@ from typing import Any
 
 from . import Tool
 
+
+
+def _scrub() -> dict:
+    """Child env with secrets stripped (shared tools.scrub_child_env)."""
+    from . import scrub_child_env
+    return scrub_child_env()
 log = logging.getLogger(__name__)
 
 
@@ -50,7 +56,7 @@ def _need(bin_name: str) -> str | None:
 
 def _run_cmd(cmd: list[str], *, timeout: float = 600.0) -> tuple[int, str, str]:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=_scrub())
         return r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired:
         return 124, "", f"TIMEOUT after {timeout}s"
@@ -81,7 +87,8 @@ def _op_convert(args: dict, sandbox) -> str:
         dst = _safe_path(sandbox, dst)
     except ValueError as e:
         return f"ERROR: {e}"
-    extra = [str(a) for a in (args.get("args") or [])]
+    from . import safe_media_args
+    extra = safe_media_args(args.get("args"))
     cmd = ["ffmpeg", "-y", "-i", src, *extra, dst]
     code, _out, stderr = _run_cmd(cmd, timeout=600)
     if code != 0:

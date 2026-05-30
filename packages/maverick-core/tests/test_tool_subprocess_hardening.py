@@ -1,0 +1,95 @@
+"""Tool subprocesses must run with secrets scrubbed and freeform media args
+filtered.
+
+Council (Security seat, findings #1-#3): ~10 tools shelled out directly with
+the full os.environ (leaking provider keys to the child) and several appended
+a model-controlled freeform args[] to argv (pandoc --lua-filter = code exec,
+ffmpeg -i /etc/passwd = arbitrary file read). PR3 adds:
+  - tools.scrub_child_env(): child env via sandbox.local.scrub_env (no secrets)
+  - tools.safe_media_args(): drop dangerous flags from freeform args by
+    default; MAVERICK_ALLOW_RAW_MEDIA_ARGS=1 opts back in.
+"""
+from __future__ import annotations
+
+import pytest
+
+from maverick.tools import scrub_child_env, safe_media_args
+
+
+def test_scrub_child_env_strips_secrets(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
+    monkeypatch.setenv("STRIPE_API_KEY", "sk_live_x")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_x")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = scrub_child_env()
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "STRIPE_API_KEY" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert "PATH" in env  # benign infra var preserved
+
+
+@pytest.mark.parametrize("bad", [
+    "--lua-filter=/tmp/evil.lua",
+    "--template=/tmp/t.html",
+    "--pdf-engine=weasyprint",
+    "concat:/etc/passwd|/etc/shadow",
+    "--metadata-file=/tmp/m.yaml",
+    "--include-in-header=/tmp/h",
+    "--resource-path=/etc",
+    "--extract-media=/tmp",
+])
+def test_safe_media_args_drops_selfcontained_dangerous_flags(bad, monkeypatch):
+    monkeypatch.delenv("MAVERICK_ALLOW_RAW_MEDIA_ARGS", raising=False)
+    out = safe_media_args(["-quality", "90", bad])
+    assert bad not in out
+    assert "-quality" in out and "90" in out  # benign survive
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("-i", "/etc/passwd"),
+    ("--input", "/etc/shadow"),
+    ("--lua-filter", "/tmp/evil.lua"),
+    ("-filter_complex", "movie=/etc/passwd"),
+    ("--template", "/tmp/t.html"),
+])
+def test_safe_media_args_drops_flag_AND_its_value(flag, value, monkeypatch):
+    """A bare dangerous flag takes the next token as its value -- both must go,
+    or the path it points at is still smuggled onto argv."""
+    monkeypatch.delenv("MAVERICK_ALLOW_RAW_MEDIA_ARGS", raising=False)
+    out = safe_media_args(["-strip", flag, value, "-quality", "80"])
+    assert flag not in out
+    assert value not in out
+    assert "-strip" in out and "-quality" in out and "80" in out
+
+
+def test_safe_media_args_passthrough_when_opted_in(monkeypatch):
+    monkeypatch.setenv("MAVERICK_ALLOW_RAW_MEDIA_ARGS", "1")
+    raw = ["-i", "/etc/passwd", "--lua-filter=x.lua"]
+    assert safe_media_args(raw) == raw
+
+
+def test_safe_media_args_handles_none_and_empty():
+    assert safe_media_args(None) == []
+    assert safe_media_args([]) == []
+
+
+def test_benign_resize_args_survive(monkeypatch):
+    monkeypatch.delenv("MAVERICK_ALLOW_RAW_MEDIA_ARGS", raising=False)
+    # A normal imagemagick operator chain must pass through untouched.
+    out = safe_media_args(["-resize", "50%", "-rotate", "90", "-strip"])
+    assert out == ["-resize", "50%", "-rotate", "90", "-strip"]
+
+
+def test_subprocess_tools_import_scrub_helper():
+    """Every direct-subprocess tool must reference the scrub helper (no raw
+    os.environ inheritance reintroduced)."""
+    import pathlib
+
+    import maverick.tools as T
+    tdir = pathlib.Path(T.__file__).parent
+    for name in ["git_advanced", "preview_diff", "apply_patch", "ffmpeg_tool",
+                 "imagemagick_tool", "pandoc_tool", "ocr", "a11y", "android", "ios_sim"]:
+        src = (tdir / f"{name}.py").read_text()
+        assert ("scrub_child_env" in src) or ("scrub_env" in src), (
+            f"{name} no longer scrubs the child env"
+        )

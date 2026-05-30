@@ -28,6 +28,12 @@ from typing import Any
 
 from . import Tool
 
+
+
+def _scrub() -> dict:
+    """Child env with secrets stripped (shared tools.scrub_child_env)."""
+    from . import scrub_child_env
+    return scrub_child_env()
 log = logging.getLogger(__name__)
 
 
@@ -63,7 +69,7 @@ def _run_pa11y(target: str) -> tuple[int, str, str]:
     try:
         r = subprocess.run(
             ["pa11y", "--reporter", "json", target],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=120, env=_scrub(),
         )
         return r.returncode, r.stdout or "", r.stderr or ""
     except subprocess.TimeoutExpired:
@@ -74,7 +80,7 @@ def _run_axe(target: str) -> tuple[int, str, str]:
     try:
         r = subprocess.run(
             ["axe", target, "--no-reporter", "--save", "/dev/stdout"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=120, env=_scrub(),
         )
         return r.returncode, r.stdout or "", r.stderr or ""
     except subprocess.TimeoutExpired:
