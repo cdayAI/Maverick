@@ -131,6 +131,7 @@ def base_registry(
     enable_mobile_tools: bool = False,
     channel: Optional[str] = None,
     user_id: Optional[str] = None,
+    budget: Any = None,
 ) -> ToolRegistry:
     """Build the base tool set (no spawn tools).
 
@@ -150,6 +151,9 @@ def base_registry(
     time, NOT at tool-call time -- so a user who picks computer-use in
     the wizard discovers the missing dep immediately rather than after
     the first run.
+
+    ``budget`` binds tools that perform their own metered provider calls
+    (for example ``view_video``) to the active run budget.
     """
     from .ask_user import ask_user
     from .attachments import list_attachments_tool
@@ -269,7 +273,7 @@ def base_registry(
     reg.register(http_fetch())
     reg.register(read_pdf())
     reg.register(view_image())
-    reg.register(view_video(sandbox))
+    reg.register(view_video(sandbox, budget=budget))
     reg.register(dep_graph(sandbox))
     reg.register(ast_edit(sandbox))
     reg.register(clipboard())

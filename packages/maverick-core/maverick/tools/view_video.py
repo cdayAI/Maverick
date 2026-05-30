@@ -112,7 +112,7 @@ def _transcribe_track(src: str, tmpdir: str) -> str | None:
     return text
 
 
-def _run_view_video(args: dict[str, Any], sandbox) -> str:
+def _run_view_video(args: dict[str, Any], sandbox, *, budget=None) -> str:
     source = (args.get("source") or "").strip()
     if not source:
         return "ERROR: source is required"
@@ -183,13 +183,14 @@ def _run_view_video(args: dict[str, Any], sandbox) -> str:
             ),
             messages=messages,
             max_tokens=1024,
+            budget=budget,
         )
         return (resp.text or "").strip() or "(no description returned)"
     except Exception as e:
         return f"ERROR: vision call failed: {type(e).__name__}: {e}"
 
 
-def view_video(sandbox=None) -> Tool:
+def view_video(sandbox=None, *, budget=None) -> Tool:
     """Factory: builds the view_video tool."""
     return Tool(
         name="view_video",
@@ -201,5 +202,5 @@ def view_video(sandbox=None) -> Tool:
             "analysis. Requires the ffmpeg + ffprobe binaries on PATH."
         ),
         input_schema=_VIEW_VIDEO_INPUT_SCHEMA,
-        fn=lambda args: _run_view_video(args, sandbox),
+        fn=lambda args: _run_view_video(args, sandbox, budget=budget),
     )

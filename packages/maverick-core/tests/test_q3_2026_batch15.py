@@ -69,8 +69,11 @@ class _FakeLLM:
     def __init__(self, model=None):
         _FakeLLM.last_model = model
 
-    def complete(self, system, messages, max_tokens):
+    last_budget = None
+
+    def complete(self, system, messages, max_tokens, budget=None):
         _FakeLLM.last_messages = messages
+        _FakeLLM.last_budget = budget
         return _FakeResp("a cat plays the piano, then jumps down")
 
 
@@ -98,6 +101,19 @@ def test_view_video_full_flow_builds_vision_blocks(monkeypatch, tmp_path):
     assert any("frame at" in t for t in texts)
     # The prompt is the trailing text block.
     assert content[-1] == {"type": "text", "text": "What instrument?"}
+
+
+def test_view_video_passes_bound_budget_to_vision_call(monkeypatch, tmp_path):
+    from maverick.budget import Budget
+
+    budget = Budget(max_dollars=1.0)
+    frames = [(2.0, b"\xff\xd8a")]
+    vid = _prep(monkeypatch, tmp_path, frames=frames)
+
+    out = view_video(budget=budget).fn({"source": str(vid)})
+
+    assert out == "a cat plays the piano, then jumps down"
+    assert _FakeLLM.last_budget is budget
 
 
 def test_view_video_clamps_num_frames(monkeypatch, tmp_path):
