@@ -11,6 +11,7 @@ the agent calls preview_diff to verify its work matches intent.
 from __future__ import annotations
 
 import logging
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -56,14 +57,35 @@ def _run_factory(sandbox):
                 "a git repository at the sandbox workdir."
             )
         max_bytes = int(args.get("max_bytes") or 50_000)
-        cmd = ["git", "-C", cwd, "diff", "--no-ext-diff", "--no-textconv"]
+        git_args = ["diff", "--no-ext-diff", "--no-textconv"]
         if args.get("staged"):
-            cmd.append("--cached")
+            git_args.append("--cached")
         if args.get("stat_only"):
-            cmd.append("--stat")
+            git_args.append("--stat")
         for p in (args.get("paths") or []):
-            cmd.append("--")
-            cmd.append(str(p))
+            git_args.append("--")
+            git_args.append(str(p))
+        # CLAUDE.md rule 4: route git through sandbox.exec so the diff
+        # reflects the configured backend's filesystem (ssh/k8s/fc), not
+        # the host. exec runs a shell string at workdir and truncates
+        # stdout to 8000 chars -- acceptable for a diff preview. Fall
+        # back to host subprocess (env-scrubbed) when there's no exec.
+        if hasattr(sandbox, "exec"):
+            shell_cmd = "git " + " ".join(shlex.quote(a) for a in git_args)
+            try:
+                res = sandbox.exec(shell_cmd, timeout=15)
+            except Exception as e:
+                return f"ERROR: cannot run git: {e}"
+            if getattr(res, "exit_code", 1) not in (0, 1):
+                return f"ERROR: git diff exited {res.exit_code}: {(res.stderr or '')[:500]}"
+            out = res.stdout or ""
+            if not out.strip():
+                return "(no changes)"
+            if len(out) > max_bytes:
+                out = out[:max_bytes] + f"\n\n[... truncated at {max_bytes} bytes]"
+            return out
+
+        cmd = ["git", "-C", cwd, *git_args]
         from ..sandbox.local import scrub_env
         child_env = scrub_env()
         child_env["GIT_PAGER"] = ""

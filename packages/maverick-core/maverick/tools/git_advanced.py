@@ -49,7 +49,19 @@ _GIT_SCHEMA: dict[str, Any] = {
 }
 
 
-def _run_git(workdir: Path, args: list[str], *, timeout: int = 30) -> tuple[int, str, str]:
+def _run_git(sandbox, workdir: Path, args: list[str], *, timeout: int = 30) -> tuple[int, str, str]:
+    # CLAUDE.md rule 4: route git through sandbox.exec so ops run on the
+    # configured backend's filesystem (ssh/k8s/fc), not the host. exec
+    # runs a shell string at workdir and truncates stdout to 8000 chars
+    # -- acceptable for these summaries. Fall back to host subprocess
+    # (env-scrubbed) when the backend has no exec.
+    if hasattr(sandbox, "exec"):
+        shell_cmd = "git " + " ".join(shlex.quote(a) for a in args)
+        try:
+            res = sandbox.exec(shell_cmd, timeout=timeout)
+        except Exception as e:
+            return 127, "", f"cannot run git: {e}"
+        return getattr(res, "exit_code", 1), res.stdout or "", res.stderr or ""
     cmd = ["git", "-C", str(workdir), *args]
     # Scrub secrets from the child env: git plumbing has no need for provider
     # keys / tokens, and inheriting full os.environ would let a hostile repo
@@ -93,18 +105,18 @@ def _make_run(sandbox):
             return "ERROR: not a git repo at sandbox workdir"
 
         if op == "bisect_start":
-            return _shape(*_run_git(workdir, ["bisect", "start"]), label="bisect start")
+            return _shape(*_run_git(sandbox, workdir, ["bisect", "start"]), label="bisect start")
         if op == "bisect_good":
             ref = (args.get("ref") or "HEAD").strip()
-            return _shape(*_run_git(workdir, ["bisect", "good", ref]), label=f"bisect good {ref}")
+            return _shape(*_run_git(sandbox, workdir, ["bisect", "good", ref]), label=f"bisect good {ref}")
         if op == "bisect_bad":
             ref = (args.get("ref") or "HEAD").strip()
-            return _shape(*_run_git(workdir, ["bisect", "bad", ref]), label=f"bisect bad {ref}")
+            return _shape(*_run_git(sandbox, workdir, ["bisect", "bad", ref]), label=f"bisect bad {ref}")
         if op == "bisect_skip":
             ref = (args.get("ref") or "HEAD").strip()
-            return _shape(*_run_git(workdir, ["bisect", "skip", ref]), label="bisect skip")
+            return _shape(*_run_git(sandbox, workdir, ["bisect", "skip", ref]), label="bisect skip")
         if op == "bisect_reset":
-            return _shape(*_run_git(workdir, ["bisect", "reset"]), label="bisect reset")
+            return _shape(*_run_git(sandbox, workdir, ["bisect", "reset"]), label="bisect reset")
 
         if op == "rebase_onto":
             onto = (args.get("onto") or "").strip()
@@ -115,13 +127,13 @@ def _make_run(sandbox):
             git_args = ["rebase", "--onto", onto, upstream]
             if branch:
                 git_args.append(branch)
-            return _shape(*_run_git(workdir, git_args), label="rebase --onto")
+            return _shape(*_run_git(sandbox, workdir, git_args), label="rebase --onto")
 
         if op == "cherry_pick":
             commit = (args.get("commit") or "").strip()
             if not commit:
                 return "ERROR: cherry_pick requires commit"
-            return _shape(*_run_git(workdir, ["cherry-pick", commit]), label=f"cherry-pick {commit}")
+            return _shape(*_run_git(sandbox, workdir, ["cherry-pick", commit]), label=f"cherry-pick {commit}")
 
         if op == "worktree_add":
             path = (args.get("path") or "").strip()
@@ -131,14 +143,14 @@ def _make_run(sandbox):
             git_args = ["worktree", "add", path]
             if branch:
                 git_args.append(branch)
-            return _shape(*_run_git(workdir, git_args), label="worktree add")
+            return _shape(*_run_git(sandbox, workdir, git_args), label="worktree add")
         if op == "worktree_remove":
             path = (args.get("path") or "").strip()
             if not path:
                 return "ERROR: worktree_remove requires path"
-            return _shape(*_run_git(workdir, ["worktree", "remove", path]), label="worktree remove")
+            return _shape(*_run_git(sandbox, workdir, ["worktree", "remove", path]), label="worktree remove")
         if op == "worktree_list":
-            return _shape(*_run_git(workdir, ["worktree", "list"]), label="worktree list")
+            return _shape(*_run_git(sandbox, workdir, ["worktree", "list"]), label="worktree list")
 
         if op == "log_oneline":
             limit = max(1, min(int(args.get("limit") or 30), 500))
@@ -146,10 +158,10 @@ def _make_run(sandbox):
             git_args = ["log", "--oneline", f"-n{limit}"]
             if since:
                 git_args.append(f"{since}..HEAD")
-            return _shape(*_run_git(workdir, git_args), label="log")
+            return _shape(*_run_git(sandbox, workdir, git_args), label="log")
         if op == "show_commit":
             commit = (args.get("commit") or "HEAD").strip()
-            return _shape(*_run_git(workdir, ["show", "--stat", commit]), label=f"show {commit}")
+            return _shape(*_run_git(sandbox, workdir, ["show", "--stat", commit]), label=f"show {commit}")
         if op == "blame_line":
             path = (args.get("path") or "").strip()
             line = args.get("line")
@@ -157,7 +169,7 @@ def _make_run(sandbox):
                 return "ERROR: blame_line requires path and line"
             line = int(line)
             return _shape(
-                *_run_git(workdir, ["blame", "-L", f"{line},{line}", path]),
+                *_run_git(sandbox, workdir, ["blame", "-L", f"{line},{line}", path]),
                 label=f"blame {path}:{line}",
             )
 

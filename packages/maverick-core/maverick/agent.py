@@ -223,18 +223,7 @@ class Agent:
                 # Roll back the SR application so the next attempt sees
                 # HEAD, then synthesise a failure summary the caller
                 # can convert into a repair prompt.
-                try:
-                    import subprocess as _sub
-                    _sub.run(
-                        ["git", "-C", str(workdir), "reset", "--hard", "HEAD"],
-                        capture_output=True, timeout=20,
-                    )
-                    _sub.run(
-                        ["git", "-C", str(workdir), "clean", "-fd"],
-                        capture_output=True, timeout=20,
-                    )
-                except Exception:
-                    pass
+                self._reset_workdir()
                 summary.results.append(ApplyResult(
                     ok=False,
                     block=SearchReplaceBlock(
@@ -249,6 +238,84 @@ class Agent:
             patch = render_diff(workdir, paths=touched_paths)
             return patch, summary
         return extract_unified_diff(final), None
+
+    def _reset_workdir(self) -> None:
+        """Revert the sandbox workdir to a clean HEAD.
+
+        CLAUDE.md rule 4: route git plumbing through ``sandbox.exec`` so
+        it operates on the configured backend's filesystem (ssh/k8s/fc),
+        not the host. ``reset --hard`` then ``clean -fd`` in one shell
+        string; we only need the exit code, so the 8000-char output
+        truncation is irrelevant here. Falls back to host ``subprocess``
+        only when there's no sandbox or it lacks ``exec``.
+        """
+        sandbox = self.ctx.sandbox
+        if sandbox is not None and hasattr(sandbox, "exec"):
+            try:
+                sandbox.exec("git reset --hard HEAD && git clean -fd", timeout=30)
+            except Exception:
+                pass
+            return
+        from pathlib import Path as _Path
+        import subprocess as _sub
+        workdir = _Path(getattr(sandbox, "workdir", "."))
+        try:
+            _sub.run(
+                ["git", "-C", str(workdir), "reset", "--hard", "HEAD"],
+                capture_output=True, timeout=20,
+            )
+            _sub.run(
+                ["git", "-C", str(workdir), "clean", "-fd"],
+                capture_output=True, timeout=20,
+            )
+        except Exception:
+            pass
+
+    def _git_apply(self, patch: str) -> bool:
+        """Apply ``patch`` to the sandbox workdir; return whether it applied.
+
+        CLAUDE.md rule 4: run ``git apply`` on the configured backend.
+        ``sandbox.exec`` runs a shell string and can't pipe stdin, so we
+        write the patch to a temp file inside the workdir and
+        ``git apply <tmpfile>``, then clean the temp file up. Falls back
+        to host ``subprocess`` (piping via stdin) only when there's no
+        sandbox or it lacks ``exec``.
+        """
+        from pathlib import Path as _Path
+        sandbox = self.ctx.sandbox
+        workdir = _Path(getattr(sandbox, "workdir", "."))
+        if sandbox is not None and hasattr(sandbox, "exec"):
+            import os as _os
+            import tempfile as _tempfile
+            tmp_path = None
+            try:
+                with _tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".patch", dir=str(workdir),
+                    delete=False, encoding="utf-8",
+                ) as tmp:
+                    tmp.write(patch)
+                    tmp_path = tmp.name
+                rel = _os.path.basename(tmp_path)
+                res = sandbox.exec(f"git apply {rel}", timeout=30)
+                return getattr(res, "exit_code", 1) == 0
+            except Exception:
+                return False
+            finally:
+                if tmp_path is not None:
+                    try:
+                        _os.unlink(tmp_path)
+                    except OSError:
+                        pass
+        import subprocess as _sub
+        try:
+            ap = _sub.run(
+                ["git", "-C", str(workdir), "apply", "-"],
+                input=patch.encode("utf-8"),
+                capture_output=True, timeout=30,
+            )
+            return ap.returncode == 0
+        except Exception:
+            return False
 
     async def _run_tool(self, name: str, args: dict) -> str:
         shield = self.ctx.shield
@@ -556,19 +623,7 @@ class Agent:
                         # verifier branch (and downstream evaluators) see
                         # HEAD when they re-apply.
                         if sr_summary is not None:
-                            try:
-                                import subprocess as _sub
-                                _sub.run(
-                                    ["git", "-C", str(workdir),
-                                     "reset", "--hard", "HEAD"],
-                                    capture_output=True, timeout=20,
-                                )
-                                _sub.run(
-                                    ["git", "-C", str(workdir), "clean", "-fd"],
-                                    capture_output=True, timeout=20,
-                                )
-                            except Exception:
-                                pass
+                            self._reset_workdir()
                             try:
                                 self.ctx.blackboard.post(
                                     self.name, "tool_signal",
@@ -721,198 +776,167 @@ class Agent:
                         # >> opinion; this is how OpenHands gets to 72%.
                         if (coding_cfg is not None and coding_cfg.enabled
                                 and (coding_cfg.fail_to_pass or coding_cfg.pass_to_pass)):
-                            from pathlib import Path as _Path
-                            from .coding_mode import run_failing_tests
-                            import subprocess as _subprocess
-                            workdir = _Path(getattr(self.ctx.sandbox, "workdir", "."))
-                            # Wave 11: reuse the patch produced by the
-                            # validate branch above (SEARCH/REPLACE or
-                            # unified-diff). If the validate branch was
-                            # skipped (e.g. require_apply_check=False),
-                            # extract here.
-                            patch = getattr(self, "_final_patch", None)
-                            if patch is None:
-                                patch, _ = self._extract_and_apply_patch(final)
-                                if patch is not None:
-                                    # We applied to disk; reset for the
-                                    # verifier's own apply.
+                            async with self.ctx.workdir_lock:
+                                from pathlib import Path as _Path
+                                from .coding_mode import run_failing_tests
+                                workdir = _Path(getattr(self.ctx.sandbox, "workdir", "."))
+                                # Wave 11: reuse the patch produced by the
+                                # validate branch above (SEARCH/REPLACE or
+                                # unified-diff). If the validate branch was
+                                # skipped (e.g. require_apply_check=False),
+                                # extract here.
+                                patch = getattr(self, "_final_patch", None)
+                                if patch is None:
+                                    patch, _ = self._extract_and_apply_patch(final)
+                                    if patch is not None:
+                                        # We applied to disk; reset for the
+                                        # verifier's own apply.
+                                        self._reset_workdir()
+                                if patch is None:
+                                    if not getattr(self, "_patch_validated", False):
+                                        self._patch_validated = True
+                                        bb.post(
+                                            self.name, "verify",
+                                            "no valid diff in FINAL; asking for revision",
+                                        )
+                                        messages.append({
+                                            "role": "user",
+                                            "content": (
+                                                "Your FINAL did not contain valid "
+                                                "edits. Use SEARCH/REPLACE blocks "
+                                                "(preferred) or a unified diff in "
+                                                "```diff fences."
+                                            ),
+                                        })
+                                        continue
+                                    # Already revised once; surface and exit.
+                                    return AgentResult(
+                                        final=final, role=self.role, name=self.name,
+                                        verifier_confidence=0.0,
+                                        verifier_critique="no valid diff in FINAL",
+                                    )
+
+                                apply_ok = self._git_apply(patch)
+
+                                # Wave 10 (D10): only run tests when apply
+                                # succeeded. Running tests on HEAD when apply
+                                # failed wastes a full test run (minutes on
+                                # SWE-bench), reports all FAIL_TO_PASS as
+                                # failing for the wrong reason, then misleads
+                                # the revision pass.
+                                if not apply_ok:
+                                    test_result = None  # type: ignore[assignment]
+                                else:
                                     try:
-                                        _subprocess.run(
-                                            ["git", "-C", str(workdir),
-                                             "reset", "--hard", "HEAD"],
-                                            capture_output=True, timeout=20,
+                                        test_result = run_failing_tests(
+                                            workdir,
+                                            coding_cfg.fail_to_pass,
+                                            coding_cfg.pass_to_pass,
+                                            self.ctx.sandbox,
+                                            language=coding_cfg.language,
                                         )
-                                        _subprocess.run(
-                                            ["git", "-C", str(workdir), "clean", "-fd"],
-                                            capture_output=True, timeout=20,
+                                    finally:
+                                        # Always revert the workdir so the next
+                                        # attempt reads HEAD, not the post-patch
+                                        # tree. Without this, successive
+                                        # revisions see corrupted state and
+                                        # compound the error.
+                                        self._reset_workdir()
+
+                                if not apply_ok:
+                                    # Wave 10 (D10): tests were skipped because
+                                    # the patch wouldn't apply. Tell the agent
+                                    # so it doesn't 'fix' a working patch into
+                                    # a broken one based on apply-fail noise.
+                                    if not getattr(self, "_patch_validated", False):
+                                        self._patch_validated = True
+                                        bb.post(
+                                            self.name, "verify",
+                                            "patch failed to apply pre-test; "
+                                            "asking proposer to revise",
                                         )
-                                    except Exception:
-                                        pass
-                            if patch is None:
-                                if not getattr(self, "_patch_validated", False):
-                                    self._patch_validated = True
-                                    bb.post(
-                                        self.name, "verify",
-                                        "no valid diff in FINAL; asking for revision",
+                                        messages.append({
+                                            "role": "user",
+                                            "content": (
+                                                "Your patch could not be applied "
+                                                "via `git apply`. Re-examine the "
+                                                "current file contents with "
+                                                "`read_file` and produce a fresh "
+                                                "unified diff against HEAD."
+                                            ),
+                                        })
+                                        continue
+                                    # Already retried once; surface and exit.
+                                    return AgentResult(
+                                        final=final, role=self.role, name=self.name,
+                                        verifier_confidence=0.0,
+                                        verifier_critique="patch did not apply",
                                     )
-                                    messages.append({
-                                        "role": "user",
-                                        "content": (
-                                            "Your FINAL did not contain valid "
-                                            "edits. Use SEARCH/REPLACE blocks "
-                                            "(preferred) or a unified diff in "
-                                            "```diff fences."
-                                        ),
-                                    })
-                                    continue
-                                # Already revised once; surface and exit.
-                                return AgentResult(
-                                    final=final, role=self.role, name=self.name,
-                                    verifier_confidence=0.0,
-                                    verifier_critique="no valid diff in FINAL",
-                                )
 
-                            apply_ok = False
-                            try:
-                                ap = _subprocess.run(
-                                    ["git", "-C", str(workdir), "apply", "-"],
-                                    input=patch.encode("utf-8"),
-                                    capture_output=True, timeout=30,
+                                bb.post(
+                                    self.name, "verify",
+                                    f"test-driven verifier: {test_result.summary()}",
                                 )
-                                apply_ok = (ap.returncode == 0)
-                            except Exception:
-                                apply_ok = False
-
-                            # Wave 10 (D10): only run tests when apply
-                            # succeeded. Running tests on HEAD when apply
-                            # failed wastes a full test run (minutes on
-                            # SWE-bench), reports all FAIL_TO_PASS as
-                            # failing for the wrong reason, then misleads
-                            # the revision pass.
-                            if not apply_ok:
-                                test_result = None  # type: ignore[assignment]
-                            else:
-                                try:
-                                    test_result = run_failing_tests(
-                                        workdir,
-                                        coding_cfg.fail_to_pass,
-                                        coding_cfg.pass_to_pass,
-                                        self.ctx.sandbox,
-                                        language=coding_cfg.language,
+                                if test_result.all_pass:
+                                    # Tests pass → accept FINAL. Skip LLM verifier.
+                                    self._already_verified = True
+                                    return AgentResult(
+                                        final=final, role=self.role, name=self.name,
+                                        verifier_confidence=test_result.score,
+                                        verifier_critique=test_result.summary(),
+                                        final_patch=getattr(self, "_final_patch", None),
                                     )
-                                finally:
-                                    # Always revert the workdir so the next
-                                    # attempt reads HEAD, not the post-patch
-                                    # tree. Without this, successive
-                                    # revisions see corrupted state and
-                                    # compound the error.
-                                    try:
-                                        _subprocess.run(
-                                            ["git", "-C", str(workdir),
-                                             "reset", "--hard", "HEAD"],
-                                            capture_output=True, timeout=20,
-                                        )
-                                        _subprocess.run(
-                                            ["git", "-C", str(workdir), "clean", "-fd"],
-                                            capture_output=True, timeout=20,
-                                        )
-                                    except Exception:
-                                        pass
-
-                            if not apply_ok:
-                                # Wave 10 (D10): tests were skipped because
-                                # the patch wouldn't apply. Tell the agent
-                                # so it doesn't 'fix' a working patch into
-                                # a broken one based on apply-fail noise.
-                                if not getattr(self, "_patch_validated", False):
-                                    self._patch_validated = True
-                                    bb.post(
-                                        self.name, "verify",
-                                        "patch failed to apply pre-test; "
-                                        "asking proposer to revise",
+                                # Tests failed → revise. Wave 9 (council H2):
+                                # do NOT leak raw assertion bodies to the
+                                # agent in benchmark mode -- that's a recipe
+                                # for hardcoding to the test's expected value.
+                                # Wave 11 (PROBE-lite): classify the failure
+                                # type and surface a targeted hint without
+                                # leaking expected values.
+                                opaque = os.environ.get("MAVERICK_BENCHMARK_OPAQUE", "1") != "0"
+                                from .coding_mode import classify_failure
+                                fail_class, fail_hint = classify_failure(
+                                    test_result.raw_output,
+                                )
+                                class_line = (
+                                    f"Dominant failure class: {fail_class}.\n{fail_hint}"
+                                    if fail_class != "other" else ""
+                                )
+                                if opaque:
+                                    critique = (
+                                        "Your patch did not pass the required tests.\n\n"
+                                        f"{test_result.summary()}\n\n"
+                                        f"{class_line}\n\n"
+                                        "Revise based on your understanding of the "
+                                        "code, not from inspecting the failing "
+                                        "tests' expected values. Respond with a "
+                                        "new FINAL using SEARCH/REPLACE blocks."
+                                    ).strip()
+                                else:
+                                    critique = (
+                                        "Your patch did not pass the required tests.\n\n"
+                                        f"{test_result.summary()}\n\n"
+                                        f"{class_line}\n\n"
+                                        f"Recent test output:\n{test_result.raw_output}\n\n"
+                                        "Inspect the failing tests, revise your patch, "
+                                        "and respond with a new FINAL using "
+                                        "SEARCH/REPLACE blocks."
+                                    ).strip()
+                                # Wave 9 fix (#2): one retry max so a flaky
+                                # verifier or unfixable instance doesn't loop
+                                # forever. The retry IS re-verified.
+                                if getattr(self, "_patch_validated", False):
+                                    # Already revised once; accept whatever this is.
+                                    self._already_verified = True
+                                    return AgentResult(
+                                        final=final, role=self.role, name=self.name,
+                                        verifier_confidence=test_result.score,
+                                        verifier_critique=test_result.summary(),
+                                        final_patch=getattr(self, "_final_patch", None),
                                     )
-                                    messages.append({
-                                        "role": "user",
-                                        "content": (
-                                            "Your patch could not be applied "
-                                            "via `git apply`. Re-examine the "
-                                            "current file contents with "
-                                            "`read_file` and produce a fresh "
-                                            "unified diff against HEAD."
-                                        ),
-                                    })
-                                    continue
-                                # Already retried once; surface and exit.
-                                return AgentResult(
-                                    final=final, role=self.role, name=self.name,
-                                    verifier_confidence=0.0,
-                                    verifier_critique="patch did not apply",
-                                )
-
-                            bb.post(
-                                self.name, "verify",
-                                f"test-driven verifier: {test_result.summary()}",
-                            )
-                            if test_result.all_pass:
-                                # Tests pass → accept FINAL. Skip LLM verifier.
-                                self._already_verified = True
-                                return AgentResult(
-                                    final=final, role=self.role, name=self.name,
-                                    verifier_confidence=test_result.score,
-                                    verifier_critique=test_result.summary(),
-                                    final_patch=getattr(self, "_final_patch", None),
-                                )
-                            # Tests failed → revise. Wave 9 (council H2):
-                            # do NOT leak raw assertion bodies to the
-                            # agent in benchmark mode -- that's a recipe
-                            # for hardcoding to the test's expected value.
-                            # Wave 11 (PROBE-lite): classify the failure
-                            # type and surface a targeted hint without
-                            # leaking expected values.
-                            opaque = os.environ.get("MAVERICK_BENCHMARK_OPAQUE", "1") != "0"
-                            from .coding_mode import classify_failure
-                            fail_class, fail_hint = classify_failure(
-                                test_result.raw_output,
-                            )
-                            class_line = (
-                                f"Dominant failure class: {fail_class}.\n{fail_hint}"
-                                if fail_class != "other" else ""
-                            )
-                            if opaque:
-                                critique = (
-                                    "Your patch did not pass the required tests.\n\n"
-                                    f"{test_result.summary()}\n\n"
-                                    f"{class_line}\n\n"
-                                    "Revise based on your understanding of the "
-                                    "code, not from inspecting the failing "
-                                    "tests' expected values. Respond with a "
-                                    "new FINAL using SEARCH/REPLACE blocks."
-                                ).strip()
-                            else:
-                                critique = (
-                                    "Your patch did not pass the required tests.\n\n"
-                                    f"{test_result.summary()}\n\n"
-                                    f"{class_line}\n\n"
-                                    f"Recent test output:\n{test_result.raw_output}\n\n"
-                                    "Inspect the failing tests, revise your patch, "
-                                    "and respond with a new FINAL using "
-                                    "SEARCH/REPLACE blocks."
-                                ).strip()
-                            # Wave 9 fix (#2): one retry max so a flaky
-                            # verifier or unfixable instance doesn't loop
-                            # forever. The retry IS re-verified.
-                            if getattr(self, "_patch_validated", False):
-                                # Already revised once; accept whatever this is.
-                                self._already_verified = True
-                                return AgentResult(
-                                    final=final, role=self.role, name=self.name,
-                                    verifier_confidence=test_result.score,
-                                    verifier_critique=test_result.summary(),
-                                    final_patch=getattr(self, "_final_patch", None),
-                                )
-                            self._patch_validated = True
-                            messages.append({"role": "user", "content": critique})
-                            continue
+                                self._patch_validated = True
+                                messages.append({"role": "user", "content": critique})
+                                continue
 
                         try:
                             from .verifier import verify_final
