@@ -182,4 +182,51 @@ def is_enabled() -> bool:
     return _otel_enabled() or _prometheus_enabled()
 
 
-__all__ = ["trace_span", "record_metric", "is_enabled"]
+# --- OpenTelemetry GenAI semantic conventions (gen_ai.*) -------------------
+# These attribute names are the cross-vendor standard for LLM/agent
+# telemetry (OTel semconv). Emitting them means traces Maverick produces are
+# legible to any OTel-aware backend (Grafana, Honeycomb, Arize Phoenix, ...)
+# without custom attribute mapping -- the convention that became the
+# observability standard for agents in 2026.
+
+def gen_ai_span_name(operation: str, model: str) -> str:
+    """OTel GenAI convention: a span is named ``"<operation> <model>"``."""
+    return f"{operation} {model}"
+
+
+def gen_ai_attributes(
+    system: str,
+    request_model: str,
+    *,
+    operation: str = "chat",
+    max_tokens: Optional[int] = None,
+    response_model: Optional[str] = None,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+) -> dict[str, Any]:
+    """Build an OTel GenAI-semconv attribute dict for an LLM span.
+
+    ``system`` is the provider slug (anthropic/openai/gemini/...). Only the
+    fields that are known are included, so request-time and response-time
+    attributes can be built in two passes.
+    """
+    attrs: dict[str, Any] = {
+        "gen_ai.operation.name": operation,
+        "gen_ai.system": system,
+        "gen_ai.request.model": request_model,
+    }
+    if max_tokens is not None:
+        attrs["gen_ai.request.max_tokens"] = max_tokens
+    if response_model is not None:
+        attrs["gen_ai.response.model"] = response_model
+    if input_tokens is not None:
+        attrs["gen_ai.usage.input_tokens"] = input_tokens
+    if output_tokens is not None:
+        attrs["gen_ai.usage.output_tokens"] = output_tokens
+    return attrs
+
+
+__all__ = [
+    "trace_span", "record_metric", "is_enabled",
+    "gen_ai_span_name", "gen_ai_attributes",
+]
