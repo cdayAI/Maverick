@@ -13,8 +13,10 @@
 //! tiny and there's a single source of truth for "how to install".
 
 use std::fs;
+use std::io::Write;
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter};
+use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -31,33 +33,59 @@ const INSTALL_SCRIPT: &str = include_str!("../../../../deploy/desktop/install.sh
 /// Build the platform bootstrap command. Runs in headless mode
 /// (`MAVERICK_NO_WIZARD`) so the install completes without the
 /// interactive wizard, which a GUI can't drive over a pipe.
-fn bootstrap_command() -> Result<Command, String> {
+struct BootstrapCommand {
+    command: Command,
+    _script_dir: TempDir,
+}
+
+fn stage_install_script() -> Result<(TempDir, std::path::PathBuf), String> {
     let extension = if cfg!(windows) { "ps1" } else { "sh" };
-    let script_path = std::env::temp_dir().join(format!(
-        "maverick-install-{}.{extension}",
-        std::process::id()
-    ));
-    fs::write(&script_path, INSTALL_SCRIPT)
-        .map_err(|e| format!("Could not stage the bundled installer script: {e}"))?;
+    let script_dir = tempfile::Builder::new()
+        .prefix("maverick-install-")
+        .tempdir()
+        .map_err(|e| format!("Could not create a private installer staging directory: {e}"))?;
+    let script_path = script_dir.path().join(format!("install.{extension}"));
+    let mut script = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&script_path)
+        .map_err(|e| format!("Could not create the staged installer script: {e}"))?;
+    script
+        .write_all(INSTALL_SCRIPT.as_bytes())
+        .and_then(|_| script.sync_all())
+        .map_err(|e| format!("Could not write the bundled installer script: {e}"))?;
+    Ok((script_dir, script_path))
+}
+
+fn bootstrap_command() -> Result<BootstrapCommand, String> {
+    let (script_dir, script_path) = stage_install_script()?;
 
     #[cfg(windows)]
     {
-        let mut c = Command::new("powershell");
-        c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
-        c.arg(&script_path);
-        c.env("MAVERICK_NO_WIZARD", "1")
+        let mut command = Command::new("powershell");
+        command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+        command.arg(&script_path);
+        command
+            .env("MAVERICK_NO_WIZARD", "1")
             .env("MAVERICK_REPO", REPO)
             .env("MAVERICK_REF", GIT_REF);
-        Ok(c)
+        Ok(BootstrapCommand {
+            command,
+            _script_dir: script_dir,
+        })
     }
     #[cfg(not(windows))]
     {
-        let mut c = Command::new("bash");
-        c.arg(&script_path);
-        c.env("MAVERICK_NO_WIZARD", "1")
+        let mut command = Command::new("bash");
+        command.arg(&script_path);
+        command
+            .env("MAVERICK_NO_WIZARD", "1")
             .env("MAVERICK_REPO", REPO)
             .env("MAVERICK_REF", GIT_REF);
-        Ok(c)
+        Ok(BootstrapCommand {
+            command,
+            _script_dir: script_dir,
+        })
     }
 }
 
@@ -65,10 +93,14 @@ fn bootstrap_command() -> Result<Command, String> {
 /// events, then emit `install-done` (success) or `install-failed`.
 #[tauri::command]
 async fn install(app: AppHandle) -> Result<(), String> {
-    let mut cmd = bootstrap_command()?;
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut bootstrap = bootstrap_command()?;
+    bootstrap
+        .command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    let mut child = cmd
+    let mut child = bootstrap
+        .command
         .spawn()
         .map_err(|e| format!("Could not start the installer: {e}"))?;
 
