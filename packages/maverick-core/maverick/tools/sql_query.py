@@ -1,9 +1,9 @@
 """SQL query tool — read-only by default, over a local SQLite database.
 
 Lets the agent inspect a SQLite file with real SQL. Read-only is the
-default and is enforced at the engine level (the connection is opened
-``mode=ro``), so a SELECT can never mutate the database even if a write
-slips past the keyword guard. Set ``read_only=false`` to allow writes.
+default and is enforced with a read-only connection plus a SQLite authorizer,
+so a SELECT can never mutate the database even if a write slips past the
+keyword guard. Set ``read_only=false`` to allow writes.
 
 SQLite only for v1 (stdlib, no dependency, and it's the same engine the
 world model uses). The DB path is confined to the sandbox workspace.
@@ -25,6 +25,33 @@ _MAX_OUTPUT = 50_000
 _WRITE_KEYWORDS = frozenset({
     "insert", "update", "delete", "replace", "drop", "alter", "create",
     "truncate", "attach", "detach", "reindex", "vacuum",
+})
+_READ_ONLY_DENIED_ACTIONS = frozenset({
+    sqlite3.SQLITE_ATTACH,
+    sqlite3.SQLITE_DETACH,
+    sqlite3.SQLITE_INSERT,
+    sqlite3.SQLITE_UPDATE,
+    sqlite3.SQLITE_DELETE,
+    sqlite3.SQLITE_CREATE_INDEX,
+    sqlite3.SQLITE_CREATE_TABLE,
+    sqlite3.SQLITE_CREATE_TEMP_INDEX,
+    sqlite3.SQLITE_CREATE_TEMP_TABLE,
+    sqlite3.SQLITE_CREATE_TEMP_TRIGGER,
+    sqlite3.SQLITE_CREATE_TEMP_VIEW,
+    sqlite3.SQLITE_CREATE_TRIGGER,
+    sqlite3.SQLITE_CREATE_VIEW,
+    sqlite3.SQLITE_CREATE_VTABLE,
+    sqlite3.SQLITE_DROP_INDEX,
+    sqlite3.SQLITE_DROP_TABLE,
+    sqlite3.SQLITE_DROP_TEMP_INDEX,
+    sqlite3.SQLITE_DROP_TEMP_TABLE,
+    sqlite3.SQLITE_DROP_TEMP_TRIGGER,
+    sqlite3.SQLITE_DROP_TEMP_VIEW,
+    sqlite3.SQLITE_DROP_TRIGGER,
+    sqlite3.SQLITE_DROP_VIEW,
+    sqlite3.SQLITE_DROP_VTABLE,
+    sqlite3.SQLITE_ALTER_TABLE,
+    sqlite3.SQLITE_REINDEX,
 })
 
 
@@ -57,10 +84,36 @@ _SQL_QUERY_SCHEMA: dict[str, Any] = {
 }
 
 
+def _strip_sql_leading_noise(query: str) -> str:
+    stripped = query.lstrip()
+    while True:
+        if stripped.startswith("("):
+            stripped = stripped[1:].lstrip()
+        elif stripped.startswith("--"):
+            _, sep, rest = stripped.partition("\n")
+            if not sep:
+                return ""
+            stripped = rest.lstrip()
+        elif stripped.startswith("/*"):
+            end = stripped.find("*/", 2)
+            if end == -1:
+                return ""
+            stripped = stripped[end + 2:].lstrip()
+        else:
+            return stripped
+
+
 def _looks_like_write(query: str) -> bool:
-    stripped = query.lstrip().lstrip("(").lstrip()
+    stripped = _strip_sql_leading_noise(query)
     parts = stripped.split(None, 1)
     return bool(parts) and parts[0].lower() in _WRITE_KEYWORDS
+
+
+def _read_only_authorizer(action: int, _arg1: str | None, _arg2: str | None,
+                          _db_name: str | None, _trigger: str | None) -> int:
+    if action in _READ_ONLY_DENIED_ACTIONS:
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
 
 
 def _format_rows(cols: list[str], rows: list[tuple]) -> str:
@@ -105,8 +158,11 @@ def _run_sql_query(args: dict[str, Any], sandbox) -> str:
     conn = None
     try:
         if read_only:
-            # mode=ro: the engine itself refuses any write, regardless of SQL.
+            # mode=ro protects the main DB; the authorizer also denies SQLite
+            # operations that could write through attached/temp databases or
+            # filesystem paths embedded in SQL (for example ATTACH/VACUUM INTO).
             conn = sqlite3.connect(f"{p.resolve().as_uri()}?mode=ro", uri=True, timeout=10)
+            conn.set_authorizer(_read_only_authorizer)
         else:
             conn = sqlite3.connect(str(p), timeout=10)
         cur = conn.execute(query, params)
