@@ -26,7 +26,16 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 
-DEFAULT_HALT_FILE = Path.home() / ".maverick" / "HALT"
+def _default_halt_file() -> Path:
+    """Default HALT path, resolved fresh each call.
+
+    Must NOT be cached at import time: a process that re-homes after import
+    (a daemon, an embedder, or the test home-isolation fixture) would
+    otherwise keep watching the *old* home's HALT file. Honoring the current
+    ``Path.home()`` per call keeps the killswitch trustworthy — the one
+    place we can least afford a stale path.
+    """
+    return Path.home() / ".maverick" / "HALT"
 
 
 class Halted(Exception):
@@ -46,7 +55,7 @@ _last_file_present: bool = False
 
 def _halt_file_path() -> Path:
     override = os.environ.get("MAVERICK_HALT_FILE")
-    return Path(override) if override else DEFAULT_HALT_FILE
+    return Path(override) if override else _default_halt_file()
 
 
 def halt(reason: str, source: str = "manual") -> None:
