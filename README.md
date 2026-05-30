@@ -52,30 +52,16 @@ Grab the installer for your OS from the **[latest release ›](https://github.co
 
 It's unsigned for now, so the first launch shows an "unknown developer" prompt — on Windows click **More info → Run anyway**; on macOS right-click the app → **Open**. The app installs Python and Maverick for you, then you're set.
 
-### One-line install (paste into a terminal)
+### Terminal install with pipx
 
-No Python required — the script installs everything it needs and launches the wizard.
-
-**Windows** (PowerShell):
-
-```powershell
-irm https://raw.githubusercontent.com/cdayAI/Maverick/main/deploy/desktop/install.ps1 | iex
-```
-
-**macOS / Linux**:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/cdayAI/Maverick/main/deploy/desktop/install.sh | bash
-```
-
-The script installs Python + git if they're missing, sets up an isolated environment, and runs `maverick init`. Override the source with `MAVERICK_REPO` / `MAVERICK_REF` (`$env:MAVERICK_REF` on Windows).
-
-### With pipx (if you already have Python 3.10+)
+If you already have Python 3.10+, install the published package instead of running a remote bootstrap script:
 
 ```bash
 pipx install 'maverick-agent[installer]'
 maverick init
 ```
+
+For source-based desktop bootstrapping, download `deploy/desktop/install.sh` or `deploy/desktop/install.ps1` from a commit or release you trust, verify it, and set `MAVERICK_REF` to a full 40-character commit SHA. The bootstrap scripts intentionally reject mutable branch/tag refs by default.
 
 The PyPI distribution name is `maverick-agent` (the `maverick` name is squatted on PyPI). The `[installer]` extra pulls the wizard into the same pipx environment so `maverick init` resolves.
 

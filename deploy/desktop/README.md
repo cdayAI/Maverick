@@ -1,32 +1,17 @@
 # Desktop deployment
 
-## One-line install (recommended)
+## Terminal install (recommended)
 
-No Python required up front — the script installs Python + git if
-they're missing, sets up an isolated environment, and launches the
-setup wizard.
-
-**Windows** (PowerShell):
-
-```powershell
-irm https://raw.githubusercontent.com/cdayAI/Maverick/main/deploy/desktop/install.ps1 | iex
-```
-
-**macOS / Linux**:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/cdayAI/Maverick/main/deploy/desktop/install.sh | bash
-```
-
-Pin a branch/tag or fork with `MAVERICK_REPO` / `MAVERICK_REF`
-(`$env:MAVERICK_REF` on Windows) before running.
-
-## With pipx (if you already have Python 3.10+)
+Use the published package instead of piping a mutable remote script into a shell:
 
 ```bash
 pipx install 'maverick-agent[installer]'
 maverick init
 ```
+
+## Source bootstrap (advanced)
+
+The desktop bootstrap scripts are retained for controlled source installs. Download `install.sh` or `install.ps1` from a commit or release you trust, verify it, then set `MAVERICK_REF` to a full 40-character commit SHA before running. Mutable branch/tag refs are rejected unless `MAVERICK_ALLOW_UNPINNED=1` (`$env:MAVERICK_ALLOW_UNPINNED = "1"` on Windows) is set explicitly for trusted local testing.
 
 ## Native bundles (planned)
 

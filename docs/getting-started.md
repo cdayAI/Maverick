@@ -2,26 +2,14 @@
 
 ## Install
 
-The fastest path needs nothing installed first — the script pulls in
-Python + git if they're missing, then runs the wizard.
-
-**Windows** (PowerShell):
-
-```powershell
-irm https://raw.githubusercontent.com/cdayAI/Maverick/main/deploy/desktop/install.ps1 | iex
-```
-
-**macOS / Linux**:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/cdayAI/Maverick/main/deploy/desktop/install.sh | bash
-```
-
-If you already have Python 3.10+, you can use pipx instead:
+The safest terminal path installs the published package with pipx instead of executing a remote bootstrap script:
 
 ```bash
 pipx install 'maverick-agent[installer]'
+maverick init
 ```
+
+If you need the no-prerequisite desktop bootstrap, download `deploy/desktop/install.sh` or `deploy/desktop/install.ps1` from a commit or release you trust, verify it, and set `MAVERICK_REF` to a full 40-character commit SHA. The scripts reject mutable branch/tag refs by default.
 
 The PyPI package is `maverick-agent` (the `maverick` name is
 squatted). The `[installer]` extra pulls the wizard into the same
