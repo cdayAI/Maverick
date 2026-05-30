@@ -79,6 +79,9 @@ class CircuitBreaker:
         self._state = CircuitState.CLOSED
         self._stats = _Stats()
         self._lock = threading.Lock()
+        # HALF_OPEN lets exactly one probe through; this guards against a
+        # storm of concurrent probes all slipping past the state check.
+        self._probe_in_flight = False
 
     @property
     def state(self) -> CircuitState:
@@ -118,6 +121,7 @@ class CircuitBreaker:
 
     def call(self, fn: Callable[[], T]) -> T:
         """Run ``fn`` if allowed; raise ``CircuitOpen`` otherwise."""
+        probing = False
         with self._lock:
             self._tick(now=time.time())
             if self._state is CircuitState.OPEN:
@@ -126,11 +130,24 @@ class CircuitBreaker:
                     f"(opened {time.time() - self._stats.opened_at:.1f}s ago, "
                     f"cooldown {self.cooldown_seconds:.0f}s)"
                 )
+            if self._state is CircuitState.HALF_OPEN:
+                # Only one probe at a time; others bounce until it resolves.
+                if self._probe_in_flight:
+                    raise CircuitOpen(
+                        f"circuit {self.key!r} HALF_OPEN: a probe is already "
+                        "in flight"
+                    )
+                self._probe_in_flight = True
+                probing = True
         try:
             result = fn()
         except Exception:
             self.record_failure()
             raise
+        finally:
+            if probing:
+                with self._lock:
+                    self._probe_in_flight = False
         self.record_success()
         return result
 
