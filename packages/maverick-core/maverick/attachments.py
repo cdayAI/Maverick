@@ -81,6 +81,11 @@ def store(
         raise AttachmentRejected("filename is required")
     if "/" in filename or "\\" in filename or filename.startswith("."):
         raise AttachmentRejected(f"invalid filename: {filename!r}")
+    if any(ord(c) < 0x20 or ord(c) == 0x7f for c in filename):
+        # A null byte truncates the path at the C layer in downstream
+        # consumers; other control chars enable log/terminal injection.
+        # Real filenames never contain them.
+        raise AttachmentRejected(f"control character in filename: {filename!r}")
     if not mime:
         raise AttachmentRejected("mime type is required")
     if not any(mime.startswith(p) for p in ALLOWED_MIME_PREFIXES):
