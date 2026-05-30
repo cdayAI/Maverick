@@ -100,7 +100,7 @@ async def run_goal(
                 pass
             verdict = shield.scan_input(goal_text)
             if not getattr(verdict, "allowed", True):
-                reason = getattr(verdict, "reason", "") or "blocked by Shield"
+                reason = "; ".join(getattr(verdict, "reasons", []) or []) or "blocked by Shield"
                 world.set_goal_status(goal_id, "blocked", result=f"input blocked: {reason}")
                 try:
                     world.end_episode(episode_id, "input blocked by Shield", "blocked")
@@ -313,6 +313,22 @@ async def run_goal(
             except Exception:
                 pass
             return summary
+        # Output chokepoint for the CLI / REST / programmatic callers. The
+        # channel server scans run_goal's result at its own layer, but a
+        # direct caller (maverick start / chat / resume, dashboard REST)
+        # would otherwise hand back the raw answer unscanned. The
+        # rendered-diff path above is intentionally left unscanned: code
+        # legitimately contains strings the builtin rules flag (rm -rf,
+        # curl | sh) and that path feeds tooling/graders, not a chat answer.
+        if shield is not None:
+            try:
+                out_v = shield.scan_output(summary)
+                if not getattr(out_v, "allowed", True):
+                    reasons = "; ".join(getattr(out_v, "reasons", []) or []) or "blocked by Shield"
+                    log.warning("output scan blocked goal #%s: %s", goal_id, reasons)
+                    return f"⚠ Output blocked by Shield: {reasons}"
+            except Exception:  # pragma: no cover -- fail open per kernel rule 1
+                log.exception("scan_output on summary failed (fail-open)")
         return f"DONE.\n\n{summary}{skill_note}\n\n[{budget.summary()}]"
     finally:
         if mcp_clients:
@@ -459,7 +475,7 @@ async def run_goal_best_of_n(
                 # Roll ALL of the failed attempt's spend into the parent so
                 # the summary is honest; stop if the aggregate hit a cap.
                 try:
-                    budget.merge_consumed(attempt_budget)
+                    budget.absorb(attempt_budget)
                 except BudgetExceeded:
                     break
                 continue
@@ -476,7 +492,7 @@ async def run_goal_best_of_n(
         # then stop spawning further attempts.
         cap_reached = False
         try:
-            budget.merge_consumed(attempt_budget)
+            budget.absorb(attempt_budget)
         except BudgetExceeded:
             cap_reached = True
 

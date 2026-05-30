@@ -1,18 +1,18 @@
 name: Desktop bundle
 
-# Builds the Tauri desktop installer for macOS, Windows, and Linux.
+# Builds the native Maverick installer (Tauri) for macOS, Windows, and
+# Linux. On a version tag (`v*`) the installers are attached to that
+# GitHub release, so end users can download and double-click them
+# without a GitHub login.
 #
-# Status: produces UNSIGNED bundles. They run for development and
-# internal testing but trip SmartScreen (Windows) / Gatekeeper (macOS)
-# for end users. Code-signing + notarization are gated on the Apple
-# Developer Program / Azure Trusted Signing certs (Tier-3 calendar
-# work); the secret placeholders below are where they plug in once
-# available.
+# The app needs no prerequisites: pressing "Install Maverick" runs the
+# same bootstrap as the one-line installers (it installs Python +
+# Maverick for the user).
 #
-# Also note: the bundle currently shells out to the system Python for
-# the wizard sidecar. Until embedded Python (python-build-standalone)
-# lands, the produced bundle requires Python 3.10+ on the target
-# machine. Tracked separately.
+# Status: UNSIGNED. First launch trips SmartScreen (Windows) / Gatekeeper
+# (macOS) with an "unknown developer" prompt. Code signing + notarization
+# are gated on an Apple Developer Program membership + a Windows signing
+# cert.
 
 on:
   workflow_dispatch: {}

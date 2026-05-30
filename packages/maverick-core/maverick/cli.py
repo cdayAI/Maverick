@@ -1106,11 +1106,22 @@ def erase(ctx, channel: str, user: str, yes: bool) -> None:
         audit_lines_scrubbed=audit_scrubbed,
     )
 
+    # GDPR Art. 17 completeness: the DB rows + files are gone, but the
+    # agent also wrote goal/turn text into the audit NDJSON. Tombstone the
+    # subject there too, or erasure leaks the very data it promised to
+    # remove. (The erase record above hashes the subject, so this won't
+    # match it.)
+    scrubbed = 0
+    try:
+        scrubbed, _ = audit.scrub_user(channel, user)
+    except Exception as e:  # never fail the erasure on a scrub hiccup
+        click.echo(f"⚠ audit-log scrub failed: {e}", err=True)
+
     click.echo(
         f"erased {len(convs)} conversation(s), {removed_turns} turn(s), "
         f"{len(goal_ids)} goal(s) and all linked rows, "
         f"{removed_attachments} attachment file(s), "
-        f"{audit_scrubbed} audit line(s) scrubbed"
+        f"{scrubbed} audit event(s) scrubbed"
     )
 
 

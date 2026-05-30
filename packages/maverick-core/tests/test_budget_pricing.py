@@ -209,7 +209,7 @@ def test_record_tool_call_thread_safe():
     assert b.tool_calls == 2_000
 
 
-def test_merge_consumed_rolls_up_all_counters():
+def test_absorb_rolls_up_all_counters():
     """best_of_n folds each attempt's spend into the parent. The rollup must
     include cache tokens + tool_calls, not just dollars/in/out (the prior
     inline `+=` dropped them, under-reporting the parent's spend)."""
@@ -222,7 +222,7 @@ def test_merge_consumed_rolls_up_all_counters():
     child.record_tool_call()
     child.record_tool_call()
 
-    parent.merge_consumed(child)
+    parent.absorb(child)
     assert parent.input_tokens == 100
     assert parent.output_tokens == 50
     assert parent.cache_read_tokens == 200
@@ -231,8 +231,8 @@ def test_merge_consumed_rolls_up_all_counters():
     assert abs(parent.dollars - child.dollars) < 1e-9
 
 
-def test_merge_consumed_raises_when_aggregate_over_cap():
-    """When the rolled-up spend exceeds a parent cap, merge_consumed raises so
+def test_absorb_raises_when_aggregate_over_cap():
+    """When the rolled-up spend exceeds a parent cap, absorb raises so
     best_of_n stops spawning attempts -- and the spend is still recorded."""
     import pytest
     from maverick.budget import BudgetExceeded
@@ -241,6 +241,6 @@ def test_merge_consumed_raises_when_aggregate_over_cap():
     child = Budget(max_dollars=1000.0, max_input_tokens=10**9, max_output_tokens=10**9)
     child.record_tokens(1_000_000, 1_000_000, model=MODEL_SONNET)  # $18 on Sonnet
     with pytest.raises(BudgetExceeded):
-        parent.merge_consumed(child)
+        parent.absorb(child)
     # Counters were added BEFORE the cap check -> parent reflects the spend.
     assert abs(parent.dollars - 18.0) < 0.001

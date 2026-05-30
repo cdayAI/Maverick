@@ -57,9 +57,7 @@ class SlackChannel(Channel):
             allowed_user_ids, "SLACK_ALLOWED_USER_IDS",
         )
         if not self.allowed_user_ids:
-            raise ValueError(
-                "Set SLACK_ALLOWED_USER_IDS to restrict who can drive the agent"
-            )
+            raise ValueError("Set SLACK_ALLOWED_USER_IDS to restrict access")
         self._web = AsyncWebClient(token=self.bot_token)
         self._sm = SocketModeClient(app_token=self.app_token, web_client=self._web)
         self._sm.socket_mode_request_listeners.append(self._on_request)
@@ -84,9 +82,9 @@ class SlackChannel(Channel):
                     )
                     try:
                         reply = await self.handler(msg)
-                    except Exception as e:  # pragma: no cover
+                    except Exception:  # pragma: no cover
                         log.exception("handler error")
-                        reply = f"⚠ error: {e}"
+                        reply = "⚠ An internal error occurred."
                     await self._web.chat_postMessage(channel=event["channel"], text=reply)
         await client.send_socket_mode_response(
             SocketModeResponse(envelope_id=req.envelope_id)

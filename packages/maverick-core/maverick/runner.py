@@ -47,8 +47,8 @@ DEFAULT_MAX_DEPTH = env_int("MAVERICK_DEFAULT_MAX_DEPTH", 3)
 
 def run_goal_in_thread(
     goal_id: int,
-    max_dollars: float = DEFAULT_MAX_DOLLARS,
-    max_wall_seconds: float = DEFAULT_MAX_WALL_SECONDS,
+    max_dollars: Optional[float] = None,
+    max_wall_seconds: Optional[float] = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
 ) -> Optional[str]:
     """Synchronously run a goal under the global concurrency semaphore.
@@ -79,7 +79,7 @@ def run_goal_in_thread(
         return None
     world = None
     try:
-        from .budget import Budget
+        from .budget import budget_from_config
         from .llm import LLM
         from .orchestrator import run_goal_sync
         from .sandbox import build_sandbox
@@ -87,10 +87,20 @@ def run_goal_in_thread(
         world = WorldModel(DEFAULT_DB)
         llm = LLM()
         sandbox = build_sandbox()
+        # Precedence: explicit caller arg > [budget] config > the
+        # background runner's conservative defaults (tighter than the
+        # interactive Budget defaults on purpose).
+        budget = budget_from_config(
+            defaults={
+                "max_dollars": DEFAULT_MAX_DOLLARS,
+                "max_wall_seconds": DEFAULT_MAX_WALL_SECONDS,
+            },
+            max_dollars=max_dollars,
+            max_wall_seconds=max_wall_seconds,
+        )
         try:
             run_goal_sync(
-                llm, world,
-                Budget(max_dollars=max_dollars, max_wall_seconds=max_wall_seconds),
+                llm, world, budget,
                 goal_id, sandbox=sandbox, max_depth=max_depth,
             )
         except Exception:
@@ -123,8 +133,8 @@ def run_goal_in_thread(
 
 def run_goal_in_background(
     goal_id: int,
-    max_dollars: float = DEFAULT_MAX_DOLLARS,
-    max_wall_seconds: float = DEFAULT_MAX_WALL_SECONDS,
+    max_dollars: Optional[float] = None,
+    max_wall_seconds: Optional[float] = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
 ) -> Optional[str]:
     """Alias for run_goal_in_thread. Reserved for future change to a

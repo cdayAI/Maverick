@@ -59,9 +59,7 @@ class MatrixChannel(Channel):
             allowed_user_ids, "MATRIX_ALLOWED_USER_IDS",
         )
         if not self.allowed_user_ids:
-            raise ValueError(
-                "Set MATRIX_ALLOWED_USER_IDS to restrict who can drive the agent"
-            )
+            raise ValueError("Set MATRIX_ALLOWED_USER_IDS to restrict access")
         self._client = AsyncClient(homeserver, user_id)
         self._client.access_token = self.access_token
         self._client.add_event_callback(self._on_message, RoomMessageText)
@@ -80,9 +78,9 @@ class MatrixChannel(Channel):
         )
         try:
             reply = await self.handler(msg)
-        except Exception as e:  # pragma: no cover
+        except Exception:  # pragma: no cover
             log.exception("handler error")
-            reply = f"⚠ error: {e}"
+            reply = "⚠ An internal error occurred."
         await self.send(room.room_id, reply)
 
     async def start(self) -> None:

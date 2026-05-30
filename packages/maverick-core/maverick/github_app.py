@@ -46,6 +46,13 @@ DEFAULT_LABELS = ("maverick", "automate", "ai-fix")
 # Slash-command that triggers a run from an issue comment.
 SLASH_TRIGGER = "/maverick"
 
+# A comment author must have write-ish access to trigger a run via the
+# slash command. GitHub's author_association reflects the commenter's
+# relationship to the repo; anything below COLLABORATOR (CONTRIBUTOR,
+# FIRST_TIME_CONTRIBUTOR, NONE, ...) is the general public and must not be
+# able to spend the operator's API budget by commenting "/maverick".
+_PRIVILEGED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+
 
 @dataclass
 class WebhookPayload:
@@ -73,6 +80,11 @@ def verify_signature(
     isn't reachable from the internet).
     """
     if not secret:
+        log.warning(
+            "GH webhook signature check SKIPPED: no secret configured "
+            "(set MAVERICK_GH_APP_WEBHOOK_SECRET). Accepting all requests "
+            "— only safe for a listener not reachable from the internet."
+        )
         return True
     if not signature_header or not signature_header.startswith("sha256="):
         return False
@@ -108,8 +120,19 @@ def parse_webhook(event: str, payload: dict) -> Optional[WebhookPayload]:
         )
 
     if event == "issue_comment" and action == "created":
-        comment = (payload.get("comment") or {}).get("body", "") or ""
+        comment_obj = payload.get("comment") or {}
+        comment = comment_obj.get("body", "") or ""
         if SLASH_TRIGGER not in comment.lower():
+            return None
+        # Authorization: only repo-privileged commenters may trigger a run.
+        # Without this, any public user can comment "/maverick" and spend
+        # the operator's budget on a clone + swarm run.
+        association = (comment_obj.get("author_association") or "").upper()
+        if association not in _PRIVILEGED_ASSOCIATIONS:
+            log.warning(
+                "ignoring /maverick from unauthorized commenter %s "
+                "(author_association=%s)", sender, association or "NONE",
+            )
             return None
         return WebhookPayload(
             event=event, action=action,

@@ -495,6 +495,26 @@ def pick_models_per_role(providers: list[str]) -> dict[str, str]:
     return role_models
 
 
+# Inbound channels enforce a sender allowlist (fail-closed): only these
+# IDs can drive the agent and spend budget. The wizard must collect it or
+# the channel refuses to start. See maverick_channels.base.is_allowed.
+_ALLOWLIST_CHANNELS = {
+    "telegram", "discord", "slack", "signal", "email",
+    "matrix", "bluesky", "mastodon", "imessage",
+}
+_ALLOWLIST_HINT = {
+    "telegram": "numeric Telegram user IDs",
+    "discord": "numeric Discord user IDs",
+    "slack": "Slack user IDs, e.g. U01ABC",
+    "signal": "phone numbers, e.g. +12345550199",
+    "email": "email addresses",
+    "matrix": "MXIDs, e.g. @you:matrix.org",
+    "bluesky": "handles or DIDs",
+    "mastodon": "acct names, e.g. you@instance",
+    "imessage": "phone numbers or emails",
+}
+
+
 def pick_channels(deployment: str) -> tuple[dict[str, dict[str, Any]], set[str]]:
     """Returns (channels_config, env_vars_needed)."""
     console.print()
@@ -515,21 +535,6 @@ def pick_channels(deployment: str) -> tuple[dict[str, dict[str, Any]], set[str]]
 
     channels: dict[str, dict[str, Any]] = {}
     envs: set[str] = set()
-
-    # Channels that gate inbound on a per-sender allowlist (default-deny) and
-    # REFUSE to start without one. A wizard-only setup must collect the
-    # allowlist or these silently fail to initialize (server.py logs and
-    # continues). Maps channel -> the prompt for its sender id(s).
-    allowlist_prompts = {
-        "telegram": "Allowed Telegram user IDs (numeric, comma-separated)",
-        "discord":  "Allowed Discord user IDs (numeric, comma-separated)",
-        "slack":    "Allowed Slack user IDs (e.g. U0123ABC, comma-separated)",
-        "signal":   "Allowed Signal numbers (E.164, comma-separated)",
-        "matrix":   "Allowed Matrix user IDs (e.g. @you:server, comma-separated)",
-        "email":    "Allowed sender email addresses (comma-separated)",
-        "bluesky":  "Allowed Bluesky handles/DIDs (comma-separated)",
-        "mastodon": "Allowed Mastodon acct handles (comma-separated)",
-    }
 
     for ch_id in picked_ids:
         info = next((c for c in CHANNELS if c[0] == ch_id), None)
@@ -605,20 +610,21 @@ def pick_channels(deployment: str) -> tuple[dict[str, dict[str, Any]], set[str]]
         elif ch_id == "imessage":
             cfg["poll_interval"] = 5
 
-        # Collect the per-sender allowlist for channels that require one
-        # (otherwise the channel raises ValueError on startup).
-        if ch_id in allowlist_prompts:
-            raw = _q_text(
-                "  " + allowlist_prompts[ch_id] + " (required to start)",
+        if ch_id in _ALLOWLIST_CHANNELS:
+            hint = _ALLOWLIST_HINT.get(ch_id, "sender IDs")
+            raw_ids = _q_text(
+                f"  Allowed senders, comma-separated ({hint}) — "
+                "only these can drive the agent",
                 default="",
             )
-            ids = [x.strip() for x in raw.split(",") if x.strip()]
+            ids = [s.strip() for s in raw_ids.split(",") if s.strip()]
             if ids:
                 cfg["allowed_user_ids"] = ids
             else:
                 console.print(
-                    "  [yellow]No allowlist entered — this channel will refuse "
-                    "to start until you set allowed_user_ids in config.toml.[/yellow]"
+                    "  [yellow]No allowlist set — this channel will refuse "
+                    f"all senders until you set {ch_id.upper()}_ALLOWED_USER_IDS "
+                    "or add allowed_user_ids to config.[/yellow]"
                 )
         elif ch_id == "voice":
             raw = _q_text(
@@ -1924,7 +1930,14 @@ def run(fast: bool = False, resume: bool = False) -> int:
     # (they're secrets; the only safe place is ~/.maverick/.env).
     extra_envs = set(web_search_envs) | set(notify_envs)
     keys = collect_api_keys(providers, channel_envs | extra_envs)
-    collect_browser_sessions(providers)
+    captured_sessions = collect_browser_sessions(providers)
+    if captured_sessions:
+        console.print(
+            "\n[yellow]Note:[/yellow] session providers are OFF by default "
+            "(automating a vendor's consumer UI can risk your account). To "
+            "use the session(s) you just captured, set "
+            "[bold]MAVERICK_ENABLE_SESSION_PROVIDERS=1[/bold]."
+        )
 
     console.print()
     if not _q_confirm("Write config and finish?", default=True):

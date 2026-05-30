@@ -171,24 +171,22 @@ class Budget:
             self.tool_calls += 1
             self.check()
 
-    def merge_consumed(self, other: "Budget") -> None:
-        """Roll another Budget's CONSUMED counters into this one and re-check.
+    def absorb(self, other: "Budget") -> None:
+        """Roll another Budget's consumption into this one atomically and
+        enforce caps.
 
-        Used to fold a best-of-N sub-attempt's spend back into the parent.
-        Rolls up ALL counters (dollars, input/output, cache reads/writes,
-        tool_calls) -- the prior call sites added only dollars/input/output,
-        so cache tokens + tool_calls vanished from the parent's reported spend
-        and the parent caps were never re-enforced across attempts. Raises
-        BudgetExceeded (via check(), inside the lock) when the aggregate is
-        over a cap, so the caller can stop spawning further attempts. The
-        counters are added BEFORE the check, so the parent reflects the spend
-        even when this raises (no lost/double spend)."""
+        Used when a child/attempt runs on its own Budget (e.g. best-of-N)
+        and its spend must count against the parent cap. Replaces the raw
+        ``self.dollars += other.dollars`` roll-up, which bypassed both the
+        lock (lost updates under concurrency) and ``check()`` (so the
+        parent silently busted its cap across attempts).
+        """
         with self._lock:
-            self.dollars += other.dollars
             self.input_tokens += other.input_tokens
             self.output_tokens += other.output_tokens
             self.cache_read_tokens += other.cache_read_tokens
             self.cache_write_tokens += other.cache_write_tokens
+            self.dollars += other.dollars
             self.tool_calls += other.tool_calls
             self.check()
 
@@ -244,3 +242,49 @@ class Budget:
             f"tokens in={self.input_tokens} out={self.output_tokens} "
             f"$={self.dollars:.3f} tools={self.tool_calls} wall={self.elapsed():.0f}s"
         )
+
+
+_BUDGET_KEY_TYPES = {
+    "max_input_tokens": int,
+    "max_output_tokens": int,
+    "max_dollars": float,
+    "max_wall_seconds": float,
+    "max_tool_calls": int,
+}
+
+
+def budget_from_config(*, defaults: Optional[dict] = None, **overrides) -> "Budget":
+    """Build a Budget that honors the ``[budget]`` section of config.toml.
+
+    Precedence, lowest to highest:
+      ``defaults`` (a caller's own fallback, e.g. the background runner's
+      conservative caps) < the ``[budget]`` config section < explicit
+      ``overrides`` (e.g. a CLI ``--max-dollars`` flag). A ``None`` value
+      in either ``defaults`` or ``overrides`` is treated as "unset", so a
+      caller can pass an optional flag straight through.
+
+    ``config.get_budget_overrides()`` already existed but was never wired,
+    so the ``[budget]`` section had no effect on any run. This is the single
+    funnel that fixes that; malformed values are skipped (keep prior layer)
+    rather than crashing the run.
+    """
+    kwargs: dict = {}
+    if defaults:
+        for key, val in defaults.items():
+            if key in _BUDGET_KEY_TYPES and val is not None:
+                kwargs[key] = val
+    try:
+        from .config import get_budget_overrides
+        cfg = get_budget_overrides() or {}
+    except Exception:
+        cfg = {}
+    for key, caster in _BUDGET_KEY_TYPES.items():
+        if cfg.get(key) is not None:
+            try:
+                kwargs[key] = caster(cfg[key])
+            except (TypeError, ValueError):
+                pass  # malformed config value -> fall back to prior layer
+    for key, val in overrides.items():
+        if val is not None and key in _BUDGET_KEY_TYPES:
+            kwargs[key] = val
+    return Budget(**kwargs)

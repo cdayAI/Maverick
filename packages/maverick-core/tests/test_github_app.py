@@ -69,12 +69,47 @@ class TestParseWebhook:
             "action": "created",
             "repository": {"full_name": "octocat/spoon"},
             "issue": {"number": 7, "title": "x", "body": "y"},
-            "comment": {"body": f"hey {SLASH_TRIGGER} look at this"},
+            "comment": {
+                "body": f"hey {SLASH_TRIGGER} look at this",
+                "author_association": "OWNER",
+            },
             "sender": {"login": "alice"},
         }
         out = parse_webhook("issue_comment", payload)
         assert out is not None
         assert out.comment_body and SLASH_TRIGGER in out.comment_body.lower()
+
+    def test_issue_comment_from_unauthorized_author_returns_none(self):
+        # The public (author_association NONE / CONTRIBUTOR / missing) must
+        # NOT trigger a run via /maverick even with the slash command --
+        # otherwise anyone can spend the operator's budget.
+        for assoc in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", ""):
+            payload = {
+                "action": "created",
+                "repository": {"full_name": "octocat/spoon"},
+                "issue": {"number": 7, "title": "x", "body": "y"},
+                "comment": {
+                    "body": f"{SLASH_TRIGGER} please fix",
+                    "author_association": assoc,
+                },
+                "sender": {"login": "rando"},
+            }
+            assert parse_webhook("issue_comment", payload) is None, assoc
+
+    def test_issue_comment_from_privileged_author_triggers(self):
+        for assoc in ("OWNER", "MEMBER", "COLLABORATOR"):
+            payload = {
+                "action": "created",
+                "repository": {"full_name": "octocat/spoon"},
+                "issue": {"number": 7, "title": "x", "body": "y"},
+                "comment": {
+                    "body": f"{SLASH_TRIGGER} please fix",
+                    "author_association": assoc,
+                },
+                "sender": {"login": "maint"},
+            }
+            out = parse_webhook("issue_comment", payload)
+            assert out is not None and out.issue_number == 7, assoc
 
     def test_issue_comment_without_slash_returns_none(self):
         payload = {

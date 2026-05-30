@@ -37,6 +37,11 @@ class SignalChannel(Channel):
     ):
         super().__init__(handler)
         self.phone_number = phone_number
+        self.allowed_user_ids = normalize_allowlist(
+            allowed_user_ids, "SIGNAL_ALLOWED_USER_IDS",
+        )
+        if not self.allowed_user_ids:
+            raise ValueError("Set SIGNAL_ALLOWED_USER_IDS to restrict access")
         self.signal_cli_path = signal_cli_path or shutil.which("signal-cli")
         if not self.signal_cli_path:
             raise FileNotFoundError(
@@ -105,9 +110,9 @@ class SignalChannel(Channel):
             )
             try:
                 reply = await self.handler(msg)
-            except Exception as e:  # pragma: no cover
+            except Exception:  # pragma: no cover
                 log.exception("handler error")
-                reply = f"⚠ error: {e}"
+                reply = "⚠ An internal error occurred."
             await self.send(source, reply)
 
     async def send(self, user_id: str, text: str) -> None:
