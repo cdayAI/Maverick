@@ -51,6 +51,19 @@ def _run_factory(sandbox):
         cwd = str(Path(getattr(sandbox, "workdir", ".")).resolve())
         if not Path(cwd).is_dir():
             return f"ERROR: workdir {cwd!r} not found"
+        # Contain agent-supplied paths to the workspace BEFORE touching git:
+        # `git diff -- ../../etc/shadow` (or an absolute path) would
+        # otherwise leak the contents of files outside the sandbox workdir
+        # into the agent.
+        cwd_resolved = Path(cwd).resolve()
+        safe_paths: list[str] = []
+        for p in (args.get("paths") or []):
+            candidate = (cwd_resolved / str(p)).resolve()
+            try:
+                rel = candidate.relative_to(cwd_resolved)
+            except ValueError:
+                return f"ERROR: path {p!r} escapes the workspace"
+            safe_paths.append(str(rel))
         if not (Path(cwd) / ".git").exists():
             return (
                 "ERROR: not a git repo. preview_diff currently requires "
@@ -62,9 +75,11 @@ def _run_factory(sandbox):
             cmd.append("--cached")
         if args.get("stat_only"):
             cmd.append("--stat")
-        for p in (args.get("paths") or []):
+        # One `--` separator, then the contained pathspecs (a `--` before
+        # each path made git treat later `--` tokens as pathspecs).
+        if safe_paths:
             cmd.append("--")
-            cmd.append(str(p))
+            cmd.extend(safe_paths)
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, timeout=15,
