@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import traceback
 from typing import Any
@@ -350,17 +351,37 @@ class MCPServer:
             verdict = self._shield.scan_input(f"{title}\n{description}")
             if not verdict.allowed:
                 return f"⚠ Blocked: {'; '.join(verdict.reasons)}"
-        budget = Budget(
-            max_dollars=float(args.get("max_dollars", 5.0)),
-            max_wall_seconds=float(args.get("max_wall_seconds", 3600)),
-        )
+        # Clamp client-supplied limits to operator ceilings. Over the HTTP
+        # transport the budget is 100% client-controlled, so without a cap
+        # any authenticated caller could pass max_dollars=10000 and burn the
+        # operator's provider spend. Ceilings come from env and default to
+        # the schema defaults (so the common case is unchanged); raise them
+        # with MAVERICK_MCP_MAX_DOLLARS / _MAX_WALL_SECONDS / _MAX_DEPTH.
+        def _ceil(env_var: str, default: float) -> float:
+            try:
+                return float(os.environ.get(env_var) or default)
+            except (TypeError, ValueError):
+                return float(default)
+
+        def _req(val, default: float) -> float:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return float(default)
+
+        max_dollars = min(_req(args.get("max_dollars", 5.0), 5.0),
+                          _ceil("MAVERICK_MCP_MAX_DOLLARS", 5.0))
+        max_wall = min(_req(args.get("max_wall_seconds", 3600), 3600.0),
+                       _ceil("MAVERICK_MCP_MAX_WALL_SECONDS", 3600.0))
+        max_depth = int(min(_req(args.get("max_depth", 3), 3),
+                            _ceil("MAVERICK_MCP_MAX_DEPTH", 3)))
+        budget = Budget(max_dollars=max_dollars, max_wall_seconds=max_wall)
         world = WorldModel()
         goal_id = world.create_goal(title, description)
         llm = LLM()
         sandbox = build_sandbox()
         return run_goal_sync(
-            llm, world, budget, goal_id, sandbox=sandbox,
-            max_depth=int(args.get("max_depth", 3)),
+            llm, world, budget, goal_id, sandbox=sandbox, max_depth=max_depth,
         )
 
     def _tool_status(self) -> str:
@@ -396,7 +417,13 @@ class MCPServer:
 
     def _tool_skill_install(self, args: dict) -> str:
         from maverick.skills import install_skill
-        s = install_skill(args["source"], trusted_local=True)
+        # MCP clients are external by definition, and the HTTP transport is
+        # network-reachable behind only a shared bearer token. trusted_local
+        # must be False so a bare local-path source (e.g. "/etc/passwd") is
+        # rejected -- otherwise an authenticated client gets arbitrary host
+        # file read, the exact hole the REST API was hardened against. Local
+        # users install skills with `maverick skill install` (trusted there).
+        s = install_skill(args["source"], trusted_local=False)
         return f"installed: {s.name} -> {s.path}"
 
     def _tool_skills_list(self) -> str:
