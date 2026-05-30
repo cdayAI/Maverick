@@ -76,14 +76,22 @@ def _send(args: dict[str, Any]) -> str:
     to = (args.get("to") or "").strip()
     subject = args.get("subject") or ""
     body = args.get("body") or ""
+    cc = (args.get("cc") or "").strip()
     if not to or not subject:
         return "ERROR: send requires `to` and `subject`"
+    # Reject CR/LF in header fields: a newline smuggles extra headers
+    # (e.g. a hidden Bcc: for exfiltration) into the message. Recipients
+    # and subjects are always single-line, so a newline is an injection
+    # attempt, not data.
+    for _field, _val in (("to", to), ("cc", cc), ("subject", subject)):
+        if "\r" in _val or "\n" in _val:
+            return f"ERROR: newline in email `{_field}` (header injection blocked)"
 
     msg = EmailMessage()
     msg["From"] = user
     msg["To"] = to
-    if args.get("cc"):
-        msg["Cc"] = args["cc"]
+    if cc:
+        msg["Cc"] = cc
     msg["Subject"] = subject
     msg.set_content(body)
 
