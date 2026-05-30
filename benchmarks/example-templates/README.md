@@ -28,6 +28,13 @@ maverick start --template standup --param project="Maverick"
 | [`compare-options.md`](compare-options.md) | Side-by-side comparison of two alternatives | `category`, `option_a`, `option_b` |
 | [`trip-plan.md`](trip-plan.md) | Day-by-day travel itinerary | `destination`, `duration` |
 | [`standup.md`](standup.md) | Daily standup from git log + workspace notes | `project` |
+| [`code-review.md`](code-review.md) | Review the latest commit for bugs and style | `branch` |
+| [`bug-repro.md`](bug-repro.md) | Reproduce a reported bug with a failing test, propose a fix | `report` |
+| [`refactor.md`](refactor.md) | Split a function into smaller tested units | `target` |
+| [`add-feature.md`](add-feature.md) | Add a CLI flag with help text and a test | `flag`, `command`, `behavior` |
+| [`write-tests.md`](write-tests.md) | Cover a low-coverage file to >=80% | `project` |
+| [`research-library.md`](research-library.md) | Evaluate a library vs an alternative | `library`, `alternative` |
+| [`migrate-dependency.md`](migrate-dependency.md) | Plan + apply a dependency version bump | `library`, `old_version`, `new_version` |
 
 ## Schema
 

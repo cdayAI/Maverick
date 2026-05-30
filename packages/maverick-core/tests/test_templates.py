@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import pytest
 
-from maverick.templates import Template, _substitute, load_template
+from maverick.templates import (
+    Template,
+    _substitute,
+    list_templates,
+    load_template,
+)
 
 
 TEMPLATE_BODY = """---
@@ -67,3 +72,18 @@ def test_load_template_rejects_path_traversal():
 def test_load_template_rejects_absolute_path():
     with pytest.raises(ValueError, match="invalid template name"):
         load_template("/tmp/secret")
+
+
+def test_starter_goals_library_has_at_least_ten():
+    # The bundled starter-goals library must reach all 10 documented goals.
+    names = list_templates()
+    assert len(names) >= 10
+
+
+def test_every_bundled_template_loads_and_parses():
+    for name in list_templates():
+        t = load_template(name)
+        assert t.name == name
+        assert t.body  # non-empty goal body
+        assert t.budget_dollars > 0
+        assert t.budget_wall_seconds > 0
