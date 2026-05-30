@@ -32,7 +32,7 @@ import logging
 import os
 from typing import Optional
 
-from .base import Channel, IncomingMessage
+from .base import Channel, IncomingMessage, is_allowed, normalize_allowlist
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ class WhatsAppChannel(Channel):
         auth_token: Optional[str] = None,
         from_number: Optional[str] = None,
         port: int = 8765,
+        allowed_user_ids=None,
     ):
         super().__init__(handler)
         if not _HAVE_DEPS:
@@ -71,6 +72,18 @@ class WhatsAppChannel(Channel):
             raise ValueError(
                 "Twilio credentials missing. Set TWILIO_ACCOUNT_SID, "
                 "TWILIO_AUTH_TOKEN, and from_number in config."
+            )
+        # The Twilio signature only proves Twilio relayed the message, not
+        # that the *sender* is authorized. Require a per-sender allowlist
+        # (default-deny via base.is_allowed). Twilio delivers WhatsApp
+        # senders with the "whatsapp:" prefix, so list them as e.g.
+        # "whatsapp:+14155551234".
+        self.allowed_user_ids = normalize_allowlist(
+            allowed_user_ids, "WHATSAPP_ALLOWED_USER_IDS",
+        )
+        if not self.allowed_user_ids:
+            raise ValueError(
+                "Set WHATSAPP_ALLOWED_USER_IDS to restrict who can drive the agent"
             )
         self.port = port
         self._twilio = TwilioClient(self.account_sid, self.auth_token)
@@ -94,6 +107,12 @@ class WhatsAppChannel(Channel):
         if not self._validator.validate(url, form_dict, signature):
             log.warning("WhatsApp webhook signature invalid; ignoring")
             raise HTTPException(status_code=403, detail="signature invalid")
+
+        # A valid signature only proves Twilio relayed this; gate on the
+        # actual sender before spending any budget (default-deny).
+        if not is_allowed(From, self.allowed_user_ids):
+            log.warning("unauthorized whatsapp access: from=%s", From)
+            raise HTTPException(status_code=403, detail="sender not allowed")
 
         # Twilio retries; lookup-then-mark so a handler crash doesn't
         # permanently lose the message (Twilio retry re-processes it).
