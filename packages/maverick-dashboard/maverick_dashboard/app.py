@@ -596,6 +596,7 @@ def _permissions_snapshot() -> dict:
         "tools": [], "capabilities": {}, "channels": [], "sandbox": {},
         "budget": {}, "network": "open", "plugins": [], "providers": [],
         "retention": {}, "overlay_denied": [], "error": None,
+        "sandbox_warning": None,
     }
     try:
         from maverick.config import load_config
@@ -608,6 +609,17 @@ def _permissions_snapshot() -> dict:
     snap["budget"] = cfg.get("budget") or {}
     snap["retention"] = cfg.get("retention") or {}
     snap["sandbox"] = cfg.get("sandbox") or {}
+    # Security surface: the default 'local' sandbox runs model-driven shell on
+    # the host with no filesystem/network isolation (secret env vars are
+    # scrubbed, but it is not a container). Make the posture explicit on the
+    # /permissions page + API instead of leaving it silent.
+    _sb_backend = str(snap["sandbox"].get("backend") or "local").strip().lower()
+    if _sb_backend == "local":
+        snap["sandbox_warning"] = (
+            "Sandbox backend is 'local': the agent's shell runs on this host "
+            "with no filesystem/network isolation. Use the docker or podman "
+            "backend for untrusted goals."
+        )
     snap["providers"] = sorted((cfg.get("providers") or {}).keys())
     snap["channels"] = [
         {"name": n, "enabled": bool(c.get("enabled", True))}
