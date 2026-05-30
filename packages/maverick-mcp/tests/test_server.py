@@ -8,6 +8,7 @@ and carries the right code. The `isError` envelope is only for tool
 """
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -120,6 +121,50 @@ class TestProtocol:
 
         assert out["isError"] is False
         assert "⚠ Blocked: blocked input" in out["content"][0]["text"]
+
+    def test_maverick_start_sanitizes_non_finite_budget_limits(self, monkeypatch):
+        """Regression: string NaN limits must not bypass Budget checks."""
+        from maverick import llm as llm_mod
+        from maverick import orchestrator as orchestrator_mod
+        from maverick import world_model as world_model_mod
+        from maverick import sandbox as sandbox_mod
+
+        captured = {}
+
+        class FakeWorld:
+            def create_goal(self, title, description):
+                return 123
+
+        def fake_run_goal_sync(_llm, _world, budget, _goal_id, *, sandbox, max_depth):
+            captured["budget"] = budget
+            captured["max_depth"] = max_depth
+            return "ok"
+
+        monkeypatch.setenv("MAVERICK_MCP_MAX_DOLLARS", "0.01")
+        monkeypatch.setenv("MAVERICK_MCP_MAX_WALL_SECONDS", "1")
+        monkeypatch.setenv("MAVERICK_MCP_MAX_DEPTH", "2")
+        monkeypatch.setattr(world_model_mod, "WorldModel", FakeWorld)
+        monkeypatch.setattr(llm_mod, "LLM", lambda: object())
+        monkeypatch.setattr(sandbox_mod, "build_sandbox", lambda: object())
+        monkeypatch.setattr(orchestrator_mod, "run_goal_sync", fake_run_goal_sync)
+
+        out = MCPServer().handle_tools_call({
+            "name": "maverick_start",
+            "arguments": {
+                "title": "hi",
+                "max_dollars": "NaN",
+                "max_wall_seconds": "NaN",
+                "max_depth": "NaN",
+            },
+        })
+
+        assert out["isError"] is False
+        budget = captured["budget"]
+        assert math.isfinite(budget.max_dollars)
+        assert math.isfinite(budget.max_wall_seconds)
+        assert budget.max_dollars == 0.01
+        assert budget.max_wall_seconds == 1.0
+        assert captured["max_depth"] == 2
 
     def test_tools_call_blocks_disallowed_output(self, monkeypatch):
         s = MCPServer()
