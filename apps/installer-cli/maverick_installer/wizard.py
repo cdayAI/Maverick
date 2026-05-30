@@ -500,7 +500,7 @@ def pick_models_per_role(providers: list[str]) -> dict[str, str]:
 # the channel refuses to start. See maverick_channels.base.is_allowed.
 _ALLOWLIST_CHANNELS = {
     "telegram", "discord", "slack", "signal", "email",
-    "matrix", "bluesky", "mastodon", "imessage",
+    "matrix", "bluesky", "mastodon", "imessage", "sms", "whatsapp",
 }
 _ALLOWLIST_HINT = {
     "telegram": "numeric Telegram user IDs",
@@ -512,6 +512,8 @@ _ALLOWLIST_HINT = {
     "bluesky": "handles or DIDs",
     "mastodon": "acct names, e.g. you@instance",
     "imessage": "phone numbers or emails",
+    "sms": "phone numbers, e.g. +14155551234",
+    "whatsapp": "senders as Twilio sends them, e.g. whatsapp:+14155551234",
 }
 
 

@@ -24,7 +24,7 @@ import logging
 import os
 from typing import Optional
 
-from .base import Channel, IncomingMessage
+from .base import Channel, IncomingMessage, is_allowed, normalize_allowlist
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +49,7 @@ class SMSChannel(Channel):
         auth_token: Optional[str] = None,
         from_number: Optional[str] = None,
         port: int = 8766,
+        allowed_user_ids=None,
     ):
         super().__init__(handler)
         if not _HAVE_DEPS:
@@ -60,6 +61,18 @@ class SMSChannel(Channel):
         self.from_number = from_number
         if not all([self.account_sid, self.auth_token, self.from_number]):
             raise ValueError("Twilio credentials missing for SMS")
+        # The Twilio signature only proves Twilio relayed the message, not
+        # that the *sender* is authorized. A Twilio number is reachable by
+        # any PSTN subscriber, so require a per-sender allowlist (default-deny
+        # via base.is_allowed) -- list senders as Twilio delivers them, e.g.
+        # "+14155551234".
+        self.allowed_user_ids = normalize_allowlist(
+            allowed_user_ids, "SMS_ALLOWED_USER_IDS",
+        )
+        if not self.allowed_user_ids:
+            raise ValueError(
+                "Set SMS_ALLOWED_USER_IDS to restrict who can drive the agent"
+            )
         self.port = port
         self._twilio = TwilioClient(self.account_sid, self.auth_token)
         self._validator = RequestValidator(self.auth_token)
@@ -81,6 +94,12 @@ class SMSChannel(Channel):
         if not self._validator.validate(url, form_dict, signature):
             log.warning("SMS webhook signature invalid; ignoring")
             raise HTTPException(status_code=403, detail="signature invalid")
+
+        # A valid signature only proves Twilio relayed this; gate on the
+        # actual sender before spending any budget (default-deny).
+        if not is_allowed(From, self.allowed_user_ids):
+            log.warning("unauthorized sms access: from=%s", From)
+            raise HTTPException(status_code=403, detail="sender not allowed")
 
         # Council finding (Tier 0 + Wave 4): Twilio retries non-2xx and
         # slow handlers; without MessageSid dedup the same inbound SMS

@@ -258,23 +258,27 @@ def _wire_mastodon(server, cfg):
 
 def _wire_whatsapp(server, cfg):
     from maverick_channels.whatsapp import WhatsAppChannel
+    allowed_user_ids = cfg.get("allowed_user_ids")
     server.add_channel(WhatsAppChannel(
         handler=server._handle_message,
         account_sid=cfg.get("account_sid") or os.environ.get("TWILIO_ACCOUNT_SID"),
         auth_token=cfg.get("auth_token") or os.environ.get("TWILIO_AUTH_TOKEN"),
         from_number=cfg.get("from_number"),
         port=cfg.get("port", 8765),
+        allowed_user_ids={str(v) for v in allowed_user_ids} if allowed_user_ids else None,
     ))
 
 
 def _wire_sms(server, cfg):
     from maverick_channels.sms import SMSChannel
+    allowed_user_ids = cfg.get("allowed_user_ids")
     server.add_channel(SMSChannel(
         handler=server._handle_message,
         account_sid=cfg.get("account_sid") or os.environ.get("TWILIO_ACCOUNT_SID"),
         auth_token=cfg.get("auth_token") or os.environ.get("TWILIO_AUTH_TOKEN"),
         from_number=cfg.get("from_number"),
         port=cfg.get("port", 8766),
+        allowed_user_ids={str(v) for v in allowed_user_ids} if allowed_user_ids else None,
     ))
 
 

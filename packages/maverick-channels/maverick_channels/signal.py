@@ -37,25 +37,22 @@ class SignalChannel(Channel):
     ):
         super().__init__(handler)
         self.phone_number = phone_number
-        self.allowed_user_ids = normalize_allowlist(
-            allowed_user_ids, "SIGNAL_ALLOWED_USER_IDS",
-        )
-        if not self.allowed_user_ids:
-            raise ValueError("Set SIGNAL_ALLOWED_USER_IDS to restrict access")
-        self.signal_cli_path = signal_cli_path or shutil.which("signal-cli")
-        if not self.signal_cli_path:
-            raise FileNotFoundError(
-                "signal-cli not found on PATH. Install from "
-                "https://github.com/AsamK/signal-cli"
-            )
         # Without an allowlist any Signal sender who knows the number drives
-        # the agent. Require one (default-deny via base.is_allowed).
+        # the agent. Require one (default-deny via base.is_allowed). Checked
+        # before the signal-cli probe so a misconfigured allowlist fails with
+        # a clear error.
         self.allowed_user_ids = normalize_allowlist(
             allowed_user_ids, "SIGNAL_ALLOWED_USER_IDS",
         )
         if not self.allowed_user_ids:
             raise ValueError(
                 "Set SIGNAL_ALLOWED_USER_IDS to restrict who can drive the agent"
+            )
+        self.signal_cli_path = signal_cli_path or shutil.which("signal-cli")
+        if not self.signal_cli_path:
+            raise FileNotFoundError(
+                "signal-cli not found on PATH. Install from "
+                "https://github.com/AsamK/signal-cli"
             )
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._req_id = 0

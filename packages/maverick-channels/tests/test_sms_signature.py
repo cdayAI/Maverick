@@ -36,6 +36,7 @@ def test_sms_channel_constructs_validator():
         account_sid="ACtest",
         auth_token="tokentoken",
         from_number="+15551234",
+        allowed_user_ids={"+15550001111"},
     )
     # RequestValidator must be wired in.
     assert chan._validator is not None

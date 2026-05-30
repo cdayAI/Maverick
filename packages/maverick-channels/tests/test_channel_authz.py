@@ -93,6 +93,124 @@ def test_matrix_requires_allowlist():
         )
 
 
+# --- sms / whatsapp: per-sender allowlist (Twilio) -------------------------
+#
+# A valid X-Twilio-Signature only proves Twilio relayed the POST, not that
+# the *sender* is authorized -- and a Twilio number is reachable by anyone on
+# the PSTN. These channels were the two missed by the first allowlist pass;
+# pin the fail-closed behaviour at both construction and the webhook path.
+
+def _have_twilio() -> bool:
+    try:
+        import fastapi  # noqa: F401
+        import twilio  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+@pytest.mark.skipif(not _have_twilio(), reason="fastapi+twilio not installed")
+def test_sms_requires_allowlist():
+    from maverick_channels.sms import SMSChannel
+    with pytest.raises(ValueError, match="SMS_ALLOWED_USER_IDS"):
+        SMSChannel(
+            handler=_noop, account_sid="ACx", auth_token="tok",
+            from_number="+15550000", allowed_user_ids=set(),
+        )
+
+
+@pytest.mark.skipif(not _have_twilio(), reason="fastapi+twilio not installed")
+def test_whatsapp_requires_allowlist():
+    from maverick_channels.whatsapp import WhatsAppChannel
+    with pytest.raises(ValueError, match="WHATSAPP_ALLOWED_USER_IDS"):
+        WhatsAppChannel(
+            handler=_noop, account_sid="ACx", auth_token="tok",
+            from_number="whatsapp:+15550000", allowed_user_ids=set(),
+        )
+
+
+@pytest.mark.skipif(not _have_twilio(), reason="fastapi+twilio not installed")
+def test_sms_webhook_rejects_unauthorized_sender():
+    """End-to-end: a signature-valid POST from a non-allowlisted number is
+    refused (403) and never reaches the handler; an allowlisted number runs."""
+    from fastapi.testclient import TestClient
+
+    from maverick_channels.sms import SMSChannel
+
+    seen = []
+
+    async def _handler(msg):
+        seen.append(msg.user_id)
+        return "ran"
+
+    chan = SMSChannel(
+        handler=_handler, account_sid="ACx", auth_token="tok",
+        from_number="+15550000", allowed_user_ids={"+12025550111"},
+    )
+    # Isolate the sender-allowlist gate from Twilio signature checking.
+    chan._validator.validate = lambda *a, **k: True
+
+    async def _send(_uid, _text):
+        return None
+
+    chan.send = _send
+    client = TestClient(chan._app)
+
+    def _post(frm):
+        return client.post(
+            "/webhook/sms",
+            data={"From": frm, "Body": "hi", "MessageSid": ""},
+        )
+
+    resp = _post("+19998887777")  # stranger
+    assert resp.status_code == 403
+    assert seen == []
+
+    resp = _post("+12025550111")  # allowlisted owner
+    assert resp.status_code == 200
+    assert seen == ["+12025550111"]
+
+
+@pytest.mark.skipif(not _have_twilio(), reason="fastapi+twilio not installed")
+def test_whatsapp_webhook_rejects_unauthorized_sender():
+    from fastapi.testclient import TestClient
+
+    from maverick_channels.whatsapp import WhatsAppChannel
+
+    seen = []
+
+    async def _handler(msg):
+        seen.append(msg.user_id)
+        return "ran"
+
+    chan = WhatsAppChannel(
+        handler=_handler, account_sid="ACx", auth_token="tok",
+        from_number="whatsapp:+15550000",
+        allowed_user_ids={"whatsapp:+12025550111"},
+    )
+    chan._validator.validate = lambda *a, **k: True
+
+    async def _send(_uid, _text):
+        return None
+
+    chan.send = _send
+    client = TestClient(chan._app)
+
+    def _post(frm):
+        return client.post(
+            "/webhook/whatsapp",
+            data={"From": frm, "Body": "hi", "MessageSid": ""},
+        )
+
+    resp = _post("whatsapp:+19998887777")
+    assert resp.status_code == 403
+    assert seen == []
+
+    resp = _post("whatsapp:+12025550111")
+    assert resp.status_code == 200
+    assert seen == ["whatsapp:+12025550111"]
+
+
 # --- voice: per-caller allowlist (launch-hardening) ------------------------
 
 def _have_voice_deps() -> bool:
