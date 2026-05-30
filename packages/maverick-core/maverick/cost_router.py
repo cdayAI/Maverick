@@ -42,6 +42,9 @@ _PRICING: list[tuple[str, str, int, float, float]] = [
     # Anthropic
     ("anthropic", "claude-haiku-4-5-20251001",  TIER_CHEAP,   0.80,  4.00),
     ("anthropic", "claude-sonnet-4-6",          TIER_BASE,    3.00, 15.00),
+    ("anthropic", "claude-opus-4-8",            TIER_PREMIUM, 5.00, 25.00),
+    # Prior Opus kept so price_for_model still resolves a pinned 4-7
+    # (same $5/$25). Selection prefers 4-8 above (equal cost, listed first).
     ("anthropic", "claude-opus-4-7",            TIER_PREMIUM, 5.00, 25.00),
     # OpenAI
     ("openai",    "gpt-5-nano",                 TIER_CHEAP,   0.50,  2.50),
@@ -83,6 +86,32 @@ class CostSignal:
     tier: int = TIER_BASE
     # Output-heavy roles (revisor) weight output rates more.
     output_heavy: bool = False
+
+
+# Default capability tier per role. Mirrors the intent of ROLE_MODELS
+# (orchestrator/revisor on the strongest model, summarizer on the cheapest)
+# but expressed as a provider-agnostic tier the router maps to whichever
+# configured provider hits that tier cheapest.
+_ROLE_TIERS: dict[str, int] = {
+    "orchestrator":    TIER_PREMIUM,
+    "revisor":         TIER_PREMIUM,
+    "summarizer":      TIER_CHEAP,
+    # Everything else (researcher/coder/writer/analyst/verifier/
+    # skill_distiller) is solid mid-tier work.
+}
+
+# Roles whose value is mostly in the generated output (longer completions),
+# so the cost score should weight the output rate more heavily.
+_OUTPUT_HEAVY_ROLES = frozenset({"revisor", "writer", "coder"})
+
+
+def signal_for_role(role: str) -> CostSignal:
+    """Build the default CostSignal for a role (tier + output-weighting)."""
+    return CostSignal(
+        role=role,
+        tier=_ROLE_TIERS.get(role, TIER_BASE),
+        output_heavy=role in _OUTPUT_HEAVY_ROLES,
+    )
 
 
 def _enabled() -> bool:
@@ -168,6 +197,6 @@ def pick(signal: CostSignal) -> Optional[str]:
 
 
 __all__ = [
-    "CostSignal", "pick",
+    "CostSignal", "pick", "signal_for_role", "price_for_model",
     "TIER_CHEAP", "TIER_BASE", "TIER_PREMIUM",
 ]

@@ -158,12 +158,19 @@ class LLMResponse:
 def model_for_role(role: str) -> str:
     """Return the model spec for a role (may be 'provider:id' or bare id).
 
-    Resolution order (Wave 11):
+    Resolution order:
       1. Per-role env override `MAVERICK_MODEL_OVERRIDE_<ROLE>` (set by
          best-of-N to swap models per attempt).
       2. ``~/.maverick/config.toml`` -> ``[models]`` -> role
-      3. ``ROLE_MODELS`` defaults
-      4. ``DEFAULT_MODEL``
+      3. Cost-aware router (opt-in: `MAVERICK_COST_ROUTING=1` or
+         `[routing] cost_aware = true`) -- among the user's configured
+         providers, the cheapest one at the role's capability tier.
+      4. ``ROLE_MODELS`` defaults
+      5. ``DEFAULT_MODEL``
+
+    The user's explicit choices (1, 2) always win; the router only gets a
+    say when no model was pinned, and it returns None (defers to 4) unless
+    the operator opted in. This keeps "users own model choice" intact.
     """
     import os
     override = os.environ.get(f"MAVERICK_MODEL_OVERRIDE_{role.upper()}")
@@ -175,6 +182,16 @@ def model_for_role(role: str) -> str:
         if spec:
             return spec
     except Exception:
+        pass
+    # Cost-aware routing (opt-in, off by default). pick() returns None when
+    # disabled or when no provider is configured, so this is a no-op for the
+    # default install.
+    try:
+        from .cost_router import pick, signal_for_role
+        routed = pick(signal_for_role(role))
+        if routed:
+            return routed
+    except Exception:  # pragma: no cover -- never let routing break resolution
         pass
     return ROLE_MODELS.get(role, DEFAULT_MODEL)
 
