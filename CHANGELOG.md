@@ -4,6 +4,35 @@ All notable changes to Maverick. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] -- 2026-05-30
+
+The launch-hardening pass that landed just after the 0.1.3 tag was cut.
+0.1.3 shipped without these; 0.1.4 is the first release to include them.
+
+### Added
+- Per-sender channel allowlists for Slack/Signal/Matrix/Voice (default-deny);
+  the installer wizard now collects `*_ALLOWED_USER_IDS` / allowed callers.
+- `compute`/sympy math tool wired up (was dead); restored two
+  silently-shadowed CLI commands (GDPR `export`, `logs`).
+
+### Fixed
+- **Killswitch is now enforced.** `maverick halt`, the dashboard Halt button,
+  and the HALT file are checked at the agent turn boundary and the tool
+  boundary -- in 0.1.3 they were read by nothing (a no-op).
+- **MCP HTTP transport** no longer crashes with `asyncio.run() ... running
+  event loop`; client-supplied budgets are clamped and an arbitrary host-file
+  read (`trusted_local`) was closed.
+- **VPS installer** references the correct pipx package name (`maverick-agent`)
+  and its run-as-user model is coherent.
+- GDPR `erase` no longer fails on the foreign-key cascade; audit `scrub_user`
+  is wired.
+- Cost accounting for router-selected models; best-of-N now rolls all budget
+  counters (cache tokens + tool calls) into the parent and enforces its cap.
+- CircuitBreaker HALF_OPEN admits exactly one probe (was a retry storm); MCP
+  negotiates protocol version by supported set, not a lexicographic downgrade.
+- `dep_graph` emits forward-slash paths on every platform; arXiv API uses
+  https; Windows POSIX file-mode test assertions are guarded.
+
 ## [0.1.3] -- 2026-05-29
 
 ### Added
