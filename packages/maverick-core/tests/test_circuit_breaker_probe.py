@@ -6,6 +6,7 @@ concurrent caller passed the gate and re-stormed the dead dependency.
 """
 from __future__ import annotations
 
+import asyncio
 import threading
 
 import pytest
@@ -56,6 +57,24 @@ def test_half_open_probe_failure_reopens_and_clears_flag():
     with pytest.raises(RuntimeError):
         br.call(lambda: (_ for _ in ()).throw(RuntimeError("probe boom")))
     # cooldown 0 -> HALF_OPEN again, and a fresh probe is admitted.
+    assert br.state is CircuitState.HALF_OPEN
+    assert br.call(lambda: "recovered") == "recovered"
+    assert br.state is CircuitState.CLOSED
+
+
+def test_half_open_probe_cancel_reopens_and_clears_flag():
+    br = CircuitBreaker("probe-cancel", failure_threshold=1, cooldown_seconds=0.0)
+    with pytest.raises(RuntimeError):
+        br.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert br.state is CircuitState.HALF_OPEN
+
+    # asyncio.CancelledError inherits directly from BaseException on supported
+    # Python versions, so it must still clear the single-probe guard.
+    with pytest.raises(asyncio.CancelledError):
+        br.call(lambda: (_ for _ in ()).throw(asyncio.CancelledError()))
+
+    # cooldown 0 -> HALF_OPEN again; if the probe guard were still wedged, this
+    # call would raise CircuitOpen instead of being admitted as the next probe.
     assert br.state is CircuitState.HALF_OPEN
     assert br.call(lambda: "recovered") == "recovered"
     assert br.state is CircuitState.CLOSED
