@@ -148,7 +148,9 @@ def _try_serpapi(query: str, num: int) -> list[dict] | None:
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        log.warning("serpapi search failed: %s", e)
+        # Redact the key: httpx errors embed the full request URL, which
+        # carries api_key in the query string for serpapi.
+        log.warning("serpapi search failed: %s", str(e).replace(key, "***"))
         return None
     out = []
     for r in (data.get("organic_results") or [])[:num]:
