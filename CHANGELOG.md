@@ -4,6 +4,26 @@ All notable changes to Maverick. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Post-0.1.4 security fixes found by the adversarial pre-launch audit.
+
+### Security
+- **SMS and WhatsApp now enforce a per-sender allowlist** (default-deny),
+  closing a critical auth bypass: in 0.1.4 these two Twilio channels checked
+  only the `X-Twilio-Signature` (which proves Twilio relayed the message, not
+  that the *sender* is authorized), so any PSTN subscriber who texted the
+  number could drive the swarm with host shell access. They now match the
+  other channels: a valid signature plus an explicit allowlist member.
+
+### Changed (breaking)
+- The `sms` and `whatsapp` channels **require** an allowlist to start. Set
+  `SMS_ALLOWED_USER_IDS` / `WHATSAPP_ALLOWED_USER_IDS` (comma-separated) or
+  the `allowed_user_ids` config key, or the channel raises on startup. List
+  senders as Twilio delivers them: `+14155551234` for SMS,
+  `whatsapp:+14155551234` for WhatsApp. (Slack/Signal/Matrix already required
+  this as of 0.1.4 -- SMS/WhatsApp were missed.)
+
 ## [0.1.4] -- 2026-05-30
 
 The launch-hardening pass that landed just after the 0.1.3 tag was cut.
