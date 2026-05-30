@@ -25,9 +25,15 @@ from .budget import Budget
 
 
 # Latest Claude family as of 2026-05.
-MODEL_OPUS = "claude-opus-4-7"
+MODEL_OPUS = "claude-opus-4-8"
 MODEL_SONNET = "claude-sonnet-4-6"
 MODEL_HAIKU = "claude-haiku-4-5"
+
+# Opus 4.8 "fast mode": identical capability, ~2.5x faster output, billed
+# at 2x the standard Opus rate ($10/$50). Exposed as a distinct model id so
+# callers opt in explicitly; standard Opus stays the default so we never
+# silently double a user's bill.
+MODEL_OPUS_FAST = "claude-opus-4-8-fast"
 
 DEFAULT_MODEL = MODEL_SONNET
 
@@ -58,7 +64,9 @@ ROLE_MODELS: dict[str, str] = {
 # reconciles with $5/$25). Reverting to the correct ($5.0, $25.0).
 MODEL_PRICES: dict[str, tuple[float, float]] = {
     # Anthropic (verified May 2026 against platform.claude.com/docs/.../pricing)
-    MODEL_OPUS:                  (5.0, 25.0),    # opus 4.7 (also 4.5, 4.6)
+    MODEL_OPUS:                  (5.0, 25.0),    # opus 4.8 (also 4.5/4.6/4.7 — same $5/$25)
+    MODEL_OPUS_FAST:             (10.0, 50.0),   # opus 4.8 fast mode: 2.5x faster, 2x price
+    "claude-opus-4-7":           (5.0, 25.0),    # prior Opus, still selectable in config
     MODEL_SONNET:                (3.0, 15.0),    # sonnet 4.6
     MODEL_HAIKU:                 (1.0, 5.0),     # haiku 4.5
     # OpenAI (only enable after verifying against platform.openai.com/docs/pricing
@@ -86,7 +94,9 @@ MODEL_PRICES: dict[str, tuple[float, float]] = {
     "moonshot-v1-8k":            (0.30, 0.30),
     "moonshot-v1-32k":           (0.60, 0.60),
     "moonshot-v1-128k":          (1.20, 1.20),
-    # Google
+    # Google (Gemini 3.5 Flash GA at I/O 2026-05-19; 3.5 Pro followed in June)
+    "gemini-3.5-pro":            (2.50, 10.0),
+    "gemini-3.5-flash":          (0.15, 0.60),
     "gemini-3-pro":              (2.50, 10.0),
     "gemini-3-flash":            (0.15, 0.60),
     # Open-weight defaults via Ollama: priced at zero (compute cost).
