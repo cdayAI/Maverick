@@ -119,14 +119,24 @@ def test_audit_grep_requires_pattern(monkeypatch, tmp_path):
     assert r.status_code == 422 or r.status_code == 400  # required arg either way
 
 
-def test_audit_grep_rejects_bad_regex(monkeypatch, tmp_path):
+def test_audit_grep_treats_regex_tokens_as_literal_text(monkeypatch, tmp_path):
     monkeypatch.delenv("MAVERICK_DASHBOARD_TOKEN", raising=False)
+    from maverick.audit.writer import AuditLog
+    from maverick.audit.events import AuditEvent, EventKind
+    al = AuditLog(audit_dir=tmp_path / "audit")
+    al.record(AuditEvent(
+        ts=1.0, kind=EventKind.TOOL_CALL,
+        payload={"name": "has-parens", "input_summary": "(unclosed"}))
     import maverick.audit.writer as w
-    w._default = w.AuditLog(audit_dir=tmp_path / "audit")
+    w._default = al
     client = _client()
+    # A regex metacharacter that would be an invalid pattern is now matched
+    # literally (no ReDoS surface), so this returns the event, not a 400.
     r = client.get("/api/v1/audit/grep?pattern=(unclosed")
-    assert r.status_code == 400
-    assert "regex" in r.json()["detail"].lower()
+    assert r.status_code == 200
+    events = r.json()["events"]
+    assert len(events) == 1
+    assert events[0]["name"] == "has-parens"
 
 
 def test_audit_grep_finds_matching_events(monkeypatch, tmp_path):
