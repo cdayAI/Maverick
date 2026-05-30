@@ -60,6 +60,47 @@ CHANNELS: list[tuple[str, str, list[str]]] = [
 ]
 
 
+# Ordered advanced-flow steps, mirroring the pick_* sequence in run().
+# Purely a progress-bar aid: changing this list never changes the config.
+STEPS: list[tuple[str, str]] = [
+    ("deployment", "Deployment"),
+    ("providers", "Providers"),
+    ("role_models", "Models"),
+    ("channels", "Channels"),
+    ("safety", "Safety"),
+    ("budget", "Budget"),
+    ("sandbox", "Sandbox"),
+    ("capabilities", "Capabilities"),
+    ("web_search", "Web search"),
+    ("mcp_servers", "MCP servers"),
+    ("plugins", "Plugins"),
+    ("tool_acl", "Tool ACL"),
+    ("rate_limits", "Rate limits"),
+    ("retention", "Retention"),
+    ("persona", "Persona"),
+    ("notifications", "Notifications"),
+    ("webhooks", "Webhooks"),
+]
+
+
+def _step_indicator(index: int, *, done: list[str] | None = None) -> str:
+    """Format the ``Step N/M`` progress line for the ``index``-th step
+    (1-based), optionally trailed by a breadcrumb of completed labels.
+
+    Returns plain text (no Rich markup): styling is applied by the caller
+    via ``console.print(..., style=...)`` so the literal "Step N/M" text
+    stays contiguous in rendered output instead of being fragmented by
+    inline ANSI codes. Defined as a pure helper so tests can assert the
+    formatting without driving the whole wizard.
+    """
+    total = len(STEPS)
+    label = STEPS[index - 1][1] if 1 <= index <= total else ""
+    line = f"Step {index}/{total} {label}"
+    if done:
+        line += f"  ({' > '.join(done)})"
+    return line
+
+
 def _safe_int(s: str, *, default: int) -> int:
     """``int()`` that doesn't crash on whitespace, empty, or junk input."""
     try:
@@ -1883,10 +1924,22 @@ def run(fast: bool = False, resume: bool = False) -> int:
                 "starting fresh.\n"
             )
 
+    # Progress bar: announce "Step N/M <label>" before each pick_*, with a
+    # breadcrumb of steps already behind us. Purely cosmetic.
+    _done: list[str] = []
+    _step = [0]
+
+    def _announce() -> None:
+        _step[0] += 1
+        console.print(_step_indicator(_step[0], done=_done), style="bold cyan")
+        _done.append(STEPS[_step[0] - 1][1])
+
+    _announce()
     deployment = state.get("deployment") or pick_deployment()
     state["deployment"] = deployment
     _save_partial(state)
 
+    _announce()
     providers = state.get("providers") or pick_providers()
     while not providers:
         # Aborting on empty selection forced the user to restart the
@@ -1898,12 +1951,14 @@ def run(fast: bool = False, resume: bool = False) -> int:
     state["providers"] = providers
     _save_partial(state)
 
+    _announce()
     role_models = state.get("role_models")
     if role_models is None:
         role_models = pick_models_per_role(providers)
         state["role_models"] = role_models
         _save_partial(state)
 
+    _announce()
     channels_state = state.get("channels")
     if channels_state is None:
         channels, channel_envs = pick_channels(deployment)
@@ -1915,56 +1970,69 @@ def run(fast: bool = False, resume: bool = False) -> int:
         channels = channels_state
         channel_envs = set(state.get("channel_envs") or [])
 
+    _announce()
     safety = state.get("safety") or pick_safety()
     state["safety"] = safety
     _save_partial(state)
 
+    _announce()
     budget = state.get("budget") or pick_budget()
     state["budget"] = budget
     _save_partial(state)
 
+    _announce()
     sandbox = state.get("sandbox") or pick_sandbox()
     state["sandbox"] = sandbox
     _save_partial(state)
 
+    _announce()
     capabilities = state.get("capabilities") or pick_capabilities()
     state["capabilities"] = capabilities
     _save_partial(state)
 
+    _announce()
     web_search_enabled, web_search_envs = (
         state.get("_web_search_pair") or pick_web_search()
     )
     state["_web_search_pair"] = [web_search_enabled, web_search_envs]
     _save_partial(state)
 
+    _announce()
     mcp_servers = state.get("mcp_servers") or pick_mcp_servers()
     state["mcp_servers"] = mcp_servers
     _save_partial(state)
 
+    _announce()
     plugins = state.get("plugins") or pick_plugins()
     state["plugins"] = plugins
     _save_partial(state)
 
+    _announce()
     tool_acl = state.get("tool_acl") or pick_tool_acl(channels)
     state["tool_acl"] = tool_acl
     _save_partial(state)
 
+    _announce()
     rate_limits = state.get("rate_limits") or pick_rate_limits(channels)
     state["rate_limits"] = rate_limits
     _save_partial(state)
 
+    _announce()
     retention = state.get("retention") or pick_retention()
     state["retention"] = retention
     _save_partial(state)
 
+    _announce()
     persona = state.get("persona") or pick_persona()
     state["persona"] = persona
     _save_partial(state)
 
+    _announce()
     notifications, notify_envs = state.get("_notifications_pair") or pick_notifications()
     state["_notifications_pair"] = [notifications, notify_envs]
     _save_partial(state)
 
+    _announce()
     webhooks, webhook_envs = state.get("_webhooks_pair") or pick_webhooks()
     state["_webhooks_pair"] = [webhooks, webhook_envs]
     _save_partial(state)
