@@ -889,3 +889,25 @@ class WorldModel:
                 "DELETE FROM conversations WHERE last_seen < ?", (cutoff,)
             )
             return cur.rowcount
+
+
+def open_world(path: Path = DEFAULT_DB) -> Any:
+    """Open the configured world-model backend.
+
+    Returns the SQLite ``WorldModel`` by default. When the user opts into
+    Postgres (``[world_model] backend = "postgres"`` in config.toml or
+    ``MAVERICK_WORLD_BACKEND=postgres``), returns a ``PostgresWorldModel``
+    whose public surface mirrors ``WorldModel``; the ``path`` argument is
+    ignored in that case (Postgres uses a DSN, not a file).
+
+    The Postgres backend (and its ``psycopg`` dependency) is imported only
+    when selected, so the default SQLite path stays dependency-free and the
+    kernel runs without psycopg installed.
+    """
+    from .world_model_backends import is_postgres_configured
+
+    if is_postgres_configured():
+        from .world_model_backends import open_postgres_world
+
+        return open_postgres_world()
+    return WorldModel(path)
