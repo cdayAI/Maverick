@@ -46,8 +46,10 @@ def _key() -> str:
 
 def _get(path: str, params: dict) -> tuple[int, Any]:
     import httpx
-    r = httpx.get(f"{_API}{path}", params={**params, "apiKey": _key()},
-                  timeout=30.0)
+    # Key goes in the X-Api-Key header, never the query string: a URL with
+    # the key embedded leaks into httpx error reprs and any request log.
+    r = httpx.get(f"{_API}{path}", params=params,
+                  headers={"X-Api-Key": _key()}, timeout=30.0)
     try:
         return r.status_code, r.json()
     except ValueError:
