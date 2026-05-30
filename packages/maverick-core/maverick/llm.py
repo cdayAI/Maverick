@@ -301,18 +301,30 @@ class LLM:
         except ImportError:
             pass
         try:
-            from .observability import trace_span as _trace_span
+            from .observability import (
+                trace_span as _trace_span,
+                gen_ai_span_name as _gen_ai_span_name,
+                gen_ai_attributes as _gen_ai_attributes,
+            )
         except ImportError:  # pragma: no cover
             import contextlib
             def _trace_span(*a, **kw):  # type: ignore
                 return contextlib.nullcontext()
+            def _gen_ai_span_name(op, model):  # type: ignore
+                return f"{op} {model}"
+            def _gen_ai_attributes(*a, **kw):  # type: ignore
+                return {}
         _t0 = _time.time()
         _d0 = budget.dollars if budget else 0.0
         _err = False
         try:
-            with _trace_span("llm.complete", attributes={
-                "llm.provider": provider, "llm.model": model_id,
-            }):
+            with _trace_span(
+                _gen_ai_span_name("chat", model_id),
+                attributes={
+                    "llm.provider": provider, "llm.model": model_id,
+                    **_gen_ai_attributes(provider, model_id),
+                },
+            ):
                 return client.complete(**kwargs)
         except Exception:
             _err = True
@@ -359,18 +371,30 @@ class LLM:
         except ImportError:
             pass
         try:
-            from .observability import trace_span as _trace_span
+            from .observability import (
+                trace_span as _trace_span,
+                gen_ai_span_name as _gen_ai_span_name,
+                gen_ai_attributes as _gen_ai_attributes,
+            )
         except ImportError:  # pragma: no cover
             import contextlib
             def _trace_span(*a, **kw):  # type: ignore
                 return contextlib.nullcontext()
+            def _gen_ai_span_name(op, model):  # type: ignore
+                return f"{op} {model}"
+            def _gen_ai_attributes(*a, **kw):  # type: ignore
+                return {}
         _t0 = _time.time()
         _d0 = budget.dollars if budget else 0.0
         _err = False
         try:
-            with _trace_span("llm.complete", attributes={
-                "llm.provider": provider, "llm.model": model_id,
-            }):
+            with _trace_span(
+                _gen_ai_span_name("chat", model_id),
+                attributes={
+                    "llm.provider": provider, "llm.model": model_id,
+                    **_gen_ai_attributes(provider, model_id),
+                },
+            ):
                 return await client.complete_async(
                     system=system, messages=messages, tools=tools, budget=budget,
                     max_tokens=max_tokens, thinking_budget=thinking_budget, model=model_id,
