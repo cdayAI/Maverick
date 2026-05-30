@@ -12,42 +12,52 @@
 //! gnarly bits (winget/brew/apt, PATH, pipx, PEP 668). The shell stays
 //! tiny and there's a single source of truth for "how to install".
 
+use std::fs;
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-// Source the installer pulls from.
+// Source the installer pulls from. The desktop installer always pins
+// the checkout to the commit captured when the signed app was built.
 const REPO: &str = "cdayAI/Maverick";
-const GIT_REF: &str = "main";
+const GIT_REF: &str = env!("MAVERICK_INSTALL_REF");
+
+#[cfg(windows)]
+const INSTALL_SCRIPT: &str = include_str!("../../../../deploy/desktop/install.ps1");
+#[cfg(not(windows))]
+const INSTALL_SCRIPT: &str = include_str!("../../../../deploy/desktop/install.sh");
 
 /// Build the platform bootstrap command. Runs in headless mode
 /// (`MAVERICK_NO_WIZARD`) so the install completes without the
 /// interactive wizard, which a GUI can't drive over a pipe.
-fn bootstrap_command() -> Command {
+fn bootstrap_command() -> Result<Command, String> {
+    let extension = if cfg!(windows) { "ps1" } else { "sh" };
+    let script_path = std::env::temp_dir().join(format!(
+        "maverick-install-{}.{extension}",
+        std::process::id()
+    ));
+    fs::write(&script_path, INSTALL_SCRIPT)
+        .map_err(|e| format!("Could not stage the bundled installer script: {e}"))?;
+
     #[cfg(windows)]
     {
-        let url =
-            format!("https://raw.githubusercontent.com/{REPO}/{GIT_REF}/deploy/desktop/install.ps1");
-        let script = format!("$env:MAVERICK_NO_WIZARD='1'; irm {url} | iex");
         let mut c = Command::new("powershell");
-        c.args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ]);
-        c
+        c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+        c.arg(&script_path);
+        c.env("MAVERICK_NO_WIZARD", "1")
+            .env("MAVERICK_REPO", REPO)
+            .env("MAVERICK_REF", GIT_REF);
+        Ok(c)
     }
     #[cfg(not(windows))]
     {
-        let url =
-            format!("https://raw.githubusercontent.com/{REPO}/{GIT_REF}/deploy/desktop/install.sh");
-        let script = format!("export MAVERICK_NO_WIZARD=1; curl -fsSL {url} | bash");
         let mut c = Command::new("bash");
-        c.args(["-c", &script]);
-        c
+        c.arg(&script_path);
+        c.env("MAVERICK_NO_WIZARD", "1")
+            .env("MAVERICK_REPO", REPO)
+            .env("MAVERICK_REF", GIT_REF);
+        Ok(c)
     }
 }
 
@@ -55,7 +65,7 @@ fn bootstrap_command() -> Command {
 /// events, then emit `install-done` (success) or `install-failed`.
 #[tauri::command]
 async fn install(app: AppHandle) -> Result<(), String> {
-    let mut cmd = bootstrap_command();
+    let mut cmd = bootstrap_command()?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = cmd

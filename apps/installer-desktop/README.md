@@ -10,7 +10,7 @@ shell.
 
 ```
   +------------------+   invoke('install')    +-------------------+
-  | Svelte UI (TS)   | ─────────────────────► | Rust shell (lib)  |
+  | Svelte UI (TS)   | ────────────────────► | Rust shell (lib)  |
   |  Install button  | ◄───── events ──────── |  spawns bootstrap |
   +------------------+  install-log / -done    +---------+---------+
                                                           │
@@ -54,16 +54,22 @@ pnpm install
 pnpm tauri dev
 ```
 
-Hot-reloads the Svelte frontend. Clicking **Install** runs the real
+Hot-reloads the Svelte frontend. Clicking **Install** runs the bundled
 bootstrap, so test in a throwaway VM/container unless you actually want
-Maverick installed on your dev box. Point it at a fork/branch with build
-env vars: `MAVERICK_REPO=you/Maverick MAVERICK_REF=my-branch`.
+Maverick installed on your dev box. The desktop app pins the installed
+source to the git commit captured at build time; set
+`MAVERICK_INSTALL_REF=<commit-or-tag>` while building only when you need
+to override that ref intentionally.
 
 ## Producing native bundles
 
 ```bash
 pnpm tauri build
 ```
+
+The build script records `git rev-parse HEAD` as the install ref, so the
+signed GUI installer does not fetch and execute a mutable `main` branch
+bootstrap at install time.
 
 Outputs per platform:
 - macOS: `.app` + `.dmg` (sign + notarize for distribution)
