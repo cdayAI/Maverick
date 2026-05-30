@@ -49,6 +49,13 @@ jobs:
           if [ -f "ROADMAP.md" ] && [ ! -e "docs/ROADMAP.md" ]; then
             ln -s "../ROADMAP.md" "docs/ROADMAP.md"
           fi
+      - name: Configure Pages
+        # enablement: true turns GitHub Pages on (build type = GitHub Actions)
+        # if it isn't already, so a fresh clone/fork doesn't 404 until someone
+        # flips the repo setting by hand. No-op once Pages is enabled.
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - name: Build site
         run: mkdocs build --strict --site-dir _site
       - uses: actions/upload-pages-artifact@v5
