@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import Tool
+from .http_fetch import _scan_fetched
 
 log = logging.getLogger(__name__)
 
@@ -384,12 +385,13 @@ def _run_browser_action(args: dict[str, Any]) -> str:
         selector = args.get("selector")
         if selector:
             els = page.query_selector_all(selector)
-            return "\n".join((el.inner_text() or "").strip() for el in els)[:50_000]
-        # Whole-page text fallback.
-        body = page.query_selector("body")
-        if not body:
-            return ""
-        return (body.inner_text() or "").strip()[:50_000]
+            text = "\n".join((el.inner_text() or "").strip() for el in els)[:50_000]
+        else:
+            # Whole-page text fallback.
+            body = page.query_selector("body")
+            text = (body.inner_text() or "").strip()[:50_000] if body else ""
+        cleaned, warning = _scan_fetched(text)
+        return warning + cleaned
 
     if action == "extract_html":
         selector = args.get("selector")
