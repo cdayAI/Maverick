@@ -27,9 +27,11 @@ PROVIDERS: dict[str, dict] = {
         "label": "Anthropic Claude",
         "env": "ANTHROPIC_API_KEY",
         "models": [
-            {"id": "claude-opus-4-7",   "notes": "Smartest, slowest, most expensive. Best for orchestrator/revisor."},
-            {"id": "claude-sonnet-4-6", "notes": "Balanced. Recommended workhorse."},
-            {"id": "claude-haiku-4-5",  "notes": "Fast and cheap. Good for summarizer."},
+            {"id": "claude-opus-4-8",      "notes": "Smartest. Best for orchestrator/revisor."},
+            {"id": "claude-opus-4-8-fast", "notes": "Opus 4.8, ~2.5x faster output at 2x price ($10/$50)."},
+            {"id": "claude-opus-4-7",      "notes": "Prior Opus generation."},
+            {"id": "claude-sonnet-4-6",    "notes": "Balanced. Recommended workhorse."},
+            {"id": "claude-haiku-4-5",     "notes": "Fast and cheap. Good for summarizer."},
         ],
     },
     "openai": {
@@ -78,8 +80,8 @@ PROVIDERS: dict[str, dict] = {
         "label": "Google Gemini",
         "env": "GEMINI_API_KEY",
         "models": [
-            {"id": "gemini-3-pro",   "notes": "Long context, smart."},
-            {"id": "gemini-3-flash", "notes": "Fast and cheap."},
+            {"id": "gemini-3.5-pro",   "notes": "Long context, smart."},
+            {"id": "gemini-3.5-flash", "notes": "Fast and cheap."},
         ],
     },
     "openrouter": {
@@ -162,8 +164,8 @@ PROVIDERS: dict[str, dict] = {
         "session": True,
         "tool_support": False,
         "models": [
-            {"id": "gemini-3-pro",   "notes": "Long context, smart."},
-            {"id": "gemini-3-flash", "notes": "Fast and cheap."},
+            {"id": "gemini-3.5-pro",   "notes": "Long context, smart."},
+            {"id": "gemini-3.5-flash", "notes": "Fast and cheap."},
         ],
     },
 }
@@ -171,12 +173,12 @@ PROVIDERS: dict[str, dict] = {
 
 def default_for_role(role: str) -> str:
     return {
-        "orchestrator":    "anthropic:claude-opus-4-7",
+        "orchestrator":    "anthropic:claude-opus-4-8",
         "researcher":      "anthropic:claude-sonnet-4-6",
         "coder":           "anthropic:claude-sonnet-4-6",
         "writer":          "anthropic:claude-sonnet-4-6",
         "analyst":         "anthropic:claude-sonnet-4-6",
-        "revisor":         "anthropic:claude-opus-4-7",
+        "revisor":         "anthropic:claude-opus-4-8",
         "verifier":        "anthropic:claude-sonnet-4-6",
         "summarizer":      "anthropic:claude-haiku-4-5",
         "skill_distiller": "anthropic:claude-sonnet-4-6",
