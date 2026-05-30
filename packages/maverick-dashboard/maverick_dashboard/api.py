@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 from typing import Optional
 
 from maverick.runner import (
@@ -603,22 +604,22 @@ async def audit_tail(n: int = 100, day: Optional[str] = None) -> dict:
 
 @router.get("/audit/grep")
 async def audit_grep(pattern: str, day: Optional[str] = None) -> dict:
-    """Regex-search the audit log for the given day (default: today).
+    """Search recent audit events for the given literal pattern.
 
-    Mirrors the CLI's ``maverick audit grep <pattern>`` — exists in the
-    kernel as a method on AuditLog but had no HTTP surface before.
+    Intentionally uses bounded, literal matching for dashboard safety.
     """
     if not pattern:
         raise HTTPException(status_code=400, detail="pattern is required")
-    if len(pattern) > 500:
+    if len(pattern) > 200:
         raise HTTPException(status_code=400, detail="pattern too long")
-    try:
-        import re
-        re.compile(pattern)
-    except re.error as e:
-        raise HTTPException(status_code=400, detail=f"bad regex: {e}")
     from maverick.audit import default_audit_log
-    return {"events": default_audit_log().grep(pattern, day=day)}
+    events = default_audit_log().tail(1000, day=day)
+    needle = pattern.lower()
+    matches = [
+        e for e in events
+        if needle in json.dumps(e, ensure_ascii=False).lower()
+    ]
+    return {"events": matches[:200]}
 
 
 @router.get("/permissions")
