@@ -1,15 +1,18 @@
 """OTel GenAI semantic-convention attributes for LLM spans.
 
 Maverick already had opt-in OTel/Prometheus, but the LLM spans used ad-hoc
-attribute names (provider/model) that no OTel-aware backend understands
-without custom mapping. observability.gen_ai_attributes() / gen_ai_span_name()
-emit the standard gen_ai.* names so traces are legible to Grafana / Honeycomb
-/ Arize Phoenix out of the box. These pin the shape (no OTel install needed --
-the helpers are pure).
+attribute names and a generic span name that no OTel-aware backend
+understands without custom mapping. observability.gen_ai_attributes() /
+gen_ai_span_name() emit the standard gen_ai.* names so traces are legible to
+Grafana / Honeycomb / Arize Phoenix out of the box, and LLM.complete /
+complete_async name their span via the convention.
 """
 from __future__ import annotations
 
+import inspect
+
 from maverick import observability as obs
+from maverick import llm as llm_mod
 
 
 def test_span_name_is_operation_space_model():
@@ -41,50 +44,14 @@ def test_exports():
     assert "gen_ai_span_name" in obs.__all__
 
 
-def test_llm_span_emits_genai_attributes_when_traced(monkeypatch):
-    """End-to-end: LLM.complete sets the gen_ai.* span attributes via a
-    captured fake tracer (proves the call site wiring, not just the helper)."""
-    captured: dict = {}
-
-    class _FakeSpan:
-        def set_attribute(self, k, v):
-            captured[k] = v
-
-    import contextlib
-
-    @contextlib.contextmanager
-    def _fake_trace_span(name, *, attributes=None):
-        captured["__span_name__"] = name
-        if attributes:
-            captured.update(attributes)
-        yield _FakeSpan()
-
-    monkeypatch.setattr(obs, "trace_span", _fake_trace_span)
-    monkeypatch.setattr(obs, "record_metric", lambda *a, **k: None)
-
-    from maverick.llm import LLM, LLMResponse, _client_for  # noqa: F401
-    import maverick.llm as llm_mod
-
-    class _Usage:
-        input_tokens = 11
-        output_tokens = 7
-
-    class _Resp:
-        text = "ok"
-        thinking = None
-        tool_calls = []
-        usage = _Usage()
-
-    class _FakeClient:
-        def complete(self, **kw):
-            return _Resp()
-
-    monkeypatch.setattr(llm_mod, "_client_for", lambda provider: _FakeClient())
-
-    out = LLM(model="anthropic:claude-opus-4-8").complete(system="s", messages=[])
-    assert out.text == "ok"
-    assert captured["__span_name__"] == "chat claude-opus-4-8"
-    assert captured["gen_ai.system"] == "anthropic"
-    assert captured["gen_ai.request.model"] == "claude-opus-4-8"
-    assert captured["gen_ai.usage.input_tokens"] == 11
-    assert captured["gen_ai.usage.output_tokens"] == 7
+def test_llm_complete_paths_use_genai_span_helpers():
+    """Both the sync and async LLM entry points must name their OTel span via
+    the GenAI convention (gen_ai_span_name) and attach gen_ai_attributes --
+    not the old generic 'llm.complete' span. Source-level guard so it can't
+    silently regress to ad-hoc attribute names."""
+    src = inspect.getsource(llm_mod.LLM.complete)
+    src += inspect.getsource(llm_mod.LLM.complete_async)
+    assert "gen_ai_span_name(" in src
+    assert "gen_ai_attributes(" in src
+    # the old generic span name must be gone from both paths
+    assert '"llm.complete"' not in src
