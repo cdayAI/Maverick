@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import sys
 import traceback
@@ -29,6 +30,29 @@ SUPPORTED_PROTOCOL_VERSIONS = (
 )
 SERVER_NAME = "maverick"
 SERVER_VERSION = "0.2.0"
+
+
+def _bounded_float(value: Any, *, default: float, ceiling: float) -> float:
+    """Return a finite, non-negative value clamped to an operator ceiling."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    if not math.isfinite(parsed) or parsed < 0:
+        parsed = float(default)
+
+    try:
+        parsed_ceiling = float(ceiling)
+    except (TypeError, ValueError):
+        parsed_ceiling = float(default)
+    if not math.isfinite(parsed_ceiling) or parsed_ceiling < 0:
+        parsed_ceiling = float(default)
+
+    return min(parsed, parsed_ceiling)
+
+
+def _bounded_int(value: Any, *, default: int, ceiling: float) -> int:
+    return int(_bounded_float(value, default=float(default), ceiling=ceiling))
 
 
 class _ProtocolError(Exception):
@@ -364,24 +388,21 @@ class MCPServer:
         # operator's provider spend. Ceilings come from env and default to
         # the schema defaults (so the common case is unchanged); raise them
         # with MAVERICK_MCP_MAX_DOLLARS / _MAX_WALL_SECONDS / _MAX_DEPTH.
-        def _ceil(env_var: str, default: float) -> float:
-            try:
-                return float(os.environ.get(env_var) or default)
-            except (TypeError, ValueError):
-                return float(default)
-
-        def _req(val, default: float) -> float:
-            try:
-                return float(val)
-            except (TypeError, ValueError):
-                return float(default)
-
-        max_dollars = min(_req(args.get("max_dollars", 5.0), 5.0),
-                          _ceil("MAVERICK_MCP_MAX_DOLLARS", 5.0))
-        max_wall = min(_req(args.get("max_wall_seconds", 3600), 3600.0),
-                       _ceil("MAVERICK_MCP_MAX_WALL_SECONDS", 3600.0))
-        max_depth = int(min(_req(args.get("max_depth", 3), 3),
-                            _ceil("MAVERICK_MCP_MAX_DEPTH", 3)))
+        max_dollars = _bounded_float(
+            args.get("max_dollars", 5.0),
+            default=5.0,
+            ceiling=os.environ.get("MAVERICK_MCP_MAX_DOLLARS", 5.0),
+        )
+        max_wall = _bounded_float(
+            args.get("max_wall_seconds", 3600),
+            default=3600.0,
+            ceiling=os.environ.get("MAVERICK_MCP_MAX_WALL_SECONDS", 3600.0),
+        )
+        max_depth = _bounded_int(
+            args.get("max_depth", 3),
+            default=3,
+            ceiling=os.environ.get("MAVERICK_MCP_MAX_DEPTH", 3),
+        )
         budget = Budget(max_dollars=max_dollars, max_wall_seconds=max_wall)
         world = WorldModel()
         goal_id = world.create_goal(title, description)
