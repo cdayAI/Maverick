@@ -1,7 +1,7 @@
 """Q3 2026 batch 18.
 
   - sql_query tool: read-only-by-default SQLite querying, write rejection
-    (keyword guard + engine mode=ro), opt-in writes, params, row caps.
+    (keyword guard + engine mode=ro + authorizer), opt-in writes, params, row caps.
     Tested against a real stdlib sqlite3 db (no mocks).
 """
 from __future__ import annotations
@@ -38,18 +38,40 @@ def test_readonly_rejects_write_by_keyword(tmp_path):
     c.close()
 
 
-def test_readonly_engine_blocks_write(tmp_path):
-    """Even a write whose first keyword isn't flagged is blocked by mode=ro."""
+def test_readonly_rejects_commented_write_by_keyword(tmp_path):
     db = _mkdb(tmp_path)
-    # leading comment slips past the keyword guard; the engine still refuses.
     out = sql_query().fn({
         "database": str(db),
         "query": "/* sneaky */ UPDATE users SET name='x'",
     })
-    assert out.startswith("ERROR") and "sqlite" in out.lower()
+    assert out.startswith("ERROR") and "read-only" in out.lower()
     c = sqlite3.connect(db)
     assert c.execute("SELECT COUNT(*) FROM users WHERE name='x'").fetchone()[0] == 0
     c.close()
+
+
+def test_readonly_blocks_commented_attach_outside_workspace(tmp_path):
+    db = _mkdb(tmp_path)
+    outside = tmp_path.parent / "outside-attach.db"
+    outside.unlink(missing_ok=True)
+    out = sql_query().fn({
+        "database": str(db),
+        "query": f"/* sneaky */ ATTACH DATABASE '{outside}' AS escaped",
+    })
+    assert out.startswith("ERROR") and "read-only" in out.lower()
+    assert not outside.exists()
+
+
+def test_readonly_authorizer_blocks_commented_vacuum_into(tmp_path):
+    db = _mkdb(tmp_path)
+    outside = tmp_path.parent / "outside-vacuum.db"
+    outside.unlink(missing_ok=True)
+    out = sql_query().fn({
+        "database": str(db),
+        "query": f"/* sneaky */ VACUUM INTO '{outside}'",
+    })
+    assert out.startswith("ERROR")
+    assert not outside.exists()
 
 
 def test_write_allowed_when_read_only_false(tmp_path):
