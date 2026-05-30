@@ -36,18 +36,23 @@ Several items first logged under "Remaining" were then implemented and verified:
 | **Windows session loading wholly broken** — `cookie_store.load_session` enforced `0600`, which NTFS can't represent, so every load raised | high | `fix/config-home-isolation` (6cd37c9) | session tests 50→53 pass; guarded on `os.name=='nt'` |
 | **Test isolation / real-home pollution** — `Path.home()` ignored `$HOME` on Windows; suite read+wrote the dev's real `~/.maverick` | med | `fix/config-home-isolation` (6cd37c9) | autouse home fixture; full core suite **64→20** failures, no new regressions |
 | **`load_config` crashed on corrupt config.toml** | med | `fix/config-home-isolation` (6cd37c9) | new `test_corrupt_config_fails_soft_to_empty_dict` |
+| **`best_of_n` budget rollup dropped cache tokens + tool_calls** and never re-checked the parent cap across attempts | med | `fix/best-of-n-budget` (db70b99) | `Budget.merge_consumed` + 2 tests; the 2 best_of_n orchestrator tests still green |
+| **`preflight()` was dead code** — never called on the live LLM path | med | `fix/preflight-wiring` (3406314) | wired into `LLM.complete`/`complete_async`, warn-default + `MAVERICK_PREFLIGHT` strict/off knob; 4 mode tests; 41 preflight/agent-loop tests green |
 
 **Coding-mode `sandbox.exec()` routing (high, architecturally significant):** NOT
 implemented — written up for sign-off in `docs/proposals/coding-mode-sandbox-routing.md`
 (it changes behavior across every sandbox backend; the default `local` path is
 unaffected, so it's a fast-follow, not a v0.1.3 blocker).
 
-Still genuinely remaining (precise specs unchanged below): preflight wiring,
-best_of_n budget rollup, audit signed-chain re-anchoring, circuit_breaker
-HALF_OPEN, MCP protocol-version downgrade + wizard MCP-register, default-sandbox
-host-exec doc, install-script tag pinning doc, CSP nonces, the ~20 Windows-only
-POSIX-chmod/symlink/path-sep **test** cosmetics, and the pre-existing
-`test_integration_swe_smoke` failure (confirmed failing on clean main).
+Still genuinely remaining (precise specs unchanged below), now all LOW / doc /
+decision: audit signed-chain re-anchoring (only matters with `[audit] sign`),
+circuit_breaker HALF_OPEN single-probe (dead code — unwired), MCP
+protocol-version lexicographic downgrade + wizard MCP-server registration,
+default-sandbox host-exec doc, install-script tag-pinning doc, CSP nonces, the
+~20 Windows-only POSIX-chmod/symlink/path-sep **test** cosmetics, and the
+pre-existing `test_integration_swe_smoke` failure (confirmed failing on clean
+main). 16 fix branches now cover every launch-blocker + every high + the
+cleanly-fixable mediums.
 
 ## Fixed — branch, evidence
 
