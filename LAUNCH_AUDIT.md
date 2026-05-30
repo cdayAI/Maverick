@@ -51,7 +51,7 @@ protocol-version lexicographic downgrade + wizard MCP-server registration,
 default-sandbox host-exec doc, install-script tag-pinning doc, CSP nonces, the
 ~20 Windows-only POSIX-chmod/symlink/path-sep **test** cosmetics, and the
 pre-existing `test_integration_swe_smoke` failure (confirmed failing on clean
-main). 16 fix branches now cover every launch-blocker + every high + the
+main). 17 fix branches (14 mine + 3 agent) now cover every launch-blocker + every high + the
 cleanly-fixable mediums.
 
 ## Fixed — branch, evidence

@@ -58,7 +58,7 @@ _Human-only steps left after the automated hardening pass. Order matters._
 
 ## Opening the PRs (gh is NOT authenticated in this session)
 
-I committed 16 verified fix branches + 1 docs branch locally but **could not push
+I committed 17 verified fix branches (14 authored here + 3 from the mechanical-fix agents) + 1 docs branch locally but **could not push
 or open PRs** (no `gh` auth, and I won't risk a hanging credential prompt). To
 publish them:
 
