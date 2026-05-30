@@ -960,18 +960,18 @@ async def cost_csv(month: Optional[str] = None) -> StreamingResponse:
             start = _dt.datetime.strptime(month, "%Y-%m").replace(
                 tzinfo=_dt.timezone.utc
             )
+            # episodes.started_at is a UTC epoch, so build the window in UTC --
+            # a naive strptime().timestamp() interprets midnight in the server's
+            # LOCAL zone, shifting the month boundary by the UTC offset (the CSV
+            # then drops/keeps the wrong rows for anyone not running in UTC).
+            # Roll over by calendar month, not +31 days, which over-counts the
+            # short months (e.g. Feb would leak early-March rows).
+            if start.month == 12:
+                nxt = start.replace(year=start.year + 1, month=1)
+            else:
+                nxt = start.replace(month=start.month + 1)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"bad month: {e}")
-        # episodes.started_at is a UTC epoch, so build the window in UTC --
-        # a naive strptime().timestamp() interprets midnight in the server's
-        # LOCAL zone, shifting the month boundary by the UTC offset (the CSV
-        # then drops/keeps the wrong rows for anyone not running in UTC).
-        # Roll over by calendar month, not +31 days, which over-counts the
-        # short months (e.g. Feb would leak early-March rows).
-        if start.month == 12:
-            nxt = start.replace(year=start.year + 1, month=1)
-        else:
-            nxt = start.replace(month=start.month + 1)
         start_ts = start.timestamp()
         end_ts = nxt.timestamp()
 

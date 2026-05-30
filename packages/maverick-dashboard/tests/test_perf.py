@@ -253,3 +253,14 @@ def test_cost_csv_bad_month_400(monkeypatch, tmp_path: Path):
     client = _client()
     resp = client.get("/api/v1/cost.csv?month=not-a-month")
     assert resp.status_code == 400
+
+
+def test_cost_csv_max_december_month_400(monkeypatch, tmp_path: Path):
+    from maverick import world_model
+    monkeypatch.setattr(world_model, "DEFAULT_DB", tmp_path / "world.db")
+    monkeypatch.delenv("MAVERICK_DASHBOARD_TOKEN", raising=False)
+    from maverick_dashboard import app as dash_app
+    dash_app._world_cache.clear()
+    client = _client()
+    resp = client.get("/api/v1/cost.csv?month=9999-12")
+    assert resp.status_code == 400
