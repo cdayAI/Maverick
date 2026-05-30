@@ -1,17 +1,13 @@
 <#
   Maverick desktop bootstrap (Windows).
 
-  One-line install (PowerShell):
-    irm https://raw.githubusercontent.com/cdayAI/Maverick/main/deploy/desktop/install.ps1 | iex
+  Zero prerequisites. It installs Python 3.12 if missing, installs the
+  published Maverick package from PyPI into an isolated pipx environment,
+  and launches the wizard (`maverick init`).
 
-  Zero prerequisites. It installs Python 3.12 and Git if they are
-  missing (via winget), pulls Maverick, installs the agent + setup
-  wizard into an isolated pipx environment, and launches the wizard
-  (`maverick init`).
-
-  Pin or override the source first:
-    $env:MAVERICK_REPO = "owner/maverick"; $env:MAVERICK_REF = "main"
-    irm https://raw.githubusercontent.com/.../install.ps1 | iex
+  Advanced source installs must pin $env:MAVERICK_REF to a full
+  40-character commit SHA. Mutable branches/tags are rejected unless
+  $env:MAVERICK_ALLOW_UNPINNED = "1" is set explicitly.
 
   If Python is already installed but not detected, point straight at it:
     $env:MAVERICK_PYTHON = "C:\path\to\python.exe"
@@ -20,8 +16,9 @@
 $ErrorActionPreference = 'Stop'
 
 $Repo   = if ($env:MAVERICK_REPO) { $env:MAVERICK_REPO } else { 'cdayAI/Maverick' }
-$Ref    = if ($env:MAVERICK_REF)  { $env:MAVERICK_REF }  else { 'main' }
+$Ref    = if ($env:MAVERICK_REF)  { $env:MAVERICK_REF }  else { '' }
 $SrcDir = Join-Path $env:LOCALAPPDATA 'Maverick\src'
+$AllowUnpinned = if ($env:MAVERICK_ALLOW_UNPINNED) { $env:MAVERICK_ALLOW_UNPINNED } else { '' }
 
 # How to call the resolved Python: $PyExe + $PyPre (e.g. 'py' + '-3').
 $script:PyExe = $null
@@ -32,6 +29,21 @@ function Write-Warn($m) { Write-Host "!!  $m" -ForegroundColor Yellow }
 function Die($m) { throw "Maverick install failed: $m" }
 function Have($cmd) { [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 function Py { & $script:PyExe @($script:PyPre + $args) }
+
+function Test-PinnedRef($ref) {
+  return ($ref -match '^[0-9a-fA-F]{40}$')
+}
+
+function Ensure-SourcePin {
+  if (-not $Ref) { return }
+  if (Test-PinnedRef $Ref) { return }
+  if ($AllowUnpinned -eq '1') {
+    Write-Warn "Installing from unpinned ref '$Ref' because MAVERICK_ALLOW_UNPINNED=1."
+    return
+  }
+  Die "MAVERICK_REF must be a full 40-character commit SHA. Ref '$Ref' is mutable; set MAVERICK_ALLOW_UNPINNED=1 only for trusted local testing."
+}
+
 
 function Refresh-Path {
   # Merge the live machine + user PATH from the registry into this
@@ -147,6 +159,7 @@ function Resolve-Python {
 Write-Host ""
 Write-Host "Maverick desktop installer (Windows)" -ForegroundColor Green
 Write-Host ""
+Ensure-SourcePin
 
 # 1. Python 3.10+
 if (-not (Resolve-Python)) {
@@ -163,36 +176,46 @@ Reinstall from https://www.python.org/downloads/ with 'Add python.exe to PATH' t
 }
 Write-Step ("Using " + ((Py --version | Out-String).Trim()))
 
-# 2. Git
-if (-not (Have git)) { Ensure-Winget; Winget-Install 'Git.Git' }
-if (-not (Have git)) { Die "Git installed, but it isn't on PATH. Open a NEW PowerShell window and re-run." }
-
-# 3. pipx
+# 2. pipx
 Write-Step "Ensuring pipx ..."
 Py -m pip install --user --upgrade pip pipx | Out-Null
 Py -m pipx ensurepath | Out-Null
 
-# 4. Source
-if (Test-Path (Join-Path $SrcDir '.git')) {
-  Write-Step "Updating Maverick source ($Ref) ..."
-  git -C $SrcDir remote set-url origin "https://github.com/$Repo"
-  git -C $SrcDir fetch --depth 1 origin $Ref
-  git -C $SrcDir checkout -B $Ref FETCH_HEAD | Out-Null
-} else {
-  Write-Step "Downloading Maverick ($Repo@$Ref) ..."
-  New-Item -ItemType Directory -Force -Path (Split-Path $SrcDir) | Out-Null
-  git clone --depth 1 --branch $Ref "https://github.com/$Repo" $SrcDir
+function Ensure-GitForSource {
+  if (-not $Ref) { return }
+  if (-not (Have git)) { Ensure-Winget; Winget-Install 'Git.Git' }
+  if (-not (Have git)) { Die "Git installed, but it isn't on PATH. Open a NEW PowerShell window and re-run." }
 }
 
-# 5. Install agent + wizard into one pipx venv. maverick-installer is
-#    published to PyPI as of v0.1.3, so the [installer] extra resolves
-#    from PyPI; we inject the wizard from source (apps/installer-cli) as a
-#    pre-publish fallback and to pin it to this checkout.
-Write-Step "Installing the agent + setup wizard (this can take a minute) ..."
-Py -m pipx install --force (Join-Path $SrcDir 'packages\maverick-core')
-Py -m pipx inject --force maverick-agent (Join-Path $SrcDir 'apps\installer-cli')
+function Fetch-Source {
+  Ensure-SourcePin
+  Ensure-GitForSource
+  if (Test-Path (Join-Path $SrcDir '.git')) {
+    Write-Step "Updating Maverick source ($Repo@$Ref) ..."
+    git -C $SrcDir remote set-url origin "https://github.com/$Repo"
+    git -C $SrcDir fetch --depth 1 origin $Ref
+    git -C $SrcDir checkout --detach FETCH_HEAD | Out-Null
+  } else {
+    Write-Step "Downloading Maverick ($Repo@$Ref) ..."
+    Remove-Item -Recurse -Force $SrcDir -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path (Split-Path $SrcDir) | Out-Null
+    git clone --no-checkout --depth 1 "https://github.com/$Repo" $SrcDir
+    git -C $SrcDir fetch --depth 1 origin $Ref
+    git -C $SrcDir checkout --detach FETCH_HEAD | Out-Null
+  }
+}
 
-# 6. Locate the maverick shim and launch the wizard.
+# 3. Install agent + wizard into one pipx venv.
+Write-Step "Installing the agent + setup wizard (this can take a minute) ..."
+if ($Ref) {
+  Fetch-Source
+  Py -m pipx install --force (Join-Path $SrcDir 'packages\maverick-core')
+  Py -m pipx inject --force maverick-agent (Join-Path $SrcDir 'apps\installer-cli')
+} else {
+  Py -m pipx install --force 'maverick-agent[installer]'
+}
+
+# 4. Locate the maverick shim and launch the wizard.
 $binDir = $null
 try { $binDir = (Py -m pipx environment --value PIPX_BIN_DIR).Trim() } catch { }
 if (-not $binDir) { $binDir = Join-Path $env:USERPROFILE '.local\bin' }

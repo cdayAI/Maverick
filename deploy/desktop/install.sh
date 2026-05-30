@@ -1,23 +1,20 @@
 #!/usr/bin/env bash
 # Maverick desktop bootstrap (macOS / Linux).
 #
-# One-line install:
-#   curl -fsSL https://raw.githubusercontent.com/cdayAI/Maverick/main/deploy/desktop/install.sh | bash
+# Zero prerequisites. It installs Python 3 if missing, installs the
+# published Maverick package from PyPI into an isolated pipx environment,
+# and launches the wizard (`maverick init`).
 #
-# Zero prerequisites. It installs Python 3 and git if they are missing
-# (via brew / apt / dnf / pacman), pulls Maverick, installs the agent +
-# setup wizard into an isolated pipx environment, and launches the
-# wizard (`maverick init`).
-#
-# Pin or override the source before running:
-#   MAVERICK_REPO=owner/maverick MAVERICK_REF=main \
-#     curl -fsSL https://raw.githubusercontent.com/.../install.sh | bash
+# Advanced source installs must pin MAVERICK_REF to a full 40-character
+# commit SHA. Mutable branches/tags are rejected unless
+# MAVERICK_ALLOW_UNPINNED=1 is set explicitly.
 
 set -euo pipefail
 
 REPO="${MAVERICK_REPO:-cdayAI/Maverick}"
-REF="${MAVERICK_REF:-main}"
+REF="${MAVERICK_REF:-}"
 SRC_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/maverick/src"
+ALLOW_UNPINNED="${MAVERICK_ALLOW_UNPINNED:-}"
 
 log()  { printf '==> %s\n' "$*" >&2; }
 warn() { printf '!!  %s\n' "$*" >&2; }
@@ -75,27 +72,42 @@ ensure_pipx() {
   pipx_cmd ensurepath >/dev/null 2>&1 || true
 }
 
+validate_source_pin() {
+  [ -n "$REF" ] || return 0
+  case "$REF" in
+    [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) return 0 ;;
+  esac
+  [ "$ALLOW_UNPINNED" = "1" ] && { warn "Installing from unpinned ref '$REF' because MAVERICK_ALLOW_UNPINNED=1."; return 0; }
+  die "MAVERICK_REF must be a full 40-character commit SHA. Ref '$REF' is mutable; set MAVERICK_ALLOW_UNPINNED=1 only for trusted local testing."
+}
+
 fetch_source() {
+  validate_source_pin
   if [ -d "$SRC_DIR/.git" ]; then
-    log "Updating Maverick source ($REF) ..."
+    log "Updating Maverick source ($REPO@$REF) ..."
     git -C "$SRC_DIR" remote set-url origin "https://github.com/$REPO"
     git -C "$SRC_DIR" fetch --depth 1 origin "$REF"
-    git -C "$SRC_DIR" checkout -B "$REF" FETCH_HEAD >/dev/null 2>&1
+    git -C "$SRC_DIR" checkout --detach FETCH_HEAD >/dev/null 2>&1
   else
     log "Downloading Maverick ($REPO@$REF) ..."
+    rm -rf "$SRC_DIR"
     mkdir -p "$(dirname "$SRC_DIR")"
-    git clone --depth 1 --branch "$REF" "https://github.com/$REPO" "$SRC_DIR"
+    git clone --no-checkout --depth 1 "https://github.com/$REPO" "$SRC_DIR"
+    git -C "$SRC_DIR" fetch --depth 1 origin "$REF"
+    git -C "$SRC_DIR" checkout --detach FETCH_HEAD >/dev/null 2>&1
   fi
 }
 
 install_maverick() {
   log "Installing the agent + setup wizard (this can take a minute) ..."
-  pipx_cmd install --force "$SRC_DIR/packages/maverick-core"
-  # The wizard ships in apps/installer-cli; install it into the same venv.
-  # maverick-installer is published to PyPI as of v0.1.3, so the [installer]
-  # extra resolves from PyPI; this script injects from source as a
-  # pre-publish fallback and to pin the wizard to this checkout.
-  pipx_cmd inject --force maverick-agent "$SRC_DIR/apps/installer-cli"
+  if [ -n "$REF" ]; then
+    fetch_source
+    pipx_cmd install --force "$SRC_DIR/packages/maverick-core"
+    # The wizard ships in apps/installer-cli; install it into the same venv.
+    pipx_cmd inject --force maverick-agent "$SRC_DIR/apps/installer-cli"
+  else
+    pipx_cmd install --force 'maverick-agent[installer]'
+  fi
 }
 
 run_wizard() {
@@ -118,10 +130,10 @@ run_wizard() {
 
 main() {
   printf '\nMaverick desktop installer\n\n'
-  ensure_git
+  validate_source_pin
   ensure_python
   ensure_pipx
-  fetch_source
+  [ -z "$REF" ] || ensure_git
   install_maverick
   # The desktop GUI installer sets MAVERICK_NO_WIZARD: do the install but
   # skip the interactive wizard (the app then points the user at
