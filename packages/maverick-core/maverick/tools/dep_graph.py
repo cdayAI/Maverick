@@ -98,7 +98,10 @@ def _parse_module(path: Path, root: Path) -> dict[str, Any] | None:
         tree = ast.parse(src, filename=str(path))
     except SyntaxError:
         return None
-    rel = str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
+    # as_posix() so the dep-graph emits forward-slash paths on every platform
+    # (the output feeds the LLM, which expects POSIX-style paths, and matches
+    # the repo's own import style) -- str() yields backslashes on Windows.
+    rel = path.relative_to(root).as_posix() if path.is_relative_to(root) else path.as_posix()
 
     imports: list[str] = []
     symbols: list[tuple[str, str, int]] = []  # (kind, name, lineno)
