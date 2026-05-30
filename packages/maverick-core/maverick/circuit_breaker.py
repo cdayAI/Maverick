@@ -123,6 +123,7 @@ class CircuitBreaker:
 
     def call(self, fn: Callable[[], T]) -> T:
         """Run ``fn`` if allowed; raise ``CircuitOpen`` otherwise."""
+        probe_started = False
         with self._lock:
             self._tick(now=time.time())
             if self._state is CircuitState.OPEN:
@@ -140,10 +141,15 @@ class CircuitBreaker:
                         f"circuit {self.key!r} HALF_OPEN: a probe is already in flight"
                     )
                 self._probe_in_flight = True
+                probe_started = True
         try:
             result = fn()
         except Exception:
             self.record_failure()
+            raise
+        except BaseException:
+            if probe_started:
+                self.record_failure()
             raise
         self.record_success()
         return result
