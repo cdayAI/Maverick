@@ -22,6 +22,14 @@ Post-0.1.4 security fixes found by the adversarial pre-launch audit.
   the trust anchor. erase re-chains and re-signs the affected files (the
   signed `erase` marker records the authorized cut) so verification passes
   again. Also de-duplicated a double `scrub_user` call in the erase path.
+- Bumped dependency floors past known CVEs on the network-facing surfaces:
+  `pillow>=12.2.0` (5 CVEs incl. PYSEC-2026-165), `python-multipart>=0.0.27`
+  (CVE-2026-42561), `requests>=2.33.0` (CVE-2026-25645), `starlette>=1.0.1`
+  (PYSEC-2026-161), `urllib3>=2.7.0` (PYSEC-2026-142/141). starlette is
+  declared directly where the dashboard imports it; requests/urllib3 are
+  floored in the Twilio (`sms`/`whatsapp`) extras that pull them in.
+- The CI `pip-audit` job is now blocking, so a new advisory fails the build
+  and prompts a floor bump instead of shipping silently.
 
 ### Changed (breaking)
 - The `sms` and `whatsapp` channels **require** an allowlist to start. Set
