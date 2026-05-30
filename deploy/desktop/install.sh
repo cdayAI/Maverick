@@ -79,13 +79,15 @@ fetch_source() {
   if [ -d "$SRC_DIR/.git" ]; then
     log "Updating Maverick source ($REF) ..."
     git -C "$SRC_DIR" remote set-url origin "https://github.com/$REPO"
-    git -C "$SRC_DIR" fetch --depth 1 origin "$REF"
-    git -C "$SRC_DIR" checkout -B "$REF" FETCH_HEAD >/dev/null 2>&1
   else
     log "Downloading Maverick ($REPO@$REF) ..."
     mkdir -p "$(dirname "$SRC_DIR")"
-    git clone --depth 1 --branch "$REF" "https://github.com/$REPO" "$SRC_DIR"
+    git init "$SRC_DIR" >/dev/null
+    git -C "$SRC_DIR" remote add origin "https://github.com/$REPO"
   fi
+
+  git -C "$SRC_DIR" fetch --depth 1 origin "$REF"
+  git -C "$SRC_DIR" checkout --detach FETCH_HEAD >/dev/null 2>&1
 }
 
 install_maverick() {

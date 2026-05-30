@@ -176,13 +176,15 @@ Py -m pipx ensurepath | Out-Null
 if (Test-Path (Join-Path $SrcDir '.git')) {
   Write-Step "Updating Maverick source ($Ref) ..."
   git -C $SrcDir remote set-url origin "https://github.com/$Repo"
-  git -C $SrcDir fetch --depth 1 origin $Ref
-  git -C $SrcDir checkout -B $Ref FETCH_HEAD | Out-Null
 } else {
   Write-Step "Downloading Maverick ($Repo@$Ref) ..."
   New-Item -ItemType Directory -Force -Path (Split-Path $SrcDir) | Out-Null
-  git clone --depth 1 --branch $Ref "https://github.com/$Repo" $SrcDir
+  git init $SrcDir | Out-Null
+  git -C $SrcDir remote add origin "https://github.com/$Repo"
 }
+
+git -C $SrcDir fetch --depth 1 origin $Ref
+git -C $SrcDir checkout --detach FETCH_HEAD | Out-Null
 
 # 5. Install agent + wizard into one pipx venv. maverick-installer is
 #    published to PyPI as of v0.1.3, so the [installer] extra resolves
