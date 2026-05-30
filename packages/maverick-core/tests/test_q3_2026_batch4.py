@@ -339,8 +339,15 @@ def test_llm_complete_opens_span(monkeypatch):
     llm.complete(system="s", messages=[{"role": "user", "content": "hi"}])
     assert seen["calls"]
     name, attrs = seen["calls"][0]
-    assert name == "llm.complete"
-    assert attrs and attrs.get("llm.provider") == "anthropic"
+    # The LLM span now follows the OTel GenAI semantic conventions: span name
+    # "<operation> <model>" plus gen_ai.* attributes. The legacy llm.provider
+    # attribute is kept alongside for back-compat. (Assert on the convention
+    # shape, not the exact model-id spelling, so the test doesn't couple to
+    # how the id is normalized.)
+    assert name.startswith("chat claude-haiku-4-5")
+    assert attrs and attrs.get("gen_ai.system") == "anthropic"
+    assert attrs.get("gen_ai.request.model") == name.split(" ", 1)[1]
+    assert attrs.get("llm.provider") == "anthropic"
 
 
 # ---------- registration smoke ----------
