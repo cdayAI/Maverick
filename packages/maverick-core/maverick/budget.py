@@ -171,6 +171,27 @@ class Budget:
             self.tool_calls += 1
             self.check()
 
+    def merge_consumed(self, other: "Budget") -> None:
+        """Roll another Budget's CONSUMED counters into this one and re-check.
+
+        Used to fold a best-of-N sub-attempt's spend back into the parent.
+        Rolls up ALL counters (dollars, input/output, cache reads/writes,
+        tool_calls) -- the prior call sites added only dollars/input/output,
+        so cache tokens + tool_calls vanished from the parent's reported spend
+        and the parent caps were never re-enforced across attempts. Raises
+        BudgetExceeded (via check(), inside the lock) when the aggregate is
+        over a cap, so the caller can stop spawning further attempts. The
+        counters are added BEFORE the check, so the parent reflects the spend
+        even when this raises (no lost/double spend)."""
+        with self._lock:
+            self.dollars += other.dollars
+            self.input_tokens += other.input_tokens
+            self.output_tokens += other.output_tokens
+            self.cache_read_tokens += other.cache_read_tokens
+            self.cache_write_tokens += other.cache_write_tokens
+            self.tool_calls += other.tool_calls
+            self.check()
+
     def elapsed(self) -> float:
         # Wave 12: use monotonic so NTP clock-skew doesn't bypass the wall
         # cap. `started_at` is captured in __post_init__ for monotonic.

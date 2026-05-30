@@ -456,10 +456,12 @@ async def run_goal_best_of_n(
                     index=i, patch="", score=0.0,
                     apply_check_passed=False, error=str(e),
                 ))
-                # Roll the spend into the parent budget so we don't lie.
-                budget.dollars += attempt_budget.dollars
-                budget.input_tokens += attempt_budget.input_tokens
-                budget.output_tokens += attempt_budget.output_tokens
+                # Roll ALL of the failed attempt's spend into the parent so
+                # the summary is honest; stop if the aggregate hit a cap.
+                try:
+                    budget.merge_consumed(attempt_budget)
+                except BudgetExceeded:
+                    break
                 continue
         finally:
             # Restore env so the next call site isn't surprised.
@@ -468,9 +470,15 @@ async def run_goal_best_of_n(
             else:
                 os.environ["MAVERICK_TEMPERATURE"] = prior_temp
 
-        budget.dollars += attempt_budget.dollars
-        budget.input_tokens += attempt_budget.input_tokens
-        budget.output_tokens += attempt_budget.output_tokens
+        # Roll ALL of this attempt's spend into the parent (cache tokens +
+        # tool_calls included, not just dollars/in/out) and note if the
+        # aggregate hit a cap -- we still evaluate this paid-for candidate,
+        # then stop spawning further attempts.
+        cap_reached = False
+        try:
+            budget.merge_consumed(attempt_budget)
+        except BudgetExceeded:
+            cap_reached = True
 
         patch = extract_unified_diff(answer) or ""
         from pathlib import Path as _Path
@@ -482,6 +490,11 @@ async def run_goal_best_of_n(
             # Early exit: a candidate that passes ALL tests is as good
             # as it gets; don't pay for the remaining N-1 attempts.
             log.info("best-of-N early exit at attempt %d: all tests pass", i)
+            break
+        if cap_reached:
+            log.info(
+                "best-of-N: parent budget cap reached after attempt %d; stopping", i,
+            )
             break
 
     best = select_best_candidate(candidates)
