@@ -94,7 +94,7 @@ trust everyone who can DM the bot.**
 writer is running produces a torn copy. To back up safely:
 
 ```sh
-sqlite3 ~/.maverick/world.db ".backup ~/maverick-backup-$(date +%Y%m%d).db"
+sqlite3 "$HOME/.maverick/world.db" ".backup $HOME/maverick-backup-$(date +%Y%m%d).db"
 ```
 
 The `sqlite3 ... ".backup ..."` dot-command uses
