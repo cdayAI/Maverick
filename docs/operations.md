@@ -94,11 +94,13 @@ trust everyone who can DM the bot.**
 writer is running produces a torn copy. To back up safely:
 
 ```sh
-maverick backup ~/maverick-backup-$(date +%Y%m%d).db
+sqlite3 ~/.maverick/world.db ".backup ~/maverick-backup-$(date +%Y%m%d).db"
 ```
 
-The `backup` command (when wired) uses `sqlite3.Connection.backup()`
-which is online + concurrent-write-safe. Without it:
+The `sqlite3 ... ".backup ..."` dot-command uses
+`sqlite3.Connection.backup()` under the hood — online +
+concurrent-write-safe. If `sqlite3` isn't installed, stop the writers
+and copy:
 
 ```sh
 # Stop the writers first.

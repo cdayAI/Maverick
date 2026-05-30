@@ -48,7 +48,7 @@ scan_tool_calls = true
 scan_output     = true
 
 [sandbox]
-backend = "local"                   # local | docker | ssh
+backend = "local"                   # local | docker | ssh | podman | devcontainer | firecracker | kubernetes
 workdir = "~/maverick-workspace"
 timeout = 60
 

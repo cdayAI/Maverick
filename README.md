@@ -24,7 +24,7 @@ Alpha, but **installable today**: all six packages are on [PyPI](https://pypi.or
 | Install | **Native installer (`.exe` / `.dmg` / `.AppImage`)**, one-line bootstrap (`install.ps1` / `install.sh`), pipx, or from source | Code-signed bundles + auto-update |
 | GUI | Native installer app + local web dashboard (`maverick dashboard`) + chat at `/chat` | Native Tauri shell for the agent itself + iOS/Android |
 | Sandbox | Local subprocess, Docker, SSH, Podman, devcontainer | Firecracker, Modal, Daytona |
-| AI providers | Anthropic (full), OpenAI, OpenRouter, Ollama, Gemini, DeepSeek (per-role routable) | Bedrock, Cohere |
+| AI providers | Anthropic (full), OpenAI, OpenRouter, Ollama, Gemini, DeepSeek, Bedrock, Azure, xAI, Moonshot, TGI, vLLM (per-role routable) | Cohere |
 | Channels | Telegram, Discord, Slack, Signal, Email, Matrix, Bluesky, Mastodon (ready); WhatsApp, SMS, iMessage (scaffolds) | Push notifications, voice |
 | Safety | Shield wired at 3 chokepoints; agent-shield SDK if installed, else 20 builtin rules | Agent-shield full ~115 patterns |
 | Distribution | PyPI (6 packages), GHCR image, PyInstaller binaries, **native installers on Releases** | Code signing; Homebrew tap |
@@ -125,7 +125,7 @@ maverick version                         # installed package versions
 ```
 packages/
   maverick-core/       Python agent kernel: recursive swarm, persistent world
-                       model (SQLite + FTS5 + schema v3), 5 LLM providers, 3
+                       model (SQLite + FTS5 + schema v8), 12 LLM providers, 7
                        sandboxes, MCP client, skills, templates, persona,
                        background runner, budget tracking
   maverick-shield/     Agent Shield integration + 20-pattern builtin fallback

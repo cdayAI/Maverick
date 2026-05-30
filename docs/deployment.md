@@ -15,8 +15,11 @@ Runs as your user. Stores everything under `~/.maverick/`. The sandbox
 `workdir` defaults to `~/maverick-workspace/`. Nothing listens on a
 network port unless you enable a channel that needs one (WhatsApp/SMS).
 
-**Coming soon:** native single-file builds (PyInstaller / nuitka) and a
-notarized Tauri-based GUI installer for users who don't open terminals.
+**Available now:** native single-file builds (PyInstaller) and a
+Tauri-based GUI installer for users who don't open terminals — see the
+[latest release](https://github.com/cdayAI/Maverick/releases/latest).
+Both are currently **unsigned** (first launch shows an "unknown
+developer" prompt); code signing + notarization are still coming.
 
 ## Docker
 
