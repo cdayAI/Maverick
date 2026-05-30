@@ -10,7 +10,6 @@ plus the relevant output; on failure, the full stderr is included.
 from __future__ import annotations
 
 import logging
-import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -52,10 +51,16 @@ _GIT_SCHEMA: dict[str, Any] = {
 
 def _run_git(workdir: Path, args: list[str], *, timeout: int = 30) -> tuple[int, str, str]:
     cmd = ["git", "-C", str(workdir), *args]
+    # Scrub secrets from the child env: git plumbing has no need for provider
+    # keys / tokens, and inheriting full os.environ would let a hostile repo
+    # config (e.g. a malicious `core.pager`/`gpg.program`) read them.
+    from ..sandbox.local import scrub_env
+    child_env = scrub_env()
+    child_env["GIT_PAGER"] = ""
     try:
         proc = subprocess.run(
             cmd, capture_output=True, timeout=timeout,
-            env={**os.environ, "GIT_PAGER": ""},
+            env=child_env,
         )
     except subprocess.TimeoutExpired:
         return 124, "", f"timeout after {timeout}s: {shlex.join(cmd)}"

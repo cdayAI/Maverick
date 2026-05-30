@@ -29,6 +29,12 @@ from typing import Any
 from . import Tool
 from .http_fetch import _is_private_ip
 
+
+
+def _scrub() -> dict:
+    """Child env with secrets stripped (shared tools.scrub_child_env)."""
+    from . import scrub_child_env
+    return scrub_child_env()
 log = logging.getLogger(__name__)
 
 
@@ -74,7 +80,7 @@ def _run_tesseract(path: str, lang: str) -> str:
         # `-` for stdout, suppress info noise on stderr.
         r = subprocess.run(
             ["tesseract", path, "-", "-l", lang, "--psm", "3"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=120, env=_scrub(),
         )
     except subprocess.TimeoutExpired:
         return "ERROR: tesseract TIMEOUT"

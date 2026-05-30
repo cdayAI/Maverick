@@ -30,6 +30,73 @@ def as_bool(value: Any) -> bool:
     """
     return value is True
 
+
+def scrub_child_env() -> dict[str, Any]:
+    """Env for a tool subprocess with secrets stripped.
+
+    Tools that shell out (git/ffmpeg/pandoc/tesseract/adb/...) have no need
+    for provider keys or connector tokens; inheriting the full ``os.environ``
+    let a prompt-injected agent (or a hostile input file / repo config) read
+    them out of the child. Reuse the sandbox's deny-by-pattern scrubber so a
+    newly added credential is covered by default.
+    """
+    from ..sandbox.local import scrub_env
+    return scrub_env()
+
+
+# Media-tool flags that turn "convert a file" into arbitrary code exec or
+# arbitrary file/URL read when injected via a freeform args[] array.
+_DANGEROUS_MEDIA_FLAGS = (
+    "-i", "--input", "-f", "--from", "--lua-filter", "--filter",
+    "-lavfi", "-filter_complex", "-vf", "-af", "concat:",
+    "--include-in-header", "--include-before-body", "--include-after-body",
+    "--template", "--metadata-file", "--resource-path", "--extract-media",
+    "--pdf-engine", "--syntax-definition", "--abbreviations", "--data-dir",
+)
+
+
+def safe_media_args(raw: Any) -> list[str]:
+    """Filter a model-supplied freeform args[] list for media tools.
+
+    By default DROP dangerous flags (input/filter/template injection that
+    bypasses the tool's path confinement -- e.g. ``pandoc --lua-filter=x.lua``
+    = arbitrary code, ``ffmpeg -i /etc/passwd`` = arbitrary file read). An
+    operator who genuinely needs raw passthrough can opt in with
+    ``MAVERICK_ALLOW_RAW_MEDIA_ARGS=1`` (then the list passes verbatim).
+    """
+    items = [str(a) for a in (raw or [])]
+    if _env_true("MAVERICK_ALLOW_RAW_MEDIA_ARGS"):
+        return items
+    safe: list[str] = []
+    skip_next = False
+    for a in items:
+        if skip_next:
+            # This token is the value of a dropped flag (e.g. the path after
+            # a bare `-i`); drop it too.
+            skip_next = False
+            continue
+        low = a.lower()
+        dangerous = False
+        takes_value = False
+        for f in _DANGEROUS_MEDIA_FLAGS:
+            if f.endswith(":"):
+                if low.startswith(f):          # e.g. concat:...
+                    dangerous = True
+                    break
+            elif low == f:                     # bare flag -> value is the next token
+                dangerous = True
+                takes_value = True
+                break
+            elif low.startswith(f + "="):      # flag=value -> self-contained
+                dangerous = True
+                break
+        if dangerous:
+            skip_next = takes_value
+            continue
+        safe.append(a)
+    return safe
+
+
 ToolFn = Callable[[dict[str, Any]], Union[str, Awaitable[str]]]
 
 

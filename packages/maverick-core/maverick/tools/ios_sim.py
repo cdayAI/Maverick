@@ -27,6 +27,12 @@ from typing import Any
 
 from . import Tool
 
+
+
+def _scrub() -> dict:
+    """Child env with secrets stripped (shared tools.scrub_child_env)."""
+    from . import scrub_child_env
+    return scrub_child_env()
 log = logging.getLogger(__name__)
 
 
@@ -61,7 +67,7 @@ def _xcrun_present() -> bool:
 def _simctl(args: list[str], *, timeout: float = 60.0) -> tuple[int, str, str]:
     cmd = ["xcrun", "simctl", *args]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=_scrub())
         return r.returncode, r.stdout or "", r.stderr or ""
     except subprocess.TimeoutExpired:
         return 124, "", f"TIMEOUT after {timeout}s"

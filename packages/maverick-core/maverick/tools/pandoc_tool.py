@@ -18,6 +18,12 @@ from typing import Any
 
 from . import Tool
 
+
+
+def _scrub() -> dict:
+    """Child env with secrets stripped (shared tools.scrub_child_env)."""
+    from . import scrub_child_env
+    return scrub_child_env()
 log = logging.getLogger(__name__)
 
 
@@ -76,8 +82,9 @@ def _op_convert(args: dict, sandbox) -> str:
         cmd.extend(["-f", str(args["from_"])])
     if args.get("to"):
         cmd.extend(["-t", str(args["to"])])
-    cmd.extend(str(a) for a in (args.get("args") or []))
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    from . import safe_media_args
+    cmd.extend(safe_media_args(args.get("args")))
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=_scrub())
     if r.returncode != 0:
         return f"ERROR: pandoc ({r.returncode}): {r.stderr.strip()[-300:]}"
     return f"wrote {dst}"
@@ -88,10 +95,10 @@ def _op_formats(_args: dict) -> str:
     if err:
         return err
     in_ = subprocess.run(
-        ["pandoc", "--list-input-formats"], capture_output=True, text=True,
+        ["pandoc", "--list-input-formats"], capture_output=True, text=True, env=_scrub(),
     )
     out = subprocess.run(
-        ["pandoc", "--list-output-formats"], capture_output=True, text=True,
+        ["pandoc", "--list-output-formats"], capture_output=True, text=True, env=_scrub(),
     )
     return (
         f"input formats:\n{in_.stdout.strip()}\n\n"
@@ -107,7 +114,7 @@ def _string_convert(text: str, from_: str, to: str) -> str:
         return "ERROR: text is required"
     r = subprocess.run(
         ["pandoc", "-f", from_, "-t", to],
-        input=text, capture_output=True, text=True, timeout=60,
+        input=text, capture_output=True, text=True, timeout=60, env=_scrub(),
     )
     if r.returncode != 0:
         return f"ERROR: pandoc ({r.returncode}): {r.stderr.strip()[-300:]}"

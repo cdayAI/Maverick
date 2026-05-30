@@ -11,7 +11,6 @@ the agent calls preview_diff to verify its work matches intent.
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -65,10 +64,13 @@ def _run_factory(sandbox):
         for p in (args.get("paths") or []):
             cmd.append("--")
             cmd.append(str(p))
+        from ..sandbox.local import scrub_env
+        child_env = scrub_env()
+        child_env["GIT_PAGER"] = ""
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, timeout=15,
-                env={**os.environ, "GIT_PAGER": ""},
+                env=child_env,
             )
         except subprocess.TimeoutExpired:
             return "ERROR: git diff timed out (15s)"
