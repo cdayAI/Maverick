@@ -77,8 +77,8 @@ api_version      = "1"
 kind             = "{kind}"
 author           = "your name"
 license          = "MIT"
-repository       = "https://github.com/your-org/{slug}"
-summary          = "A {kind} plugin for Maverick"
+repo             = "https://github.com/your-org/{slug}"
+description      = "A {kind} plugin for Maverick"
 
 [plugin.permissions]
 # Declare what your plugin actually needs. The kernel uses these to

@@ -167,3 +167,17 @@ def test_emitted_pytest_smoke_runs(tmp_path: Path):
     assert result.returncode == 0, (
         f"emitted test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
+
+
+def test_scaffolded_manifest_parses_with_repo_and_description(tmp_path: Path):
+    """The generated maverick-plugin.toml must round-trip through the
+    manifest parser: scaffold emitted `repository`/`summary` keys the
+    parser never reads (it wants `repo`/`description`), silently dropping
+    both fields."""
+    from maverick.plugin_manifest import parse
+    scaffold("hello-tool", "tool", dest=tmp_path)
+    manifest_path = tmp_path / "hello-tool" / "maverick-plugin.toml"
+    parsed = parse(manifest_path)
+    assert parsed is not None
+    assert parsed.repo and "hello-tool" in parsed.repo
+    assert parsed.description and "tool" in parsed.description
