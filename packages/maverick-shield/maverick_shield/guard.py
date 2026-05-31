@@ -33,6 +33,31 @@ except ImportError:
     AgentShield = None  # type: ignore
 
 
+def _arg_strings(obj: Any) -> list[str]:
+    """Recursively collect every string leaf of a tool-args structure.
+
+    Used so scan_tool_call sees the actual command/path tokens even when a
+    payload is split across a list or nested dict, which repr(args) would
+    bury behind quotes/commas.
+    """
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, bytes):
+        return [obj.decode("utf-8", "replace")]
+    if isinstance(obj, dict):
+        out: list[str] = []
+        for k, v in obj.items():
+            out.append(str(k))
+            out.extend(_arg_strings(v))
+        return out
+    if isinstance(obj, (list, tuple, set)):
+        out = []
+        for v in obj:
+            out.extend(_arg_strings(v))
+        return out
+    return [str(obj)]
+
+
 @dataclass
 class ShieldVerdict:
     allowed: bool
@@ -63,6 +88,12 @@ class Shield:
         backend: str = "auto",
         warn_if_missing: bool = True,
     ):
+        # Normalize: profile/threshold/backend come from user-typed TOML, and
+        # the comparisons below (== "off"/"strict"/"none") plus the severity
+        # lookup are case-sensitive -- "Off"/"NONE" silently failed to apply.
+        profile = (profile or "balanced").strip().lower()
+        block_threshold = (block_threshold or "high").strip().lower()
+        backend = (backend or "auto").strip().lower()
         self.profile = profile
         self.block_threshold = block_threshold
 
@@ -145,7 +176,12 @@ class Shield:
         return self._scan_via_backend(text)
 
     def scan_tool_call(self, tool_name: str, args: dict) -> ShieldVerdict:
-        payload = f"tool={tool_name} args={args!r}"
+        # Scan every string leaf of args, not repr(args). repr() inserts quotes
+        # and commas between tokens, so a dangerous payload split across a list
+        # or nested dict (e.g. {"argv": ["rm","-rf","/"]}) never matched the
+        # plain-text rules (`rm\s+-rf\s+/`). Joining the leaves with spaces puts
+        # them back on a scannable line.
+        payload = f"tool={tool_name} " + " ".join(_arg_strings(args))
         return self._scan_via_backend(payload)
 
     def scan_output(self, text: str, known_prompt: str | None = None) -> ShieldVerdict:

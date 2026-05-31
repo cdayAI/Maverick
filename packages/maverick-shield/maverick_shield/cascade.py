@@ -164,23 +164,28 @@ class CascadedShield:
         # cheap-probe step saves measurable compute.
         return self.base.scan_tool_call(tool_name, args)
 
-    def scan_output(self, text: str):
+    def scan_output(self, text: str, known_prompt: str | None = None):
         probe = cheap_probe(text)
-        if probe.flagged or probe.score >= self.deep_threshold:
-            verdict = (
-                self.deep_scan_output(text) if self.deep_scan_output
-                else self.base.scan_output(text)
-            )
-            if probe.reasons and getattr(verdict, "reasons", None) is not None:
-                try:
-                    verdict.reasons = list(verdict.reasons) + [
-                        f"cheap-probe: {r}" for r in probe.reasons
-                    ]
-                except Exception:  # pragma: no cover
-                    pass
-            return verdict
-        from .guard import ShieldVerdict
-        return ShieldVerdict(allowed=True, severity="info", reasons=[])
+        # The EXPENSIVE deep (LLM) output scan stays gated on the cheap probe,
+        # but the cheap base output-policy detectors (verbatim system-prompt
+        # regurgitation, refusal-then-leak, exfil) must ALWAYS run: they catch
+        # benign-LOOKING prose the regex probe can't, so gating them behind the
+        # probe silently disabled the entire output-policy layer. Also forward
+        # known_prompt -- the prior signature omitted it, so any caller passing
+        # it raised TypeError (swallowed by the agent's fail-open) and
+        # regurgitation detection never received the prompt.
+        if (probe.flagged or probe.score >= self.deep_threshold) and self.deep_scan_output:
+            verdict = self.deep_scan_output(text)
+        else:
+            verdict = self.base.scan_output(text, known_prompt=known_prompt)
+        if probe.reasons and getattr(verdict, "reasons", None) is not None:
+            try:
+                verdict.reasons = list(verdict.reasons) + [
+                    f"cheap-probe: {r}" for r in probe.reasons
+                ]
+            except Exception:  # pragma: no cover
+                pass
+        return verdict
 
 
 def cascade_enabled() -> bool:
