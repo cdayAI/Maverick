@@ -232,6 +232,64 @@ def doctor() -> None:
     diagnose()
 
 
+@main.command("security-audit")
+@click.option("--research/--no-research", default=False,
+              help="Also pull recent advisories for the research brief (network).")
+@click.option("--write/--no-write", "write_", default=True,
+              help="Persist the report under ~/.maverick/security/.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of text.")
+def security_audit(research: bool, write_: bool, as_json: bool) -> None:
+    """Run the security self-audit (the Sentinel).
+
+    Checks the gold-standard invariants (SSRF pinning, fail-closed A2A auth,
+    evasion-resistant shield, no shell=True in tools, constant-time webhook
+    verify, no bare tomllib) and prints a research brief for emerging threats.
+    Exit code is non-zero if any invariant fails, so it can gate CI.
+    """
+    from .security_sentinel import run_audit, write_report
+
+    report = run_audit(research=research)
+    if write_:
+        try:
+            path = write_report(report)
+        except OSError as e:
+            click.echo(click.style(f"(could not write report: {e})", fg="yellow"), err=True)
+            path = None
+    else:
+        path = None
+
+    if as_json:
+        import json as _json
+        click.echo(_json.dumps({
+            "ok": report.ok,
+            "generated_at": report.generated_at,
+            "invariants": [vars(i) for i in report.invariants],
+            "topics": [vars(t) for t in report.topics],
+            "findings": report.findings,
+        }, indent=2))
+    else:
+        for inv in report.invariants:
+            if inv.skipped:
+                tag = click.style("skip", fg="yellow")
+            elif inv.passed:
+                tag = click.style("pass", fg="green")
+            else:
+                tag = click.style("FAIL", fg="red", bold=True)
+            click.echo(f"  [{tag}] {inv.title} — {inv.detail}")
+        click.echo("")
+        verdict = ("OK" if report.ok else f"{len(report.failures)} FAILURE(S)")
+        color = "green" if report.ok else "red"
+        click.echo(click.style(f"Posture: {verdict}", fg=color, bold=True))
+        if path:
+            click.echo(f"Report written to {path}")
+        click.echo(f"Research brief: {len(report.topics)} topic(s)"
+                   + (f", {len(report.findings)} finding(s)" if research else
+                      " (run with --research to fetch advisories)"))
+
+    if not report.ok:
+        raise SystemExit(1)
+
+
 @main.command()
 def version() -> None:
     """Show installed package versions + runtime info."""

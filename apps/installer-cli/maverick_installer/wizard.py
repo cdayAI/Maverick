@@ -719,6 +719,29 @@ def pick_safety() -> dict[str, Any]:
     }
 
 
+def pick_security_sentinel() -> dict[str, Any]:
+    """Opt into the recurring security self-audit (the Sentinel).
+
+    The audit runs deterministic invariant checks on a schedule (and, if the
+    user allows, pulls advisories for the research brief). Off unless the user
+    enables it; defaults to research-on once enabled since the brief is the
+    point.
+    """
+    enabled = _q_confirm(
+        "Run a recurring security self-audit (checks the gold-standard "
+        "invariants on a schedule)?",
+        default=True,
+    )
+    if not enabled:
+        return {"enabled": False}
+    research = _q_confirm(
+        "  Let it research emerging threats (outbound web search) for the "
+        "audit's brief?",
+        default=True,
+    )
+    return {"enabled": True, "research": research, "cadence": "0 6 * * 1"}
+
+
 def pick_signed_skills() -> dict[str, Any]:
     """Optional Ed25519 signing policy for installed skills.
 
@@ -1456,6 +1479,7 @@ def write_config(
     a2a: dict[str, Any] | None = None,
     web_search_enabled: bool = False,
     skills: dict[str, Any] | None = None,
+    security_sentinel: dict[str, Any] | None = None,
 ) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1530,6 +1554,12 @@ def write_config(
     lines.append("[sandbox]")
     for k, v in sandbox.items():
         _emit_kv(lines, k, v)
+
+    if security_sentinel:
+        lines.append("")
+        lines.append("[security.sentinel]")
+        for k, v in security_sentinel.items():
+            _emit_kv(lines, k, v)
 
     if skills:
         # Signed-skill policy. trusted_pubkeys = hex Ed25519 publisher keys
@@ -2058,6 +2088,10 @@ def run(fast: bool = False, resume: bool = False) -> int:
     state["safety"] = safety
     _save_partial(state)
 
+    security_sentinel = state.get("security_sentinel") or pick_security_sentinel()
+    state["security_sentinel"] = security_sentinel
+    _save_partial(state)
+
     _announce()
     signed_skills = state.get("signed_skills") or pick_signed_skills()
     state["signed_skills"] = signed_skills
@@ -2169,6 +2203,7 @@ def run(fast: bool = False, resume: bool = False) -> int:
         a2a=a2a_cfg,
         web_search_enabled=web_search_enabled,
         skills=signed_skills if (signed_skills.get("trusted_pubkeys") or signed_skills.get("require_signed")) else None,
+        security_sentinel=security_sentinel if security_sentinel.get("enabled") else None,
     )
     _clear_partial()
     ok = smoke_test()

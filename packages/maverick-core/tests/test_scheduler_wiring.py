@@ -126,3 +126,36 @@ def test_worker_command_runs_forever(tmp_path, monkeypatch):
     res = CliRunner().invoke(main, ["worker", "--idle-sleep", "0"])
     assert res.exit_code == 0, res.output
     assert ran["forever"] is True
+
+
+# ---------- security self-audit seeding ----------
+
+def test_security_audit_handler_registered(tmp_path):
+    from maverick.job_queue import JobQueue
+    from maverick.worker import Worker
+    w = Worker(queue=JobQueue(db_path=tmp_path / "jobs.db"))
+    assert "security_audit" in w._handlers
+
+
+def test_seed_security_audit_disabled_by_default(tmp_path, monkeypatch):
+    from maverick.job_queue import JobQueue
+    from maverick.worker import Worker
+    monkeypatch.setattr("maverick.config.get_security_sentinel",
+                        lambda: {"enabled": False, "cadence": "0 6 * * 1"})
+    q = JobQueue(db_path=tmp_path / "jobs.db")
+    Worker(queue=q)._seed_security_audit()
+    assert not any(j.kind == "security_audit" for j in q.list())
+
+
+def test_seed_security_audit_enabled_is_idempotent(tmp_path, monkeypatch):
+    from maverick.job_queue import JobQueue
+    from maverick.worker import Worker
+    monkeypatch.setattr("maverick.config.get_security_sentinel",
+                        lambda: {"enabled": True, "cadence": "0 6 * * 1"})
+    q = JobQueue(db_path=tmp_path / "jobs.db")
+    w = Worker(queue=q)
+    w._seed_security_audit()
+    w._seed_security_audit()  # second call must not enqueue a duplicate
+    audits = [j for j in q.list() if j.kind == "security_audit"]
+    assert len(audits) == 1
+    assert audits[0].payload.get("__cron__") == "0 6 * * 1"

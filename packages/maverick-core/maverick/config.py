@@ -125,6 +125,24 @@ def get_safety() -> dict:
     }
 
 
+def get_security_sentinel() -> dict:
+    """Return the ``[security.sentinel]`` section with defaults filled in.
+
+    The security self-audit program (``maverick.security_sentinel``). Off by
+    default; when enabled the scheduler can run it on ``cadence`` (a 5-field
+    cron string). ``research`` gates the outbound advisory lookups -- the
+    deterministic invariant checks always run offline.
+    """
+    sec = load_config().get("security", {})
+    cfg = sec.get("sentinel", {}) if isinstance(sec, dict) else {}
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "research": bool(cfg.get("research", True)),
+        "cadence": str(cfg.get("cadence", "0 6 * * 1")),  # weekly, Mon 06:00 UTC
+        "report_dir": cfg.get("report_dir"),
+    }
+
+
 def get_skills() -> dict:
     """Return the ``[skills]`` section with signing defaults filled in.
 

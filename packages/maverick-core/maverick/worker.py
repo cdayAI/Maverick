@@ -89,6 +89,14 @@ class Worker:
                 )
         self._handlers["run_goal"] = _run_goal
 
+        def _security_audit(job: Job) -> None:
+            # The security self-audit ("Sentinel"). scheduled_audit() never
+            # raises and writes the report itself, so the job always completes;
+            # the report records any invariant failures for a human to act on.
+            from .security_sentinel import scheduled_audit
+            scheduled_audit()
+        self._handlers["security_audit"] = _security_audit
+
     def stop(self) -> None:
         self._stop.set()
 
@@ -161,6 +169,7 @@ class Worker:
         if reclaimed:
             log.info("worker: reclaimed %d stale job(s) from a prior crash",
                      reclaimed)
+        self._seed_security_audit()
         while not self._stop.is_set():
             ran = False
             try:
@@ -171,6 +180,36 @@ class Worker:
                 # Idle: wait, but wake up cleanly on stop().
                 self._stop.wait(self.idle_sleep)
         log.info("worker: stopped")
+
+    def _seed_security_audit(self) -> None:
+        """Arm the recurring security self-audit when enabled in config.
+
+        Idempotent: enqueues the cron seed only if no ``security_audit`` job is
+        already pending (the worker's cron re-arm keeps it recurring after the
+        first run). Off by default — operators opt in via
+        ``[security.sentinel] enabled = true``.
+        """
+        try:
+            from .config import get_security_sentinel
+            cfg = get_security_sentinel()
+        except Exception:
+            return
+        if not cfg.get("enabled"):
+            return
+        try:
+            pending = self.queue.list(status="pending", limit=500)
+            if any(j.kind == "security_audit" for j in pending):
+                return
+            from .scheduler import schedule_cron
+            cadence = str(cfg["cadence"])
+            # __cron__ in the payload is what _maybe_rearm reads to schedule the
+            # next occurrence, so the audit keeps recurring after the first run.
+            _jid, run_at = schedule_cron(
+                self.queue, cadence, "security_audit", {"__cron__": cadence},
+            )
+            log.info("worker: armed recurring security self-audit (next=%.0f)", run_at)
+        except Exception:
+            log.exception("worker: failed to arm security self-audit")
 
     def _wire_signals(self) -> None:
         # Only wire signals from the main thread (signal.signal is

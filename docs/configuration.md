@@ -47,6 +47,13 @@ scan_input      = true
 scan_tool_calls = true
 scan_output     = true
 
+[security.sentinel]               # recurring security self-audit (off by default)
+enabled  = false                  # worker arms + re-arms it when true
+research = true                   # also pull advisories for the brief (network)
+cadence  = "0 6 * * 1"            # 5-field cron; weekly Mon 06:00 UTC
+# report_dir = "~/.maverick/security"   # optional; this is the default
+# Run by hand any time:  maverick security-audit [--research]
+
 [sandbox]
 backend = "local"                   # local | docker | ssh | podman | devcontainer | firecracker | kubernetes
 workdir = "~/maverick-workspace"

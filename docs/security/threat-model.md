@@ -127,4 +127,28 @@ crossing those needs explicit consent or shield approval.
 
 - Reviewed at every minor release.
 - Reviewed when a new tool, provider, sandbox, or channel ships.
+
+## Security self-audit (the Sentinel)
+
+The review cadence above is enforced, not just aspirational, by
+`maverick.security_sentinel` -- a self-audit program with two halves:
+
+- **Invariants** — deterministic checks that the gold-standard properties in
+  this document still hold: SSRF pinning on model-facing fetches, fail-closed
+  A2A auth, an evasion-resistant built-in shield, no `shell=True` in tools,
+  constant-time inbound-webhook verification, no bare `import tomllib`. They
+  run offline in CI (the `audit` job runs `maverick security-audit`), so a
+  change that silently breaks a property fails the build. Add a new invariant
+  here whenever this doc gains a new guarantee.
+- **Research** — a brief built from the *actual* enabled surface (protocols,
+  dependencies, sandbox backend, providers, channels) plus optional advisory
+  lookups, so emerging threats get mapped onto the codebase.
+
+It is **advisory**: it never edits code or relaxes a control, and researched
+text is treated as untrusted (scrubbed, never executed or fed back as
+instructions) so the self-improvement loop can't be used to talk the agent
+into weakening its own defenses. Enable the recurring run with
+`[security.sentinel] enabled = true` (cadence is a 5-field cron string; the
+worker arms and re-arms it). Run it by hand any time with
+`maverick security-audit [--research]`.
 - External penetration tests planned for Q3 2027 and Q3 2028.

@@ -69,6 +69,16 @@ jobs:
           python -m pip install pip-audit
           pip-audit
 
+      - name: Security self-audit (gold-standard invariants)
+        # BLOCKING: the Sentinel's deterministic invariants encode the
+        # security properties this codebase guarantees (SSRF pinning,
+        # fail-closed A2A auth, evasion-resistant shield, no shell=True in
+        # tools, constant-time webhook verify, no bare tomllib). If a change
+        # silently breaks one, this fails the build. Offline only -- no
+        # network research in CI.
+        run: |
+          maverick security-audit --no-write
+
   test:
     runs-on: ubuntu-latest
     strategy:

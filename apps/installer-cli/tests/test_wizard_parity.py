@@ -138,6 +138,35 @@ def test_write_config_emits_plugins(tmp_path: Path, monkeypatch):
     assert parsed["plugins"]["enabled"] == ["weather", "github-issues"]
 
 
+def test_write_config_emits_security_sentinel(tmp_path: Path, monkeypatch):
+    parsed = _write_full_config(
+        tmp_path, monkeypatch,
+        security_sentinel={"enabled": True, "research": True, "cadence": "0 6 * * 1"},
+    )
+    assert parsed["security"]["sentinel"]["enabled"] is True
+    assert parsed["security"]["sentinel"]["research"] is True
+    assert parsed["security"]["sentinel"]["cadence"] == "0 6 * * 1"
+
+
+def test_write_config_omits_security_sentinel_when_absent(tmp_path: Path, monkeypatch):
+    parsed = _write_full_config(tmp_path, monkeypatch)
+    assert "security" not in parsed
+
+
+def test_pick_security_sentinel_enabled(monkeypatch):
+    from maverick_installer import wizard
+    answers = iter([True, True])  # enable? yes; research? yes
+    monkeypatch.setattr(wizard, "_q_confirm", lambda *a, **k: next(answers))
+    cfg = wizard.pick_security_sentinel()
+    assert cfg == {"enabled": True, "research": True, "cadence": "0 6 * * 1"}
+
+
+def test_pick_security_sentinel_disabled(monkeypatch):
+    from maverick_installer import wizard
+    monkeypatch.setattr(wizard, "_q_confirm", lambda *a, **k: False)
+    assert wizard.pick_security_sentinel() == {"enabled": False}
+
+
 def test_write_config_roundtrips_backslash_paths_and_allowlist(tmp_path: Path, monkeypatch):
     """A Windows backslash workdir must round-trip (escaped TOML basic string)
     and a channel allowed_user_ids must emit as an ARRAY. Regression: the raw
