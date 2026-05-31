@@ -73,6 +73,7 @@ STEPS: list[tuple[str, str]] = [
     ("sandbox", "Sandbox"),
     ("capabilities", "Capabilities"),
     ("self_learning", "Self-learning"),
+    ("durable", "Durable execution"),
     ("advanced", "Advanced reasoning"),
     ("web_search", "Web search"),
     ("mcp_servers", "MCP servers"),
@@ -829,6 +830,25 @@ def pick_self_learning() -> dict[str, Any]:
     }
 
 
+def pick_durable() -> dict[str, Any]:
+    """Opt-in to durable execution (crash-resume via checkpoints).
+
+    Off by default. When on, a long-running goal checkpoints its loop state at
+    each step so ``maverick resume`` continues from where a crash left off
+    instead of re-running from the start. Returns a dict written under
+    ``[durable]``.
+    """
+    console.print()
+    console.print(
+        "[dim]Durable execution checkpoints a goal's progress so a crash or "
+        "restart resumes from the last step instead of starting over. Adds a "
+        "small write per step; OFF by default.[/dim]"
+    )
+    if not _q_confirm("Enable durable execution (crash-resume)?", default=False):
+        return {"enabled": False}
+    return {"enabled": True, "keep_last": 5}
+
+
 def pick_advanced() -> dict[str, bool]:
     """Opt-in to advanced reasoning features that ship off by default.
 
@@ -1571,6 +1591,7 @@ def write_config(
     web_search_enabled: bool = False,
     skills: dict[str, Any] | None = None,
     self_learning: dict[str, Any] | None = None,
+    durable: dict[str, Any] | None = None,
     deployment: str | None = None,
 ) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -1706,6 +1727,14 @@ def write_config(
         lines.append("")
         lines.append("[self_learning]")
         for k, v in self_learning.items():
+            _emit_kv(lines, k, v)
+
+    if durable and durable.get("enabled"):
+        # Durable execution: checkpoint loop state so `maverick resume`
+        # continues from the last step after a crash. Off unless opted in.
+        lines.append("")
+        lines.append("[durable]")
+        for k, v in durable.items():
             _emit_kv(lines, k, v)
 
     if capabilities:
@@ -2278,6 +2307,11 @@ def run(fast: bool = False, resume: bool = False) -> int:
     _save_partial(state)
 
     _announce()
+    durable = state.get("durable") or pick_durable()
+    state["durable"] = durable
+    _save_partial(state)
+
+    _announce()
     advanced = state.get("advanced") or pick_advanced()
     state["advanced"] = advanced
     _save_partial(state)
@@ -2390,6 +2424,7 @@ def run(fast: bool = False, resume: bool = False) -> int:
         web_search_enabled=web_search_enabled,
         skills=signed_skills if (signed_skills.get("trusted_pubkeys") or signed_skills.get("require_signed")) else None,
         self_learning=self_learning if self_learning.get("enable") else None,
+        durable=durable if durable.get("enabled") else None,
     )
     _clear_partial()
     ok = smoke_test()
