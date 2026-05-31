@@ -61,6 +61,28 @@ def test_redaction_walks_nested_lists_and_dicts(tmp_path: Path):
     assert "ghp_AAA" not in body
 
 
+def test_depth_cap_redacts_stringified_deep_payloads(tmp_path: Path):
+    from maverick.audit.events import AuditEvent, EventKind
+    from maverick.audit.writer import AuditLog
+
+    secret = "sk-proj-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    nested: object = [secret]
+    for _ in range(65):
+        nested = [nested]
+
+    al = AuditLog(audit_dir=tmp_path)
+    al.record(AuditEvent(
+        ts=5.0,
+        kind=EventKind.TOOL_RESULT,
+        payload={"name": "shell", "nested": nested},
+    ))
+
+    row = _read_first(list(tmp_path.glob("*.ndjson"))[0])
+    body = json.dumps(row)
+    assert secret not in body
+    assert "[REDACTED:openai_api_key]" in body
+
+
 def test_redaction_no_secrets_passes_through_unchanged(tmp_path: Path):
     from maverick.audit.events import AuditEvent, EventKind
     from maverick.audit.writer import AuditLog
