@@ -49,10 +49,15 @@ maverick start "Plan a 2-week trip to Japan. Write the itinerary to trip.md."
 Watch the swarm work. When done:
 
 ```bash
-maverick status      # what's currently active or blocked
-maverick skills      # what the swarm distilled from this run
-maverick facts       # what it learned about you
+maverick status        # what's currently active or blocked
+maverick skills list   # skills the swarm distilled, with their track record
+maverick facts         # what it learned about you
 ```
+
+Over time the skill library curates itself: each skill's recall ranking
+decays if it keeps riding along with failed runs. See what's pulling its
+weight with `maverick skills list`, and prune chronic non-performers with
+`maverick skills evict` (dry-run by default; add `--yes` to remove).
 
 ## Pausing / resuming
 
