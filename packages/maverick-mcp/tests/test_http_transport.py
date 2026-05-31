@@ -171,3 +171,35 @@ class TestHTTPTransport:
         }, headers={"Authorization": "Bearer s3cr3t"})
         # No "id" -> notification -> 204
         assert resp.status_code == 204
+
+
+@pytest.mark.skipif(not _have_fastapi(), reason="fastapi not installed")
+class TestHTTPNotifications:
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from maverick_mcp.http_transport import build_app
+        from maverick_mcp.server import MCPServer
+        return TestClient(build_app(MCPServer()))
+
+    def test_notification_returns_204_with_no_body(self, monkeypatch):
+        # A JSON-RPC notification (no id) must get 204 No Content with an
+        # empty body -- JSONResponse({}) wrote "{}" which strict proxies
+        # reject as a 204-with-body protocol violation.
+        monkeypatch.setenv("MAVERICK_MCP_TOKEN", "s3cr3t")
+        client = self._client()
+        resp = client.post("/mcp", json={
+            "jsonrpc": "2.0", "method": "notifications/initialized",
+        }, headers={"Authorization": "Bearer s3cr3t"})
+        assert resp.status_code == 204
+        assert resp.content == b""
+
+    def test_id_null_treated_as_notification_like_stdio(self, monkeypatch):
+        # {"id": null} is a notification per JSON-RPC; HTTP keyed on
+        # "id" not in body and diverged from the stdio transport.
+        monkeypatch.setenv("MAVERICK_MCP_TOKEN", "s3cr3t")
+        client = self._client()
+        resp = client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": None, "method": "notifications/initialized",
+        }, headers={"Authorization": "Bearer s3cr3t"})
+        assert resp.status_code == 204
+        assert resp.content == b""
