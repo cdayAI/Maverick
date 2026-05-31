@@ -1408,6 +1408,20 @@ def session_clear(provider: str) -> None:
         sys.exit(1)
 
 
+def _conversation_user_matches(conv_user_id: str, requested: str) -> bool:
+    """Match a conversation's user_id for erase/export-user.
+
+    The CLI `chat` REPL scopes each session to a unique ``<user>:<uuid>``
+    id (e.g. ``local:ab12...``), so an exact match on the documented
+    ``--user local`` would miss every CLI chat conversation -- a user could
+    never erase or export their own chat history (a GDPR right-to-erasure /
+    right-of-access gap). Match the exact id OR the colon-scoped session
+    family, so ``--user local`` covers all ``local:*`` sessions while plain
+    channel ids (telegram, sms) still match exactly.
+    """
+    return conv_user_id == requested or conv_user_id.startswith(requested + ":")
+
+
 @main.command()
 @click.option("--channel", required=True, help="Channel name (e.g. telegram, sms).")
 @click.option("--user", required=True, help="The channel user_id to erase.")
@@ -1422,7 +1436,7 @@ def erase(ctx, channel: str, user: str, yes: bool) -> None:
     world = open_world(ctx.obj["db"])
     convs = [
         c for c in world.list_conversations(channel)
-        if c.user_id == user
+        if _conversation_user_matches(c.user_id, user)
     ]
     if not convs:
         click.echo(f"no conversation found for {channel}:{user}")
@@ -1644,7 +1658,7 @@ def export_user(ctx, channel: str, user: str, output) -> None:
     world = open_world(ctx.obj["db"])
     convs = [
         c for c in world.list_conversations(channel)
-        if c.user_id == user
+        if _conversation_user_matches(c.user_id, user)
     ]
     data = {
         "channel": channel,
