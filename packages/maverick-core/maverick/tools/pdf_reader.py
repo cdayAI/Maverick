@@ -80,10 +80,27 @@ def _load_bytes(source: str) -> bytes | None:
             import httpx
         except ImportError:
             return None
+        # Cap the download: `source` is a model-supplied URL, so reading
+        # resp.content unbounded lets a multi-GB (or endless) body exhaust
+        # memory. Reject an oversized Content-Length up front and stream with a
+        # hard byte ceiling.
+        _MAX = 100 * 1024 * 1024  # 100 MiB
         try:
-            resp = httpx.get(source, timeout=30.0, follow_redirects=False)
-            resp.raise_for_status()
-            return resp.content
+            with httpx.stream(
+                "GET", source, timeout=30.0, follow_redirects=False,
+            ) as resp:
+                resp.raise_for_status()
+                clen = resp.headers.get("content-length")
+                if clen is not None and clen.isdigit() and int(clen) > _MAX:
+                    log.warning("pdf fetch refused: %s bytes > cap", clen)
+                    return None
+                buf = bytearray()
+                for chunk in resp.iter_bytes():
+                    buf += chunk
+                    if len(buf) > _MAX:
+                        log.warning("pdf fetch refused: body exceeded cap")
+                        return None
+                return bytes(buf)
         except Exception as e:
             log.warning("pdf fetch failed: %s", e)
             return None
