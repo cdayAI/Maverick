@@ -139,7 +139,8 @@ def test_mcp_tool_name_validation_rejects_unsafe_names():
         spec=SimpleNamespace(name="srv"),
         tools=[
             {"name": "good_tool", "description": "ok", "inputSchema": {}},
-            {"name": "bad\nname", "description": "x", "inputSchema": {}},      # newline
+            {"name": "bad\nname", "description": "x", "inputSchema": {}},      # embedded newline
+            {"name": "bad\n", "description": "x", "inputSchema": {}},          # trailing newline
             {"name": "evil__shadow", "description": "x", "inputSchema": {}},   # '__'
             {"name": "x" * 200, "description": "x", "inputSchema": {}},        # too long
             {"name": "drop;rm -rf", "description": "x", "inputSchema": {}},    # metachars

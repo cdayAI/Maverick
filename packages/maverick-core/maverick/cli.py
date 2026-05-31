@@ -214,6 +214,12 @@ def main(ctx: click.Context, db: str, model: str | None) -> None:
     ctx.ensure_object(dict)
     ctx.obj["db"] = Path(db)
     ctx.obj["model"] = model  # resolved lazily on first use
+    # `--model` is a run-wide override. The agents resolve their model via
+    # model_for_role(), not the LLM facade's default, so threading it through
+    # the env is what actually makes the flag apply to every agent (it was
+    # silently ignored before -- the LLM default got overridden per call).
+    if model:
+        os.environ["MAVERICK_MODEL_OVERRIDE"] = model
 
 
 @main.command()
@@ -1048,6 +1054,12 @@ def resume(ctx, goal_id, max_depth: int, max_dollars, max_wall_seconds) -> None:
             click.echo("no active or blocked goal to resume.")
             return
         goal_id = g.id
+    elif not world.get_goal(goal_id):
+        # An explicit --goal-id that doesn't exist is a user error: report it
+        # and exit non-zero. Otherwise the run prints run_goal's "no such goal"
+        # and still exits 0, which a script can't detect (export exits 2 here).
+        click.echo(f"no such goal #{goal_id}. See `maverick status`.", err=True)
+        sys.exit(2)
     open_qs = world.open_questions(goal_id)
     if open_qs:
         click.echo(f"cannot resume goal #{goal_id}: {len(open_qs)} open question(s).")
@@ -1408,18 +1420,21 @@ def session_clear(provider: str) -> None:
         sys.exit(1)
 
 
-def _conversation_user_matches(conv_user_id: str, requested: str) -> bool:
+def _conversation_user_matches(conv_user_id: str, requested: str, channel: str) -> bool:
     """Match a conversation's user_id for erase/export-user.
 
-    The CLI `chat` REPL scopes each session to a unique ``<user>:<uuid>``
-    id (e.g. ``local:ab12...``), so an exact match on the documented
-    ``--user local`` would miss every CLI chat conversation -- a user could
-    never erase or export their own chat history (a GDPR right-to-erasure /
-    right-of-access gap). Match the exact id OR the colon-scoped session
-    family, so ``--user local`` covers all ``local:*`` sessions while plain
-    channel ids (telegram, sms) still match exactly.
+    Most channels store externally supplied user ids and must match exactly:
+    identifiers such as Twilio WhatsApp ``whatsapp:+15551234567`` or Matrix
+    room ids naturally contain colons, so treating any ``<prefix>:`` as the
+    requested user can disclose or erase unrelated conversations.
+
+    The only family match Maverick currently needs is the local CLI chat
+    namespace: each REPL session is stored as ``local:<uuid>``, while the
+    documented GDPR subject is ``--channel cli --user local``.
     """
-    return conv_user_id == requested or conv_user_id.startswith(requested + ":")
+    if conv_user_id == requested:
+        return True
+    return channel == "cli" and requested == "local" and conv_user_id.startswith("local:")
 
 
 @main.command()
@@ -1436,7 +1451,7 @@ def erase(ctx, channel: str, user: str, yes: bool) -> None:
     world = open_world(ctx.obj["db"])
     convs = [
         c for c in world.list_conversations(channel)
-        if _conversation_user_matches(c.user_id, user)
+        if _conversation_user_matches(c.user_id, user, channel)
     ]
     if not convs:
         click.echo(f"no conversation found for {channel}:{user}")
@@ -1658,7 +1673,7 @@ def export_user(ctx, channel: str, user: str, output) -> None:
     world = open_world(ctx.obj["db"])
     convs = [
         c for c in world.list_conversations(channel)
-        if _conversation_user_matches(c.user_id, user)
+        if _conversation_user_matches(c.user_id, user, channel)
     ]
     data = {
         "channel": channel,
@@ -1844,7 +1859,7 @@ def watch(ctx, path: str, run: bool, max_dollars: float) -> None:
             world = open_world(ctx.obj["db"])
             llm = k.LLM(model=ctx.obj["model"] or k.DEFAULT_MODEL)
             sandbox = k.build_sandbox(workdir=str(p.parent if p.is_file() else p))
-            title = (m.text or m.follow_lines[0] if m.follow_lines else "").strip()[:80]
+            title = (m.text or (m.follow_lines[0] if m.follow_lines else "")).strip()[:80]
             goal_text = m.to_goal()
             allowed, reason = _watch_goal_allowed(goal_text)
             if not allowed:
