@@ -622,16 +622,23 @@ def pick_channels(deployment: str) -> tuple[dict[str, dict[str, Any]], set[str]]
             cfg["access_token"] = "${MASTODON_ACCESS_TOKEN}"
             cfg["poll_interval"] = 30
         elif ch_id == "voice":
-            cfg["api_key"] = "${VAPI_API_KEY}"
+            provider = (_q_text(
+                "  Voice provider (vapi, retell, bland)", default="vapi",
+            ).strip().lower() or "vapi")
+            cfg["provider"] = provider
+            key_env = {
+                "vapi": "VAPI_API_KEY",
+                "retell": "RETELL_API_KEY",
+                "bland": "BLAND_API_KEY",
+            }.get(provider, "VAPI_API_KEY")
+            cfg["api_key"] = "${" + key_env + "}"
+            # Inbound webhook auth is Vapi-shaped today; keep the token ref.
             cfg["webhook_token"] = "${VAPI_WEBHOOK_TOKEN}"
             cfg["phone_number"] = _q_text(
-                "  Vapi phone number (E.164, optional)", default="",
+                "  Phone number (E.164, optional)", default="",
             )
             cfg["assistant_id"] = _q_text(
-                "  Vapi assistant ID (optional)", default="",
-            )
-            cfg["provider"] = _q_text(
-                "  Voice provider", default="vapi",
+                "  Assistant/agent ID (optional)", default="",
             )
             cfg["port"] = _safe_int(
                 _q_text("  Webhook port", default="8770"), default=8770,
