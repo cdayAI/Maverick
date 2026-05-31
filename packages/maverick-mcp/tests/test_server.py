@@ -305,3 +305,28 @@ class TestStructuredOutput:
             {"name": "maverick_fact_set", "arguments": {"key": "k", "value": "v"}})
         assert out["isError"] is False
         assert "structuredContent" not in out  # no outputSchema -> text only
+
+    def test_start_and_resume_declare_goal_id_schema(self):
+        by_name = {t["name"]: t for t in TOOLS}
+        for n in ("maverick_start", "maverick_resume"):
+            props = by_name[n]["outputSchema"]["properties"]
+            assert "goal_id" in props and "answer" in props
+
+    def test_start_exposes_goal_id_in_structured_content(self, isolated_wm, monkeypatch):
+        # start is side-effectful; mock the swarm so no provider key is needed.
+        import maverick.llm
+        import maverick.orchestrator
+        import maverick.sandbox
+        monkeypatch.setattr(maverick.llm, "LLM", lambda *a, **k: object())
+        monkeypatch.setattr(maverick.sandbox, "build_sandbox", lambda *a, **k: object())
+        monkeypatch.setattr(
+            maverick.orchestrator, "run_goal_sync",
+            lambda *a, **k: "the swarm's answer")
+
+        out = MCPServer().handle_tools_call(
+            {"name": "maverick_start", "arguments": {"title": "do a thing"}})
+        assert out["isError"] is False
+        assert out["content"][0]["text"] == "the swarm's answer"   # back-compat text
+        sc = out["structuredContent"]
+        assert isinstance(sc["goal_id"], int)   # the field clients need to chain
+        assert sc["answer"] == "the swarm's answer"
