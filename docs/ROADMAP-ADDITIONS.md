@@ -65,13 +65,27 @@ All three serve long-horizon depth *and* the 12-provider story directly.
 
 ## B. The MCP / interop layer Maverick bet on (must-fix)
 
-### B1. Modernize the MCP *server* **[near-term]**
-`packages/maverick-mcp` is hand-rolled, protocol `2024-11-05`, 8 tools, "no SDK
-dep." The **entire cross-language strategy** ("drive Maverick over MCP") rides on
-this surface, and it's stale. Adopt the current spec: structured **output
-schemas**, **resources / prompts**, **streamable HTTP** transport, and
-**elicitation** — the last maps cleanly onto the shield's consent UI (form mode +
-URL mode for secrets that must never enter model context).
+### B1. Finish the MCP *server* spec adoption **[near-term]**
+**Correction (verified against current `server.py`):** an earlier draft of this
+doc said the MCP server is "hand-rolled on protocol `2024-11-05`." That is
+**stale** — the server already advertises **`2025-11-25`** with proper version
+negotiation (down to `2024-11-05`) and already implements **resources** and
+**prompts**. The cross-language strategy rides on this surface, so the remaining
+work is narrower than "modernize," but real:
+- **Elicitation** — explicitly *not* wired today (the capability is deliberately
+  unadvertised so 2025-11-25 clients don't hang; `ask_user` is used instead).
+  This is the highest-value remaining item: it maps cleanly onto the shield's
+  consent UI (form mode + URL mode for secrets that must never enter model
+  context).
+- **Async Tasks** (the `2025-11-25` long-running-task lifecycle) — absent; the
+  natural fit for Maverick's hours-long runs over a stateless transport.
+- **Structured tool `outputSchema`** — declare result shapes so clients/LLMs know
+  what to expect.
+- **Resource subscriptions** — `subscribe` is currently `false`; live goal/skill
+  updates would let clients stream progress.
+- **Transport + remote auth** (client *and* server side): confirm streamable-HTTP
+  (not deprecated SSE) in `http_transport.py`, and add **OAuth 2.1 / PKCE** for
+  consuming/exposing remote servers (see B2).
 
 ### B2. MCP *client* maturity — OAuth 2.1 + Registry + allowlist governance **[near-term]**
 To consume *remote* MCP servers, the client needs a real OAuth 2.1 / PKCE flow
