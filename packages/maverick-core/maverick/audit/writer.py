@@ -257,7 +257,10 @@ def _redact_event(payload: dict[str, Any]) -> dict[str, Any]:
         # that can be model/tool-controlled and deeply nested; without a guard a
         # deep value raises RecursionError inside the audit-write path.
         if depth > 64:
-            return v if isinstance(v, (int, float, bool, type(None))) else str(v)
+            if isinstance(v, (int, float, bool, type(None))):
+                return v
+            redacted, _ = redact(str(v))
+            return redacted
         if isinstance(v, str):
             redacted, _ = redact(v)
             return redacted
