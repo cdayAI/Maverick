@@ -41,10 +41,10 @@ import logging
 import os
 import shlex
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
-
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -65,8 +65,8 @@ class HookContext:
     event: HookEvent
     tool_name: str = ""
     tool_args: dict[str, Any] = field(default_factory=dict)
-    tool_result: Optional[str] = None
-    goal_id: Optional[int] = None
+    tool_result: str | None = None
+    goal_id: int | None = None
     agent_role: str = ""
     duration_ms: float = 0.0
     extra: dict[str, Any] = field(default_factory=dict)
@@ -76,8 +76,8 @@ class HookContext:
 class HookSpec:
     event: HookEvent
     matcher: str = "*"
-    command: Optional[str] = None
-    callable: Optional[Callable[[HookContext], Any]] = None
+    command: str | None = None
+    callable: Callable[[HookContext], Any] | None = None
     timeout_ms: int = 5000
 
     def matches(self, ctx: HookContext) -> bool:

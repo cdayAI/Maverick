@@ -67,8 +67,9 @@ def _kernel():
     never need any of it. Call this at the top of any command that does.
     """
     import types
+
     from .budget import Budget
-    from .llm import LLM, DEFAULT_MODEL
+    from .llm import DEFAULT_MODEL, LLM
     from .orchestrator import run_goal_sync
     from .sandbox import build_sandbox
     from .secrets import scrub
@@ -442,6 +443,7 @@ def start(
     try:
         if coding_mode and best_of_n > 1:
             import asyncio as _asyncio
+
             from .orchestrator import run_goal_best_of_n
             result = _asyncio.run(run_goal_best_of_n(
                 llm, world, bud, goal_id,
@@ -900,7 +902,7 @@ def plugin_new(name: str, kind: str, dest: str) -> None:
     factory the contributor can ``pip install -e .`` and exercise
     immediately.
     """
-    from .plugin_scaffold import scaffold, ScaffoldError
+    from .plugin_scaffold import ScaffoldError, scaffold
     try:
         files = scaffold(name, kind, dest=Path(dest))
     except ScaffoldError as e:
@@ -1516,6 +1518,7 @@ def audit() -> None:
 def audit_tail(num: int, day: str | None) -> None:
     """Print the last N audit events."""
     import json as _json
+
     from .audit import default_audit_log
     for ev in default_audit_log().tail(num, day=day):
         click.echo(_json.dumps(ev, default=str))
@@ -1527,6 +1530,7 @@ def audit_tail(num: int, day: str | None) -> None:
 def audit_grep(pattern: str, day: str | None) -> None:
     """Regex grep over today's audit log."""
     import json as _json
+
     from .audit import default_audit_log
     for ev in default_audit_log().grep(pattern, day=day):
         click.echo(_json.dumps(ev, default=str))
@@ -1701,6 +1705,7 @@ def logs_cmd(pattern: str | None, num: int, day: str | None) -> None:
     Equivalent to `maverick audit grep <pattern>` or `audit tail -n N`.
     """
     import json as _json
+
     from .audit import default_audit_log
     al = default_audit_log()
     rows = al.grep(pattern, day=day) if pattern else al.tail(num, day=day)
@@ -1719,6 +1724,7 @@ def cache_group() -> None:
 def cache_stats_cmd() -> None:
     """Show cache sizes."""
     import json as _json
+
     from .cache import stats
     click.echo(_json.dumps(stats(), default=str, indent=2))
 
@@ -1732,6 +1738,7 @@ def cache_stats_cmd() -> None:
 def cache_purge_cmd(scopes: tuple[str, ...]) -> None:
     """Purge cache(s)."""
     import json as _json
+
     from .cache import purge
     report = purge(scopes or ("all",))
     click.echo(_json.dumps(report, default=str, indent=2))
@@ -1760,6 +1767,7 @@ def retention_enforce_cmd(
 ) -> None:
     """Apply retention rules to the audit log and world model."""
     import json as _json
+
     from .audit.retention import enforce
     # CLI overrides take precedence if any are set; otherwise read config.
     cfg: dict | None = None

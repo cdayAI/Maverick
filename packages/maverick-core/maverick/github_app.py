@@ -26,6 +26,7 @@ Output:
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import logging
@@ -33,9 +34,9 @@ import os
 import re
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -63,29 +64,31 @@ class WebhookPayload:
     issue_number: int
     issue_title: str
     issue_body: str
-    trigger_label: Optional[str] = None
-    comment_body: Optional[str] = None
+    trigger_label: str | None = None
+    comment_body: str | None = None
     sender_login: str = ""
 
 
 def verify_signature(
     body: bytes,
-    signature_header: Optional[str],
-    secret: Optional[str],
+    signature_header: str | None,
+    secret: str | None,
 ) -> bool:
     """HMAC-SHA256 verification of GitHub's X-Hub-Signature-256 header.
 
-    Defends against random webhook spoofing. If `secret` is empty we
-    accept (insecure -- meant only for local dev where the listener
-    isn't reachable from the internet).
+    Defends against webhook spoofing. Fails CLOSED: a missing/empty secret
+    rejects the request, matching ``issue_webhooks`` and ``webhooks`` (which
+    also fail closed). The receiver this guards clones repos and drives a
+    swarm that runs shell, so an unsigned request must never be enough to
+    trigger a run -- the previous fail-open branch accepted *every* request
+    when the operator forgot to set MAVERICK_GH_APP_WEBHOOK_SECRET.
     """
     if not secret:
         log.warning(
-            "GH webhook signature check SKIPPED: no secret configured "
-            "(set MAVERICK_GH_APP_WEBHOOK_SECRET). Accepting all requests "
-            "— only safe for a listener not reachable from the internet."
+            "GH webhook signature check FAILED CLOSED: no secret configured "
+            "(set MAVERICK_GH_APP_WEBHOOK_SECRET). Rejecting the request."
         )
-        return True
+        return False
     if not signature_header or not signature_header.startswith("sha256="):
         return False
     expected = "sha256=" + hmac.new(
@@ -94,7 +97,7 @@ def verify_signature(
     return hmac.compare_digest(expected, signature_header)
 
 
-def parse_webhook(event: str, payload: dict) -> Optional[WebhookPayload]:
+def parse_webhook(event: str, payload: dict) -> WebhookPayload | None:
     """Normalize the GitHub webhook payload.
 
     Returns None for events we don't care about (e.g., issues.opened
@@ -175,19 +178,55 @@ def slugify(title: str, max_len: int = 40) -> str:
 @dataclass
 class PRResult:
     branch_name: str
-    pr_url: Optional[str]
+    pr_url: str | None
     workdir: Path
     summary: str   # agent's FINAL output
-    error: Optional[str] = None
+    error: str | None = None
+
+
+@contextlib.contextmanager
+def _git_token_env(token: str | None) -> Iterator[dict]:
+    """Yield an env that feeds ``token`` to git via ``GIT_ASKPASS``.
+
+    Embedding the token in the clone URL (``https://x-access-token:TOKEN@``)
+    leaked it three ways: into ``ps``/argv, into the cloned repo's persisted
+    ``origin`` URL on disk, and into ``CalledProcessError`` messages on a
+    failed clone (which we surface in ``PRResult.error``). Routing it through
+    an ephemeral askpass helper keeps the token out of all three -- the URL
+    carries only the ``x-access-token`` username, git asks the helper for the
+    password, and the helper file is removed on exit.
+    """
+    if not token:
+        yield dict(os.environ)
+        return
+    fd, path = tempfile.mkstemp(prefix="mvk-gh-askpass-", suffix=".sh")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write('#!/bin/sh\nexec printf "%s" "$MAVERICK_GH_TOKEN"\n')
+        os.chmod(path, 0o700)
+        yield {
+            **os.environ,
+            "GIT_ASKPASS": path,
+            "GIT_TERMINAL_PROMPT": "0",
+            "MAVERICK_GH_TOKEN": token,
+        }
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
 
 
 def clone_repo(repo_full_name: str, token: str, dest: Path) -> Path:
-    """Shallow-clone `owner/repo` to `dest`. Requires `git` on PATH."""
-    url = f"https://x-access-token:{token}@github.com/{repo_full_name}.git"
-    subprocess.run(
-        ["git", "clone", "--depth", "10", url, str(dest)],
-        check=True, capture_output=True, timeout=120,
-    )
+    """Shallow-clone `owner/repo` to `dest`. Requires `git` on PATH.
+
+    The token is supplied via ``GIT_ASKPASS`` (see ``_git_token_env``) so it
+    never lands in argv, the persisted remote URL, or error output.
+    """
+    url = f"https://x-access-token@github.com/{repo_full_name}.git"
+    with _git_token_env(token) as env:
+        subprocess.run(
+            ["git", "clone", "--depth", "10", url, str(dest)],
+            check=True, capture_output=True, timeout=120, env=env,
+        )
     return dest
 
 
@@ -199,7 +238,7 @@ def create_pr_via_gh(
     pr_body: str,
     *,
     draft: bool = True,
-) -> Optional[str]:
+) -> str | None:
     """Use the `gh` CLI to push + open a draft PR. Returns the PR URL or None.
 
     The PR is opened as a draft per repo policy (see CLAUDE.md). The
@@ -208,10 +247,14 @@ def create_pr_via_gh(
     token-mint flow inside Maverick.
     """
     try:
-        subprocess.run(
-            ["git", "-C", str(workdir), "push", "-u", "origin", branch_name],
-            check=True, capture_output=True, timeout=60,
-        )
+        # The cloned origin no longer embeds the token (see clone_repo), so
+        # feed it to the push via the same askpass helper.
+        push_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        with _git_token_env(push_token) as env:
+            subprocess.run(
+                ["git", "-C", str(workdir), "push", "-u", "origin", branch_name],
+                check=True, capture_output=True, timeout=60, env=env,
+            )
         args = [
             "gh", "pr", "create",
             "--head", branch_name,
@@ -247,7 +290,7 @@ def _origin_full_name(workdir: Path) -> str:
 async def process_issue(
     payload: WebhookPayload,
     *,
-    token: Optional[str] = None,
+    token: str | None = None,
     max_dollars: float = 5.0,
     max_wall_seconds: float = 1800.0,
     draft: bool = True,
@@ -271,9 +314,12 @@ async def process_issue(
     try:
         clone_repo(payload.repo_full_name, token, workdir)
     except subprocess.CalledProcessError as e:
+        # Defense in depth: scrub in case any git output still echoes a
+        # credential-shaped string into the error we hand back.
+        from .secrets import scrub
         return PRResult(
             branch_name=branch_name, pr_url=None, workdir=workdir,
-            summary="", error=f"clone failed: {e}",
+            summary="", error=scrub(f"clone failed: {e}"),
         )
 
     # Create the branch in the clone before the agent starts so its

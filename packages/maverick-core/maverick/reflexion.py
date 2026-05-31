@@ -32,7 +32,6 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +71,7 @@ def record(
     failure_msg: str,
     reflection: str,
     *,
-    tools_used: Optional[list[str]] = None,
+    tools_used: list[str] | None = None,
     path: Path = DEFAULT_PATH,
 ) -> bool:
     """Append a Reflexion. Returns True on success.

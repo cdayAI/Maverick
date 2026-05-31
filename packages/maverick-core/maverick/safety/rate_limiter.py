@@ -26,7 +26,8 @@ import re
 import threading
 import time
 from collections import deque
-from typing import Any, Awaitable, Callable, Union
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ def _resolve_limit(
     return None
 
 
-ToolFn = Callable[[dict[str, Any]], Union[str, Awaitable[str]]]
+ToolFn = Callable[[dict[str, Any]], str | Awaitable[str]]
 
 
 def _wrap_fn(name: str, limiter: _Limiter, fn: ToolFn) -> ToolFn:

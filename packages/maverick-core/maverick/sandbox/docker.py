@@ -19,7 +19,6 @@ import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from .local import ExecResult
 
@@ -30,6 +29,10 @@ class DockerBackend:
     image: str = "python:3.12-slim"
     timeout: float = 60.0
     allow_network: bool = False
+    # Fork-bomb guard. Generous enough for real builds (pip/npm/pytest
+    # spawn plenty of children) while still bounding a runaway agent.
+    # Set to 0/None to disable (not recommended).
+    pids_limit: int | None = 512
 
     def __post_init__(self) -> None:
         self.workdir = Path(self.workdir)
@@ -48,7 +51,7 @@ class DockerBackend:
                 "change [sandbox] backend to 'local' in ~/.maverick/config.toml."
             ) from e
 
-    def exec(self, cmd: str, timeout: Optional[float] = None) -> ExecResult:
+    def exec(self, cmd: str, timeout: float | None = None) -> ExecResult:
         # Wave 11: per-call `timeout` matches LocalBackend so the shell
         # tool can plumb a longer cap for pytest/npm test/etc. Falls
         # back to self.timeout (default 60 s).
@@ -59,7 +62,15 @@ class DockerBackend:
             "--name", container_name,
             "-v", f"{self.workdir.resolve()}:/workspace",
             "-w", "/workspace",
+            # Containment for a possibly prompt-injected agent: drop every
+            # Linux capability and block privilege escalation (setuid/setgid
+            # binaries can't gain more than they start with). Neither breaks
+            # pip/npm/pytest, which need no capabilities.
+            "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges",
         ]
+        if self.pids_limit:
+            args.extend(["--pids-limit", str(self.pids_limit)])
         if not self.allow_network:
             args.extend(["--network", "none"])
         args.extend([self.image, "sh", "-c", cmd])

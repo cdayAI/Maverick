@@ -8,7 +8,6 @@ exception patterns are listed first and win on Python output).
 """
 from maverick.coding_mode import classify_failure
 
-
 # ---------- Rust ----------
 
 def test_rust_compile_error_classified():

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional, Union
 
 from .devcontainer import DevcontainerBackend
 from .docker import DockerBackend
@@ -34,10 +33,10 @@ __all__ = [
     "build_sandbox",
 ]
 
-Sandbox = Union[
-    LocalBackend, DockerBackend, PodmanBackend, DevcontainerBackend,
-    KubernetesBackend, FirecrackerBackend, SSHBackend,
-]
+Sandbox = (
+    LocalBackend | DockerBackend | PodmanBackend | DevcontainerBackend
+    | KubernetesBackend | FirecrackerBackend | SSHBackend
+)
 
 
 # Default container image per coding language. When ``[sandbox] image`` isn't
@@ -82,8 +81,8 @@ def _resolve_image(full_cfg: dict) -> str:
 
 
 def build_sandbox(
-    workdir: Optional[Union[str, Path]] = None,
-    backend: Optional[str] = None,
+    workdir: str | Path | None = None,
+    backend: str | None = None,
 ) -> Sandbox:
     """Construct the configured sandbox backend.
 
@@ -109,12 +108,16 @@ def build_sandbox(
 
     if chosen == "docker":
         image = _resolve_image(full_cfg)
-        return DockerBackend(workdir=wd, image=image, timeout=timeout)
+        return DockerBackend(
+            workdir=wd, image=image, timeout=timeout,
+            pids_limit=full_cfg.get("pids_limit", 512),
+        )
     if chosen == "podman":
         image = _resolve_image(full_cfg)
         return PodmanBackend(
             workdir=wd, image=image, timeout=timeout,
             allow_network=bool(full_cfg.get("allow_network", False)),
+            pids_limit=full_cfg.get("pids_limit", 512),
         )
     if chosen == "devcontainer":
         project_dir = Path(

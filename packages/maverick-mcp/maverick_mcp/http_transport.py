@@ -35,8 +35,6 @@ import asyncio
 import hmac
 import logging
 import os
-from typing import Optional
-
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +49,7 @@ except ImportError:
     JSONResponse = StreamingResponse = None  # type: ignore
 
 
-def _check_bearer(authorization: Optional[str]) -> bool:
+def _check_bearer(authorization: str | None) -> bool:
     """Bearer-token gate for network HTTP transport.
 
     Unlike stdio, HTTP requests are network-reachable; token auth is
@@ -67,7 +65,7 @@ def _check_bearer(authorization: Optional[str]) -> bool:
     return hmac.compare_digest(expected, given)
 
 
-def build_app(server) -> "FastAPI":
+def build_app(server) -> FastAPI:
     """Wrap an MCPServer instance in a Streamable HTTP transport.
 
     `server` is an instance of `maverick_mcp.server.MCPServer`. We
@@ -93,8 +91,8 @@ def build_app(server) -> "FastAPI":
 
     @app.post("/mcp")
     async def mcp_endpoint(
-        request: "Request",
-        authorization: Optional[str] = Header(None),
+        request: Request,
+        authorization: str | None = Header(None),
     ):
         if not _check_bearer(authorization):
             raise HTTPException(status_code=401, detail="invalid bearer")
