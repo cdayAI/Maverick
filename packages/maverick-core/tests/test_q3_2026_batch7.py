@@ -129,6 +129,39 @@ def test_stripe_refund_with_confirm(monkeypatch):
     })
     assert "refunded re_xx" in out
     fake_httpx.post.assert_called_once()
+    # The refund carries an Idempotency-Key so a retry can't double-refund.
+    headers = fake_httpx.post.call_args.kwargs["headers"]
+    assert headers.get("Idempotency-Key", "").startswith("maverick-refund-")
+
+
+def test_stripe_refund_idempotency_key_is_intent_scoped(monkeypatch):
+    """Same refund intent -> same key (Stripe dedupes a retry); a different
+    amount -> different key (a genuinely distinct refund isn't blocked)."""
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test")
+    monkeypatch.setenv("MAVERICK_STRIPE_ENABLE_REFUNDS", "true")
+
+    def _run(amount):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json = MagicMock(return_value={
+            "id": "re_xx", "amount": amount, "currency": "usd", "charge": "ch_123",
+        })
+        post = MagicMock(return_value=resp)
+        fake_httpx = types.ModuleType("httpx")
+        fake_httpx.post = post
+        monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+        from maverick.tools.stripe_tool import stripe_tool
+        stripe_tool().fn({
+            "op": "refund_create", "charge_id": "ch_123",
+            "amount_cents": amount, "confirm": True,
+        })
+        return post.call_args.kwargs["headers"]["Idempotency-Key"]
+
+    key_a = _run(500)
+    key_a2 = _run(500)
+    key_b = _run(700)
+    assert key_a == key_a2      # retry of the same refund -> deduped
+    assert key_a != key_b       # different amount -> distinct refund allowed
 
 
 def test_stripe_charges_renders(monkeypatch):

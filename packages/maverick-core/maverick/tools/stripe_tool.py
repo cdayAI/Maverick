@@ -88,9 +88,15 @@ def _get(path: str, params: dict | None = None) -> tuple[int, Any]:
         return r.status_code, {"error": r.text[:300]}
 
 
-def _post(path: str, data: dict) -> tuple[int, Any]:
+def _post(path: str, data: dict, *, idempotency_key: str | None = None) -> tuple[int, Any]:
     import httpx
-    r = httpx.post(f"{_API}/{path}", headers=_headers(),
+    headers = _headers()
+    if idempotency_key:
+        # Stripe dedupes writes that carry the same Idempotency-Key, so a
+        # retried request (network blip, agent re-run) does not create a
+        # second object. https://stripe.com/docs/api/idempotent_requests
+        headers["Idempotency-Key"] = idempotency_key
+    r = httpx.post(f"{_API}/{path}", headers=headers,
                    data=data, timeout=30.0)
     try:
         return r.status_code, r.json()
@@ -209,7 +215,14 @@ def _op_refund_create(charge_id: str, amount_cents: int, reason: str,
         body["amount"] = amount_cents
     if reason:
         body["reason"] = reason
-    code, data = _post("refunds", body)
+    # Deterministic idempotency key from the refund intent: a retry of the
+    # SAME logical refund (same charge + amount + reason) is deduped by Stripe
+    # into one refund, while a genuinely different refund (different amount or
+    # reason) gets a distinct key and is allowed through.
+    import hashlib
+    fingerprint = f"{charge_id}:{amount_cents or 'full'}:{reason or ''}"
+    idem = "maverick-refund-" + hashlib.sha256(fingerprint.encode()).hexdigest()[:32]
+    code, data = _post("refunds", body, idempotency_key=idem)
     if code >= 400:
         return f"ERROR: refund_create ({code}): {data.get('error', {})}"
     return (
