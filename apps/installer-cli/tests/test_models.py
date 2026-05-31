@@ -74,6 +74,12 @@ def test_byok_env_vars_set():
     assert models.PROVIDERS["ollama"].get("env") is None
 
 
+def test_openai_compatible_declares_base_url_env():
+    info = models.PROVIDERS["openai_compatible"]
+    assert info.get("env") == "OPENAI_COMPATIBLE_API_KEY"
+    assert "OPENAI_COMPATIBLE_BASE_URL" in info.get("env_vars", [])
+
+
 def test_wizard_catalog_matches_kernel_registry():
     """The wizard offerings must be dispatchable by the kernel.
 
