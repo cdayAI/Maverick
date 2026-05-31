@@ -786,12 +786,16 @@ class WorldModel:
             )
             return cur.lastrowid
 
-    def answer(self, question_id: int, answer: str) -> None:
+    def answer(self, question_id: int, answer: str) -> bool:
+        """Record an answer to a question. Returns False if no question with
+        that id exists, so callers can flag a typo'd id instead of reporting
+        a false success."""
         with self._writing() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE questions SET answer = ?, answered_at = ? WHERE id = ?",
                 (answer, time.time(), question_id),
             )
+            return cur.rowcount > 0
 
     def open_questions(self, goal_id: int | None = None) -> list[Question]:
         if goal_id is not None:

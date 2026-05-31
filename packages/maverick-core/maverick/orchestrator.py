@@ -315,7 +315,7 @@ async def run_goal(
             from . import context_compactor as _cc
             if _cc.enabled():
                 _turns = world.recent_turns(conversation_id, limit=_cc.window())
-                _msgs = [{"role": t.role, "content": t.content} for t in _turns]
+                _msgs = [{"role": t.role, "content": t.content[:300]} for t in _turns]
                 _kept = _cc.compact(_msgs, target_tokens=_cc.target_tokens()).messages
                 pairs = [
                     (str(m.get("role") or "user"), str(m.get("content") or ""))
