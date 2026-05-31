@@ -25,6 +25,7 @@ def _load_swe_bench():
 _sb = _load_swe_bench()
 _majority_patch = _sb._majority_patch
 run_sonnet_self_consistency_n8 = _sb.run_sonnet_self_consistency_n8
+run_sonnet_single = _sb.run_sonnet_single
 
 
 # ---- _majority_patch ----
@@ -106,6 +107,23 @@ def test_self_consistency_votes_winner(monkeypatch):
     assert row.outcome == "success"
     assert row.tokens_in == 50  # 5 calls * 10
     assert row.tokens_out == 25
+
+
+def test_self_consistency_sanitizes_formula_patch(monkeypatch):
+    monkeypatch.delenv("MAVERICK_BENCH_DRY_RUN", raising=False)
+    monkeypatch.setenv("MAVERICK_BENCH_SC_N", "3")
+    _install(monkeypatch, ["=2+3", "=2+3", "--- a/safe\n"])
+    row = run_sonnet_self_consistency_n8("inst-formula", "brief")
+    assert row.predicted_patch == "'=2+3"
+    assert row.outcome == "success"
+
+
+def test_sonnet_single_sanitizes_formula_patch(monkeypatch):
+    monkeypatch.delenv("MAVERICK_BENCH_DRY_RUN", raising=False)
+    _install(monkeypatch, ["@SUM(1,2)"])
+    row = run_sonnet_single("inst-single-formula", "brief")
+    assert row.predicted_patch == "'@SUM(1,2)"
+    assert row.outcome == "success"
 
 
 def test_self_consistency_all_empty_is_empty(monkeypatch):

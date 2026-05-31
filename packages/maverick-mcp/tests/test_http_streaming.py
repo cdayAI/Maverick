@@ -88,6 +88,46 @@ def test_sse_no_progress_without_token(monkeypatch):
     assert '"ok"' in body
 
 
+def test_sse_rejects_oversized_progress_token(monkeypatch):
+    client = _client(monkeypatch)
+    resp = client.post("/mcp", headers=_SSE, json={
+        "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+        "params": {"_meta": {"progressToken": "x" * 129}},
+    })
+    assert resp.status_code == 400
+    assert "progressToken" in resp.text
+
+
+def test_sse_rejects_non_scalar_progress_token(monkeypatch):
+    client = _client(monkeypatch)
+    resp = client.post("/mcp", headers=_SSE, json={
+        "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+        "params": {"_meta": {"progressToken": ["tok"]}},
+    })
+    assert resp.status_code == 400
+    assert "progressToken" in resp.text
+
+
+def test_sse_caps_progress_events(monkeypatch):
+    monkeypatch.setenv("MAVERICK_MCP_SSE_HEARTBEAT", "0.01")
+    monkeypatch.setenv("MAVERICK_MCP_SSE_MAX_PROGRESS_EVENTS", "2")
+
+    def _slow_dispatch(server, method, params):
+        time.sleep(0.08)
+        return {"ok": True}
+
+    monkeypatch.setattr(ht, "_dispatch", _slow_dispatch)
+    client = _client(monkeypatch)
+    resp = client.post("/mcp", headers=_SSE, json={
+        "jsonrpc": "2.0", "id": 12, "method": "tools/call",
+        "params": {"_meta": {"progressToken": "tok-capped"}},
+    })
+    assert resp.status_code == 200
+    body = resp.text
+    assert body.count("notifications/progress") == 2
+    assert '"ok"' in body
+
+
 def test_sse_streams_error_as_event(monkeypatch):
     client = _client(monkeypatch)
     resp = client.post("/mcp", headers=_SSE, json={
@@ -104,3 +144,12 @@ def test_heartbeat_seconds_env(monkeypatch):
     assert ht._heartbeat_seconds() == 0.5
     monkeypatch.setenv("MAVERICK_MCP_SSE_HEARTBEAT", "garbage")
     assert ht._heartbeat_seconds() == 15.0
+
+
+def test_max_progress_events_env(monkeypatch):
+    monkeypatch.setenv("MAVERICK_MCP_SSE_MAX_PROGRESS_EVENTS", "3")
+    assert ht._max_progress_events() == 3
+    monkeypatch.setenv("MAVERICK_MCP_SSE_MAX_PROGRESS_EVENTS", "-1")
+    assert ht._max_progress_events() == 0
+    monkeypatch.setenv("MAVERICK_MCP_SSE_MAX_PROGRESS_EVENTS", "garbage")
+    assert ht._max_progress_events() == 240
