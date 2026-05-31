@@ -214,6 +214,12 @@ def main(ctx: click.Context, db: str, model: str | None) -> None:
     ctx.ensure_object(dict)
     ctx.obj["db"] = Path(db)
     ctx.obj["model"] = model  # resolved lazily on first use
+    # `--model` is a run-wide override. The agents resolve their model via
+    # model_for_role(), not the LLM facade's default, so threading it through
+    # the env is what actually makes the flag apply to every agent (it was
+    # silently ignored before -- the LLM default got overridden per call).
+    if model:
+        os.environ["MAVERICK_MODEL_OVERRIDE"] = model
 
 
 @main.command()
