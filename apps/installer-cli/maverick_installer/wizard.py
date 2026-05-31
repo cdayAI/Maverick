@@ -2077,35 +2077,50 @@ def run(fast: bool = False, resume: bool = False) -> int:
     state["_web_search_pair"] = [web_search_enabled, web_search_envs]
     _save_partial(state)
 
+    # NOTE: these steps use the `is None` sentinel (not `or`) because a
+    # legitimately-declined answer is falsy ({}/[]); the `or` pattern treated
+    # "I chose nothing" as "unanswered" and re-prompted it on --resume.
     _announce()
-    mcp_servers = state.get("mcp_servers") or pick_mcp_servers()
-    state["mcp_servers"] = mcp_servers
-    _save_partial(state)
+    mcp_servers = state.get("mcp_servers")
+    if mcp_servers is None:
+        mcp_servers = pick_mcp_servers()
+        state["mcp_servers"] = mcp_servers
+        _save_partial(state)
 
     _announce()
-    plugins = state.get("plugins") or pick_plugins()
-    state["plugins"] = plugins
-    _save_partial(state)
+    plugins = state.get("plugins")
+    if plugins is None:
+        plugins = pick_plugins()
+        state["plugins"] = plugins
+        _save_partial(state)
 
     _announce()
-    tool_acl = state.get("tool_acl") or pick_tool_acl(channels)
-    state["tool_acl"] = tool_acl
-    _save_partial(state)
+    tool_acl = state.get("tool_acl")
+    if tool_acl is None:
+        tool_acl = pick_tool_acl(channels)
+        state["tool_acl"] = tool_acl
+        _save_partial(state)
 
     _announce()
-    rate_limits = state.get("rate_limits") or pick_rate_limits(channels)
-    state["rate_limits"] = rate_limits
-    _save_partial(state)
+    rate_limits = state.get("rate_limits")
+    if rate_limits is None:
+        rate_limits = pick_rate_limits(channels)
+        state["rate_limits"] = rate_limits
+        _save_partial(state)
 
     _announce()
-    retention = state.get("retention") or pick_retention()
-    state["retention"] = retention
-    _save_partial(state)
+    retention = state.get("retention")
+    if retention is None:
+        retention = pick_retention()
+        state["retention"] = retention
+        _save_partial(state)
 
     _announce()
-    persona = state.get("persona") or pick_persona()
-    state["persona"] = persona
-    _save_partial(state)
+    persona = state.get("persona")
+    if persona is None:
+        persona = pick_persona()
+        state["persona"] = persona
+        _save_partial(state)
 
     _announce()
     notifications, notify_envs = state.get("_notifications_pair") or pick_notifications()
