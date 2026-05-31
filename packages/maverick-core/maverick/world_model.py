@@ -364,12 +364,25 @@ class WorldModel:
         except OSError:
             pass
         self.conn.row_factory = sqlite3.Row
-        # WAL must be set before any other operation that creates pages.
-        # synchronous=NORMAL under WAL is safe + much faster than FULL.
-        # busy_timeout returns SQLITE_BUSY only after 5s of contention.
-        self.conn.execute("PRAGMA journal_mode = WAL")
-        self.conn.execute("PRAGMA synchronous = NORMAL")
+        # Arm the busy handler BEFORE switching journal mode: switching to WAL
+        # needs a brief exclusive lock, and when a second connection opens the
+        # same DB concurrently (the dashboard and the agent each open one) the
+        # switch can surface "database is locked" instead of waiting unless
+        # busy_timeout is already set.
         self.conn.execute("PRAGMA busy_timeout = 5000")
+        # WAL must be set before any other operation that creates pages. The
+        # switch can still race a same-process connection -- SQLITE_LOCKED
+        # bypasses the busy handler -- so retry briefly (<=5s) on a locked DB.
+        for _attempt in range(100):
+            try:
+                self.conn.execute("PRAGMA journal_mode = WAL")
+                break
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower() or _attempt == 99:
+                    raise
+                time.sleep(0.05)
+        # synchronous=NORMAL under WAL is safe + much faster than FULL.
+        self.conn.execute("PRAGMA synchronous = NORMAL")
         # May 26 council fix (long-tail audit #4): bound WAL file
         # growth. Default autocheckpoint=1000 pages is fine, but with
         # a dashboard reader holding a snapshot lock, autocheckpoint
