@@ -98,6 +98,54 @@ def safe_media_args(raw: Any) -> list[str]:
     return safe
 
 
+def sandbox_run(
+    sandbox: Any,
+    argv: list[str],
+    *,
+    timeout: float = 120.0,
+    stdin: str | None = None,
+) -> tuple[int, str, str]:
+    """Run ``argv`` through the sandbox chokepoint; return (code, stdout, stderr).
+
+    Media tools (ffmpeg/imagemagick/pandoc/tesseract/pa11y...) historically
+    shelled out on the host with ``subprocess.run`` even when a sandbox was
+    wired in, bypassing the chokepoint that confines model-driven commands and
+    lets tests swap the backend (CLAUDE.md rule #4). This routes the command
+    through ``sandbox.exec()`` instead.
+
+    The argv is shell-quoted with ``shlex.join`` before handing it to
+    ``exec()`` (which runs ``sh -c``). When ``stdin`` is given it is fed via a
+    base64 pipe so arbitrary text reaches the process without shell-quoting
+    hazards. When no sandbox is wired in, falls back to a scrubbed-env
+    ``subprocess.run`` so behavior is preserved for sandbox-less callers.
+    """
+    import shlex
+
+    cmd = shlex.join(argv)
+    if stdin is not None:
+        import base64
+        b64 = base64.b64encode(stdin.encode("utf-8")).decode("ascii")
+        cmd = f"printf %s {shlex.quote(b64)} | base64 -d | {cmd}"
+
+    if sandbox is not None and hasattr(sandbox, "exec"):
+        try:
+            res = sandbox.exec(cmd, timeout=timeout)
+        except TypeError:
+            # Backend without a per-call timeout kwarg.
+            res = sandbox.exec(cmd)
+        return res.exit_code, res.stdout, res.stderr
+
+    import subprocess
+    try:
+        r = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True,
+            timeout=timeout, env=scrub_child_env(),
+        )
+        return r.returncode, r.stdout, r.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", f"TIMEOUT after {timeout}s"
+
+
 ToolFn = Callable[[dict[str, Any]], str | Awaitable[str]]
 
 
@@ -402,13 +450,13 @@ def base_registry(
     reg.register(slack_bot())
     reg.register(stripe_tool())
     reg.register(currency())
-    reg.register(a11y())
+    reg.register(a11y(sandbox))
     reg.register(discord_bot())
     reg.register(hackernews())
     reg.register(dns_lookup())
     reg.register(geocode())
     reg.register(openapi_runner())
-    reg.register(ocr())
+    reg.register(ocr(sandbox))
     reg.register(posthog_tool())
     reg.register(shopify_tool())
     reg.register(mongodb_tool())
