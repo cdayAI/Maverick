@@ -573,7 +573,17 @@ def pick_channels(deployment: str) -> tuple[dict[str, dict[str, Any]], set[str]]
             "[bold]Phone-companion mode:[/bold] pick the channels your phone will use.\n"
         )
 
-    choices = [f"{ch_id:9} - {label}" for ch_id, label, _ in CHANNELS]
+    # Mark the scaffold channels inline so a non-technical user sees they
+    # aren't wired yet (config is accepted but the runtime is a stub),
+    # without adding a separate prompt that would change the wizard's
+    # interaction contract (#433). The ch_id prefix is unchanged, so
+    # downstream parsing (p.split()[0]) is unaffected.
+    _SCAFFOLD = {"whatsapp", "sms", "imessage"}
+    choices = [
+        f"{ch_id:9} - {label}" + ("  [experimental — not wired yet]"
+                                   if ch_id in _SCAFFOLD else "")
+        for ch_id, label, _ in CHANNELS
+    ]
     picked = _q_checkbox("Which channels do you want to enable?", choices)
     picked_ids = [p.split()[0] for p in picked]
 
