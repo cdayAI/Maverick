@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from click.testing import CliRunner
 
-
 # ---------- JobQueue.cancel ----------
 
 def test_cancel_removes_pending_job(tmp_path):

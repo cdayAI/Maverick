@@ -43,7 +43,6 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +78,7 @@ class CatalogEntry:
     install_count: int = 0
 
     @classmethod
-    def from_dict(cls, kind: str, d: dict) -> "CatalogEntry":
+    def from_dict(cls, kind: str, d: dict) -> CatalogEntry:
         if not d.get("name") or not d.get("source"):
             raise CatalogError(f"catalog entry missing name/source: {d!r}")
         return cls(
@@ -121,7 +120,7 @@ def _cache_path(url: str) -> Path:
     return _CACHE_DIR / f"{h}.json"
 
 
-def _fetch_index_raw(url: str) -> Optional[dict]:
+def _fetch_index_raw(url: str) -> dict | None:
     """Fetch + parse one index JSON, with a 6h on-disk cache.
 
     Returns None (not raise) on any network/parse failure so an
@@ -164,7 +163,7 @@ def _fetch_index_raw(url: str) -> Optional[dict]:
     return data
 
 
-def load_catalog(kind: str, *, indexes: Optional[list[str]] = None) -> list[CatalogEntry]:
+def load_catalog(kind: str, *, indexes: list[str] | None = None) -> list[CatalogEntry]:
     """Return merged catalog entries for ``kind`` across all indexes.
 
     Earlier indexes win on name collision. Malformed entries are
@@ -190,7 +189,7 @@ def load_catalog(kind: str, *, indexes: Optional[list[str]] = None) -> list[Cata
     return sorted(seen.values(), key=lambda e: e.name)
 
 
-def resolve(name: str, kind: str, *, indexes: Optional[list[str]] = None) -> Optional[CatalogEntry]:
+def resolve(name: str, kind: str, *, indexes: list[str] | None = None) -> CatalogEntry | None:
     """Find a single entry by name, or None."""
     for entry in load_catalog(kind, indexes=indexes):
         if entry.name == name:

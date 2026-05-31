@@ -23,12 +23,11 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
 from typing import Any
+from urllib.parse import urlparse
 
 from . import Tool
 from .http_fetch import _is_private_ip
-
 
 
 def _scrub() -> dict:

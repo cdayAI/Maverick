@@ -16,7 +16,6 @@ from pathlib import Path
 
 from . import Tool
 
-
 MAX_READ_BYTES = 8000
 
 

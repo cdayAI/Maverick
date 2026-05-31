@@ -24,8 +24,8 @@ import logging
 import signal
 import threading
 import traceback
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 from .job_queue import Job, JobQueue
 
@@ -48,9 +48,9 @@ class GoalRunFailed(Exception):
 class Worker:
     def __init__(
         self,
-        queue: Optional[JobQueue] = None,
+        queue: JobQueue | None = None,
         *,
-        db_path: Optional[Path] = None,
+        db_path: Path | None = None,
         idle_sleep: float = 2.0,
         max_attempts: int = 5,
         retry_after: float = 60.0,

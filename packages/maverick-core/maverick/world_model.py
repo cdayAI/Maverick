@@ -16,10 +16,10 @@ import os
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional
-
+from typing import Any
 
 DEFAULT_DB = Path.home() / ".maverick" / "world.db"
 SCHEMA_VERSION = 9
@@ -245,24 +245,24 @@ MIGRATIONS: dict[int, list[str]] = {
 @dataclass
 class Goal:
     id: int
-    parent_id: Optional[int]
+    parent_id: int | None
     title: str
-    description: Optional[str]
+    description: str | None
     status: str
     created_at: float
     updated_at: float
-    deadline: Optional[float]
-    result: Optional[str]
+    deadline: float | None
+    result: str | None
 
 
 @dataclass
 class Question:
     id: int
-    goal_id: Optional[int]
+    goal_id: int | None
     question: str
     asked_at: float
-    answer: Optional[str]
-    answered_at: Optional[float]
+    answer: str | None
+    answered_at: float | None
 
 
 @dataclass
@@ -270,11 +270,11 @@ class Approval:
     id: int
     action: str
     risk: str
-    scope: Optional[str]
-    detail: Optional[str]
+    scope: str | None
+    detail: str | None
     status: str
     requested_at: float
-    decided_at: Optional[float]
+    decided_at: float | None
 
 
 @dataclass
@@ -282,8 +282,8 @@ class EpisodeSpend:
     id: int
     goal_id: int
     started_at: float
-    ended_at: Optional[float]
-    outcome: Optional[str]
+    ended_at: float | None
+    outcome: str | None
     cost_dollars: float
     input_tokens: int
     output_tokens: int
@@ -313,7 +313,7 @@ class Conversation:
 class Turn:
     id: int
     conversation_id: int
-    goal_id: Optional[int]
+    goal_id: int | None
     role: str
     content: str
     ts: float
@@ -399,7 +399,7 @@ class WorldModel:
         self.conn.commit()
 
     @contextlib.contextmanager
-    def _writing(self) -> "Iterator[sqlite3.Connection]":
+    def _writing(self) -> Iterator[sqlite3.Connection]:
         """Acquire the write lock, yield the connection, commit on clean exit.
 
         Use this around every INSERT/UPDATE/DELETE sequence. If the body
@@ -553,7 +553,7 @@ class WorldModel:
         return row[0] if row else 0
 
     # ----- goals -----
-    def create_goal(self, title: str, description: str = "", parent_id: Optional[int] = None) -> int:
+    def create_goal(self, title: str, description: str = "", parent_id: int | None = None) -> int:
         now = time.time()
         with self._writing() as conn:
             cur = conn.execute(
@@ -563,22 +563,22 @@ class WorldModel:
             )
             return cur.lastrowid
 
-    def set_goal_status(self, goal_id: int, status: str, result: Optional[str] = None) -> None:
+    def set_goal_status(self, goal_id: int, status: str, result: str | None = None) -> None:
         with self._writing() as conn:
             conn.execute(
                 "UPDATE goals SET status = ?, updated_at = ?, result = COALESCE(?, result) WHERE id = ?",
                 (status, time.time(), result, goal_id),
             )
 
-    def get_goal(self, goal_id: int) -> Optional[Goal]:
+    def get_goal(self, goal_id: int) -> Goal | None:
         row = self.conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
         return Goal(**dict(row)) if row else None
 
     def list_goals(
         self,
-        status: Optional[str] = None,
+        status: str | None = None,
         *,
-        limit: Optional[int] = None,
+        limit: int | None = None,
         offset: int = 0,
         order: str = "asc",
     ) -> list[Goal]:
@@ -602,7 +602,7 @@ class WorldModel:
         rows = self.conn.execute(sql, params).fetchall()
         return [Goal(**dict(r)) for r in rows]
 
-    def active_goal(self) -> Optional[Goal]:
+    def active_goal(self) -> Goal | None:
         row = self.conn.execute(
             "SELECT * FROM goals WHERE status IN ('active', 'blocked') ORDER BY updated_at DESC LIMIT 1"
         ).fetchone()
@@ -639,7 +639,7 @@ class WorldModel:
     def list_episodes(
         self,
         limit: int = 50,
-        goal_id: Optional[int] = None,
+        goal_id: int | None = None,
     ) -> list[EpisodeSpend]:
         if goal_id is not None:
             rows = self.conn.execute(
@@ -703,7 +703,7 @@ class WorldModel:
             return cur.rowcount
 
     # ----- facts -----
-    def upsert_fact(self, key: str, value: str, episode_id: Optional[int] = None) -> None:
+    def upsert_fact(self, key: str, value: str, episode_id: int | None = None) -> None:
         with self._writing() as conn:
             conn.execute(
                 "INSERT INTO facts(key, value, source_episode_id, updated_at) VALUES(?, ?, ?, ?) "
@@ -716,7 +716,7 @@ class WorldModel:
         return {r["key"]: r["value"] for r in rows}
 
     # ----- questions -----
-    def ask(self, question: str, goal_id: Optional[int] = None) -> int:
+    def ask(self, question: str, goal_id: int | None = None) -> int:
         with self._writing() as conn:
             cur = conn.execute(
                 "INSERT INTO questions(goal_id, question, asked_at) VALUES(?, ?, ?)",
@@ -731,7 +731,7 @@ class WorldModel:
                 (answer, time.time(), question_id),
             )
 
-    def open_questions(self, goal_id: Optional[int] = None) -> list[Question]:
+    def open_questions(self, goal_id: int | None = None) -> list[Question]:
         if goal_id is not None:
             rows = self.conn.execute(
                 "SELECT * FROM questions WHERE answer IS NULL AND goal_id = ? ORDER BY id", (goal_id,)
@@ -754,8 +754,8 @@ class WorldModel:
         action: str,
         *,
         risk: str = "medium",
-        scope: Optional[str] = None,
-        detail: Optional[str] = None,
+        scope: str | None = None,
+        detail: str | None = None,
     ) -> int:
         """Park a high-risk action for out-of-band (dashboard) approval."""
         with self._writing() as conn:
@@ -766,7 +766,7 @@ class WorldModel:
             )
             return cur.lastrowid
 
-    def get_approval(self, approval_id: int) -> Optional[Approval]:
+    def get_approval(self, approval_id: int) -> Approval | None:
         row = self.conn.execute(
             "SELECT * FROM approvals WHERE id = ?", (approval_id,)
         ).fetchone()
@@ -834,7 +834,7 @@ class WorldModel:
         conversation_id: int,
         role: str,
         content: str,
-        goal_id: Optional[int] = None,
+        goal_id: int | None = None,
     ) -> int:
         if role not in ("user", "assistant"):
             raise ValueError(f"role must be 'user' or 'assistant', got {role!r}")
@@ -856,7 +856,7 @@ class WorldModel:
         ).fetchall()
         return list(reversed([Turn(**dict(r)) for r in rows]))
 
-    def list_conversations(self, channel: Optional[str] = None) -> list[Conversation]:
+    def list_conversations(self, channel: str | None = None) -> list[Conversation]:
         if channel:
             rows = self.conn.execute(
                 "SELECT * FROM conversations WHERE channel = ? ORDER BY last_seen DESC",
@@ -873,7 +873,7 @@ class WorldModel:
         self,
         channel: str,
         external_id: str,
-        goal_id: Optional[int] = None,
+        goal_id: int | None = None,
     ) -> bool:
         """Record an inbound message as processed; idempotent.
 
@@ -898,7 +898,7 @@ class WorldModel:
         self,
         channel: str,
         external_id: str,
-    ) -> Optional[int]:
+    ) -> int | None:
         """Return the goal_id for an already-processed message, if any.
 
         Distinguishes 'no row' (returns None) from 'row exists but goal_id

@@ -8,13 +8,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Optional
+from typing import Any
 
 from .agent import Agent
 from .blackboard import Blackboard
 from .budget import Budget, BudgetExceeded
-from .llm import LLM
-from .llm import model_for_role
+from .llm import LLM, model_for_role
 from .mcp_client import load_mcp_specs_from_config, start_mcp_clients, stop_mcp_clients
 from .sandbox import LocalBackend
 from .skills import distill
@@ -24,7 +23,7 @@ from .world_model import WorldModel
 log = logging.getLogger(__name__)
 
 
-def _build_shield() -> Optional[Any]:
+def _build_shield() -> Any | None:
     try:
         from maverick_shield import Shield
         return Shield.from_config()
@@ -51,7 +50,7 @@ def _fire_webhook(event: str, payload: dict[str, Any]) -> None:
 
 def _end_episode_with_spend(
     world: WorldModel, episode_id: int, summary: str, outcome: str, budget: Budget,
-    goal_id: Optional[int] = None,
+    goal_id: int | None = None,
 ) -> None:
     try:
         world.end_episode(
@@ -102,12 +101,12 @@ async def run_goal(
     world: WorldModel,
     budget: Budget,
     goal_id: int,
-    sandbox: Optional[Any] = None,
+    sandbox: Any | None = None,
     max_depth: int = 3,
-    conversation_id: Optional[int] = None,
-    channel: Optional[str] = None,
-    user_id: Optional[str] = None,
-    orchestrator_model_override: Optional[str] = None,
+    conversation_id: int | None = None,
+    channel: str | None = None,
+    user_id: str | None = None,
+    orchestrator_model_override: str | None = None,
 ) -> str:
     goal = world.get_goal(goal_id)
     if not goal:
@@ -500,13 +499,13 @@ def run_goal_sync(*args, **kwargs) -> str:
 
 
 async def run_goal_best_of_n(
-    llm: "LLM",
-    world: "WorldModel",
-    budget: "Budget",
+    llm: LLM,
+    world: WorldModel,
+    budget: Budget,
     goal_id: int,
-    sandbox: Optional[Any] = None,
+    sandbox: Any | None = None,
     max_depth: int = 3,
-    conversation_id: Optional[int] = None,
+    conversation_id: int | None = None,
     n: int = 4,
 ) -> str:
     """Coding-mode best-of-N: run N independent attempts, pick the one
@@ -523,8 +522,10 @@ async def run_goal_best_of_n(
         Candidate,
         evaluate_candidate,
         extract_unified_diff,
-        from_env as _cm_from_env,
         select_best_candidate,
+    )
+    from .coding_mode import (
+        from_env as _cm_from_env,
     )
 
     cfg = _cm_from_env()
@@ -667,9 +668,9 @@ async def run_goal_best_of_n(
     best = select_best_candidate(candidates)
     if best is None or not best.patch:
         return (
-            "Stopped: none of the {n} attempts produced an applyable patch.\n"
-            "[{summary}]"
-        ).format(n=len(candidates), summary=budget.summary())
+            f"Stopped: none of the {len(candidates)} attempts produced an applyable patch.\n"
+            f"[{budget.summary()}]"
+        )
 
     test_note = (
         f"\n\n[best of {len(candidates)}; score={best.score:.2f}]"

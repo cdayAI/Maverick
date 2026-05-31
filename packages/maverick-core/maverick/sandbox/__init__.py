@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional, Union
 
 from .devcontainer import DevcontainerBackend
 from .docker import DockerBackend
@@ -34,10 +33,10 @@ __all__ = [
     "build_sandbox",
 ]
 
-Sandbox = Union[
-    LocalBackend, DockerBackend, PodmanBackend, DevcontainerBackend,
-    KubernetesBackend, FirecrackerBackend, SSHBackend,
-]
+Sandbox = (
+    LocalBackend | DockerBackend | PodmanBackend | DevcontainerBackend
+    | KubernetesBackend | FirecrackerBackend | SSHBackend
+)
 
 
 # Default container image per coding language. When ``[sandbox] image`` isn't
@@ -82,8 +81,8 @@ def _resolve_image(full_cfg: dict) -> str:
 
 
 def build_sandbox(
-    workdir: Optional[Union[str, Path]] = None,
-    backend: Optional[str] = None,
+    workdir: str | Path | None = None,
+    backend: str | None = None,
 ) -> Sandbox:
     """Construct the configured sandbox backend.
 

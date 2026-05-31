@@ -33,7 +33,6 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from .local import ExecResult
 
@@ -52,7 +51,7 @@ class FirecrackerBackend:
     image: str = "ubuntu:24.04-maverick"
     timeout: float = 60.0
     provider: str = "local"
-    api_key: Optional[str] = None
+    api_key: str | None = None
     network: str = "egress-deny"   # egress-deny | egress-allow | bridge=<name>
 
     def __post_init__(self):
@@ -77,7 +76,7 @@ class FirecrackerBackend:
                 f"Firecracker provider must be 'local' or 'e2b', got {self.provider!r}"
             )
 
-    def exec(self, cmd: str, timeout: Optional[float] = None) -> ExecResult:
+    def exec(self, cmd: str, timeout: float | None = None) -> ExecResult:
         # Wave 11: per-call timeout propagated to underlying providers
         # via a temporary self.timeout swap. Both _exec_e2b and
         # _exec_local read self.timeout; restore on exit.

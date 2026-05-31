@@ -5,9 +5,7 @@ import hashlib
 import json
 
 import pytest
-
 from maverick import catalog
-
 
 _SKILL_BODY = """---
 name: summarize-url
