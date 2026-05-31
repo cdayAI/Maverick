@@ -1408,18 +1408,21 @@ def session_clear(provider: str) -> None:
         sys.exit(1)
 
 
-def _conversation_user_matches(conv_user_id: str, requested: str) -> bool:
+def _conversation_user_matches(conv_user_id: str, requested: str, channel: str) -> bool:
     """Match a conversation's user_id for erase/export-user.
 
-    The CLI `chat` REPL scopes each session to a unique ``<user>:<uuid>``
-    id (e.g. ``local:ab12...``), so an exact match on the documented
-    ``--user local`` would miss every CLI chat conversation -- a user could
-    never erase or export their own chat history (a GDPR right-to-erasure /
-    right-of-access gap). Match the exact id OR the colon-scoped session
-    family, so ``--user local`` covers all ``local:*`` sessions while plain
-    channel ids (telegram, sms) still match exactly.
+    Most channels store externally supplied user ids and must match exactly:
+    identifiers such as Twilio WhatsApp ``whatsapp:+15551234567`` or Matrix
+    room ids naturally contain colons, so treating any ``<prefix>:`` as the
+    requested user can disclose or erase unrelated conversations.
+
+    The only family match Maverick currently needs is the local CLI chat
+    namespace: each REPL session is stored as ``local:<uuid>``, while the
+    documented GDPR subject is ``--channel cli --user local``.
     """
-    return conv_user_id == requested or conv_user_id.startswith(requested + ":")
+    if conv_user_id == requested:
+        return True
+    return channel == "cli" and requested == "local" and conv_user_id.startswith("local:")
 
 
 @main.command()
@@ -1436,7 +1439,7 @@ def erase(ctx, channel: str, user: str, yes: bool) -> None:
     world = open_world(ctx.obj["db"])
     convs = [
         c for c in world.list_conversations(channel)
-        if _conversation_user_matches(c.user_id, user)
+        if _conversation_user_matches(c.user_id, user, channel)
     ]
     if not convs:
         click.echo(f"no conversation found for {channel}:{user}")
@@ -1658,7 +1661,7 @@ def export_user(ctx, channel: str, user: str, output) -> None:
     world = open_world(ctx.obj["db"])
     convs = [
         c for c in world.list_conversations(channel)
-        if _conversation_user_matches(c.user_id, user)
+        if _conversation_user_matches(c.user_id, user, channel)
     ]
     data = {
         "channel": channel,
