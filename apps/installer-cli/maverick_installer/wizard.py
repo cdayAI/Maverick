@@ -639,7 +639,7 @@ def pick_channels(deployment: str) -> tuple[dict[str, dict[str, Any]], set[str]]
             # Collect the provider-specific key so the wizard actually prompts
             # for it; otherwise a retell/bland config references ${RETELL_API_KEY}
             # / ${BLAND_API_KEY} that the user was never asked to enter.
-            needed.add(key_env)
+            envs.add(key_env)
             cfg["api_key"] = "${" + key_env + "}"
             # Inbound webhook auth is Vapi-shaped today; keep the token ref.
             cfg["webhook_token"] = "${VAPI_WEBHOOK_TOKEN}"
