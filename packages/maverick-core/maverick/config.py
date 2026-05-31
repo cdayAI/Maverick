@@ -175,3 +175,21 @@ def get_self_learning() -> dict:
         "add_mcp_servers": bool(cfg.get("add_mcp_servers", True)),
         "max_acquisitions": max(1, max_acq),
     }
+
+
+def get_durable() -> dict:
+    """Return the ``[durable]`` section with defaults filled in.
+
+    Durable execution (checkpoint/resume) is OFF by default so the kernel
+    keeps current warm-restart behavior out of the box. ``keep_last`` caps how
+    many checkpoints are retained per agent for rewind/history.
+    """
+    cfg = load_config().get("durable", {})
+    try:
+        keep = int(cfg.get("keep_last", 5))
+    except (TypeError, ValueError):
+        keep = 5
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "keep_last": max(1, keep),
+    }
