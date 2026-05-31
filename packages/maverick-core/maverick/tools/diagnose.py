@@ -74,7 +74,7 @@ def _check_sandbox() -> list[str]:
         cfg = get_sandbox()
     except Exception:
         cfg = {}
-    backend = cfg.get("backend", "local")
+    backend = str(cfg.get("backend", "local") or "local").strip().lower()
     out = [f"  ✓ sandbox backend: {backend}"]
     if backend == "docker":
         if not shutil.which("docker"):
@@ -105,7 +105,7 @@ def _check_toolchains() -> list[str]:
     out = [f"  ✓ coding toolchains on PATH: {', '.join(present) or '(none)'}"]
     try:
         from ..config import get_sandbox
-        backend = get_sandbox().get("backend", "local")
+        backend = str(get_sandbox().get("backend", "local") or "local").strip().lower()
     except Exception:
         backend = "local"
     if backend == "local":

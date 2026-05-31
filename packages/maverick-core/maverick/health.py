@@ -94,7 +94,10 @@ def _check_openai() -> None:
 
 
 def _check_sandbox(cfg: dict) -> None:
-    backend = cfg.get("sandbox", {}).get("backend", "local")
+    # Match build_sandbox(): the backend is user-typed config and is compared
+    # case-sensitively below, so normalize or a valid "Docker" misreports as
+    # the "unsupported" catch-all while build_sandbox actually runs it.
+    backend = str(cfg.get("sandbox", {}).get("backend", "local") or "local").strip().lower()
     if backend == "local":
         _row(GREEN, "sandbox", "local subprocess")
         return

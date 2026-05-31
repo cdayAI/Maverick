@@ -89,3 +89,34 @@ class TestNotifyBackendCasing:
         # "None" must disable just like "none" -- nothing dispatched, returns 0.
         monkeypatch.setattr(notif, "_send_discord", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not fire")))
         assert notif.notify("x", backends=["None"], async_dispatch=False) == 0
+
+
+class TestDiagnosticsSandboxCasing:
+    # The `maverick health` / `diagnose` readouts read the same user-typed
+    # sandbox backend; they must normalize like build_sandbox or a valid
+    # "Docker" config misreports (skips the docker probe / unsupported row).
+    def test_health_routes_mixed_case_docker_to_docker_probe(self, monkeypatch):
+        from maverick import health
+        rows: list[str] = []
+        monkeypatch.setattr(health, "_row", lambda color, name, msg, **k: rows.append(msg))
+        monkeypatch.setattr("shutil.which", lambda name: None)  # docker "absent"
+        health._check_sandbox({"sandbox": {"backend": "Docker"}})
+        text = " ".join(rows)
+        assert "docker not on PATH" in text          # took the docker branch
+        assert "supported in v0.1" not in text        # not the unsupported catch-all
+
+    def test_diagnose_sandbox_routes_mixed_case_docker(self, monkeypatch):
+        from maverick import config
+        from maverick.tools import diagnose as d
+        monkeypatch.setattr(config, "get_sandbox", lambda: {"backend": "Docker"})
+        monkeypatch.setattr("shutil.which", lambda name: None)  # docker "absent"
+        joined = "\n".join(d._check_sandbox())
+        assert "docker binary not on PATH" in joined
+
+    def test_diagnose_toolchains_treats_mixed_case_local_as_local(self, monkeypatch):
+        from maverick import config
+        from maverick.tools import diagnose as d
+        monkeypatch.setattr(config, "get_sandbox", lambda: {"backend": "LOCAL"})
+        monkeypatch.setattr(d, "_TOOLCHAINS", [("cobol", "maverick-no-such-binary-xyz")])
+        joined = "\n".join(d._check_toolchains())
+        assert "can't build/test" in joined           # treated as local despite casing
