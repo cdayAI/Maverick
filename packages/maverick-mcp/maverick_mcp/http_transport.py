@@ -40,12 +40,12 @@ log = logging.getLogger(__name__)
 
 
 try:
-    from fastapi import FastAPI, Header, HTTPException, Request
+    from fastapi import FastAPI, Header, HTTPException, Request, Response
     from fastapi.responses import JSONResponse, StreamingResponse
     _HAVE_FASTAPI = True
 except ImportError:
     _HAVE_FASTAPI = False
-    FastAPI = Header = HTTPException = Request = None  # type: ignore
+    FastAPI = Header = HTTPException = Request = Response = None  # type: ignore
     JSONResponse = StreamingResponse = None  # type: ignore
 
 
@@ -97,8 +97,11 @@ def build_app(server) -> FastAPI:
         if not _check_bearer(authorization):
             raise HTTPException(status_code=401, detail="invalid bearer")
         body = await request.json()
-        is_notification = "id" not in body
         request_id = body.get("id")
+        # Match the stdio transport: a JSON-RPC notification is a message
+        # with no id (or id == null). Keying on `"id" not in body` diverged
+        # from stdio, which treats {"id": null} as a notification.
+        is_notification = request_id is None
         method = body.get("method", "")
         params = body.get("params", {}) or {}
 
@@ -117,14 +120,18 @@ def build_app(server) -> FastAPI:
             else:
                 code, message = -32603, f"internal error: {e}"
             if is_notification:
-                return JSONResponse({}, status_code=204)
+                # 204 must carry no body; JSONResponse({}) writes "{}" which
+                # strict proxies (e.g. Cloudflare, a named deploy target)
+                # reject as a protocol violation.
+                return Response(status_code=204)
             return JSONResponse({
                 "jsonrpc": "2.0", "id": request_id,
                 "error": {"code": code, "message": message},
             })
 
         if is_notification:
-            return JSONResponse({}, status_code=204)
+            # 204 must carry no body (see above).
+            return Response(status_code=204)
         return JSONResponse({
             "jsonrpc": "2.0", "id": request_id, "result": result,
         })
