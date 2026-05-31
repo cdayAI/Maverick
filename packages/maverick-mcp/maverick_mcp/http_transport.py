@@ -7,11 +7,16 @@ gateways like Composio / MintMCP / Cloudflare — clients need an HTTP
 endpoint.
 
 This module ships a single POST endpoint that accepts JSON-RPC
-requests and returns JSON-RPC responses synchronously. The MCP
-2025-11-25 Streamable HTTP spec also allows Server-Sent Events for
-streaming results (long-running tools, sampling); that SSE path is
-NOT implemented yet — every request gets one blocking JSON-RPC
-response. Clients that need streaming should not assume it here.
+requests. When the client sends ``Accept: text/event-stream``, the
+response is a Server-Sent Events stream (MCP 2025-11-25 Streamable
+HTTP): for a long-running request the server emits
+``notifications/progress`` events while the work runs, then the final
+JSON-RPC response, then closes. Without that Accept header it returns a
+single blocking ``application/json`` response, exactly as before.
+
+Not yet implemented: server-initiated ``sampling`` (the server asking
+the client's LLM to complete) — that needs a bidirectional channel and
+is a separate follow-up.
 
 Usage::
 
@@ -101,6 +106,34 @@ def _check_bearer(authorization: str | None) -> bool:
     return hmac.compare_digest(expected, given)
 
 
+def _result_envelope(request_id, result: dict) -> dict:
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def _error_envelope(request_id, exc: Exception) -> dict:
+    from .server import _ProtocolError
+    if isinstance(exc, _ProtocolError):
+        code, message = exc.code, exc.message
+    else:
+        code, message = -32603, f"internal error: {exc}"
+    return {"jsonrpc": "2.0", "id": request_id,
+            "error": {"code": code, "message": message}}
+
+
+def _sse(obj: dict) -> str:
+    """Format a JSON-RPC message as one SSE event."""
+    return f"data: {json.dumps(obj)}\n\n"
+
+
+def _heartbeat_seconds() -> float:
+    """Progress-heartbeat cadence for SSE streams. Override via
+    MAVERICK_MCP_SSE_HEARTBEAT (seconds)."""
+    try:
+        return max(0.01, float(os.environ.get("MAVERICK_MCP_SSE_HEARTBEAT", "15")))
+    except ValueError:
+        return 15.0
+
+
 def build_app(server) -> FastAPI:
     """Wrap an MCPServer instance in a Streamable HTTP transport.
 
@@ -139,33 +172,59 @@ def build_app(server) -> FastAPI:
         request_id = body.get("id")
         method = body.get("method", "")
         params = body.get("params", {}) or {}
+        accepts_sse = "text/event-stream" in (request.headers.get("accept") or "")
 
-        # Route via the existing MCPServer dispatcher. The dispatch is
-        # SYNCHRONOUS and the swarm tools call run_goal_sync() -> asyncio.run,
-        # which raises "asyncio.run() cannot be called from a running event
-        # loop" if invoked inline under FastAPI's loop. Run it in a worker
-        # thread so it gets its own loop; this fixes maverick_start /
-        # maverick_resume over HTTP (they were completely broken).
+        # Streamable HTTP: when the client accepts SSE and this is a real
+        # request (not a fire-and-forget notification), stream progress
+        # while the work runs, then the final JSON-RPC response. Dispatch
+        # always goes to a worker thread -- the swarm tools call
+        # run_goal_sync() -> asyncio.run, which can't run inline under
+        # FastAPI's loop.
+        if accepts_sse and not is_notification:
+            progress_token = (params.get("_meta") or {}).get("progressToken")
+
+            async def _stream():
+                task = asyncio.create_task(
+                    asyncio.to_thread(_dispatch, server, method, params)
+                )
+                interval = _heartbeat_seconds()
+                progress = 0
+                while not task.done():
+                    done, _pending = await asyncio.wait({task}, timeout=interval)
+                    if task in done:
+                        break
+                    # Progress notifications are only valid when the client
+                    # supplied a token to correlate them (per spec).
+                    if progress_token is not None:
+                        progress += 1
+                        yield _sse({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/progress",
+                            "params": {
+                                "progressToken": progress_token,
+                                "progress": progress,
+                                "message": "working",
+                            },
+                        })
+                try:
+                    yield _sse(_result_envelope(request_id, task.result()))
+                except Exception as e:
+                    yield _sse(_error_envelope(request_id, e))
+
+            return StreamingResponse(_stream(), media_type="text/event-stream")
+
+        # Blocking JSON path (default). Dispatch runs in a worker thread
+        # for the same asyncio.run reason as above.
         try:
             result = await asyncio.to_thread(_dispatch, server, method, params)
         except Exception as e:
-            from .server import _ProtocolError
-            if isinstance(e, _ProtocolError):
-                code, message = e.code, e.message
-            else:
-                code, message = -32603, f"internal error: {e}"
             if is_notification:
                 return JSONResponse({}, status_code=204)
-            return JSONResponse({
-                "jsonrpc": "2.0", "id": request_id,
-                "error": {"code": code, "message": message},
-            })
+            return JSONResponse(_error_envelope(request_id, e))
 
         if is_notification:
             return JSONResponse({}, status_code=204)
-        return JSONResponse({
-            "jsonrpc": "2.0", "id": request_id, "result": result,
-        })
+        return JSONResponse(_result_envelope(request_id, result))
 
     @app.get("/healthz")
     async def healthz():
