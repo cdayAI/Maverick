@@ -64,6 +64,8 @@ crossing those needs explicit consent or shield approval.
 |------------------------------------------|------------------------------------------------------------------------------|
 | Attacker impersonates the user to a channel adapter (Discord etc.) | Channel auth tokens stored chmod 600; webhook receivers HMAC-signed (Q2 26). |
 | Prompt injection from a fetched URL makes the agent issue tools as the user | Shield scan of inputs; injected-content detection (Q3 26). Tool ACLs limit blast radius. |
+| Prompt injection obfuscated to slip past keyword rules (zero-width chars, homoglyphs, full-width/styled unicode) | Built-in shield normalizes before matching (`normalize_for_match`: NFKC + invisible-char strip + homoglyph fold) and scans the de-obfuscated copy alongside the raw text. |
+| Remote peer drives the A2A task endpoint (`/a2a/v1`) as if local | Bearer required (`MAVERICK_A2A_TOKEN`); the `ALLOW_UNAUTHENTICATED` opt-out is honored only for a loopback/in-process peer, so a publicly bound transport can't be driven unauthenticated. |
 | Subagent claims a capability it doesn't have | Capability tokens (Q4 26) make declared capabilities unforgeable.            |
 | Webhook receiver believes a forged event | `X-Maverick-Signature` HMAC; `verify_signature()` helper.                    |
 
@@ -116,7 +118,7 @@ crossing those needs explicit consent or shield approval.
 | Threat                                                  | Mitigation                                                                            |
 |---------------------------------------------------------|----------------------------------------------------------------------------------------|
 | Plugin escapes its declared capabilities               | Plugin manifest declares permissions; tool ACLs filter at registry time.               |
-| Browser tool reaches private/loopback addresses        | `http_fetch` refuses private IPs by default; `MAVERICK_FETCH_ALLOW_PRIVATE=1` opt-in.  |
+| Browser/fetch tool reaches private/loopback addresses (incl. cloud metadata) | Model-supplied URLs resolve **once** and pin the connection to that IP (`tools/_ssrf.py`), so a DNS-rebind can't swap a public check for an internal connect; every resolved address must be public. `MAVERICK_FETCH_ALLOW_PRIVATE=1` opt-in. Covers `http_fetch`, `openapi_runner`, `pdf_reader`, `ocr`, `view_image`, and the A2A push-notification webhook. |
 | Computer-use tool drives mouse/keyboard outside scope  | Kill switch `MAVERICK_COMPUTER_DISABLE=1`; consent prompt for first session (Q2 26).   |
 | Shell tool reads sensitive files (gold patches, etc.)  | Opaque-mode blocklists for benchmark contexts; tool ACLs.                              |
 | Subagent gains tools the parent doesn't have           | Spawn-tools layer; tool ACLs apply at every level.                                     |
