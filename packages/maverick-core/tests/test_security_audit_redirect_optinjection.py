@@ -13,10 +13,7 @@ Covers four findings:
 """
 from __future__ import annotations
 
-import urllib.request
-
 import pytest
-
 
 # ---------- 1. SSRF redirect revalidation ----------
 
