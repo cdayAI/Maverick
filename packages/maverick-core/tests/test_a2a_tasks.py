@@ -90,72 +90,6 @@ def test_cancel_pending_task():
     assert eng.cancel({"id": t.id})["status"]["state"] == "canceled"
 
 
-def test_push_to_private_url_is_refused(monkeypatch):
-    """An authenticated caller must not be able to make the server POST the
-    task to an internal/metadata address (SSRF via pushNotificationConfig)."""
-    posted = []
-
-    class _FakeAsyncClient:
-        def __init__(self, *a, **k):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def post(self, url, **kw):
-            posted.append(url)
-
-    import httpx
-    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
-
-    eng = TaskEngine(runner=_fake_runner)
-    t = asyncio.run(eng.send(_msg("x")))
-    tid = t["id"]
-    # Register a push webhook pointing at the cloud-metadata endpoint.
-    eng.set_push_config({
-        "taskId": tid,
-        "pushNotificationConfig": {"url": "http://169.254.169.254/latest/meta-data"},
-    })
-    asyncio.run(eng._fire_push(eng._tasks[tid]))
-    assert posted == []  # blocked by the SSRF guard, never sent
-
-
-def test_push_to_public_url_is_sent(monkeypatch):
-    posted = []
-
-    class _FakeAsyncClient:
-        def __init__(self, *a, **k):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def post(self, url, **kw):
-            posted.append(url)
-
-    import httpx
-    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
-    # Don't do real DNS for the public host; force the guard to allow it.
-    import maverick.tools.http_fetch as hf
-    monkeypatch.setattr(hf, "is_blocked_host", lambda h: False)
-
-    eng = TaskEngine(runner=_fake_runner)
-    t = asyncio.run(eng.send(_msg("x")))
-    tid = t["id"]
-    eng.set_push_config({
-        "taskId": tid,
-        "pushNotificationConfig": {"url": "https://hooks.example.com/cb"},
-    })
-    asyncio.run(eng._fire_push(eng._tasks[tid]))
-    assert posted == ["https://hooks.example.com/cb"]
-
-
 def test_push_config_set_and_get():
     eng = TaskEngine(runner=_fake_runner)
     t = eng._new_task(_msg("x"))
@@ -198,6 +132,55 @@ def test_budget_is_clamped_to_ceiling(monkeypatch):
     eng = TaskEngine(runner=rec)
     asyncio.run(eng.send(_msg("hi")))
     assert captured["d"] == 2.5
+
+
+# ---- push-notification SSRF guard ------------------------------------
+
+def _spy_async_post(monkeypatch):
+    """Replace AsyncClient.post with a spy; return the list it records into."""
+    import httpx
+    posted: list[str] = []
+
+    async def _post(self, url, **kw):
+        posted.append(str(url))
+
+        class _R:
+            status_code = 200
+
+        return _R()
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _post)
+    return posted
+
+
+@pytest.mark.parametrize("url", [
+    "http://169.254.169.254/latest/meta-data/",  # cloud metadata
+    "http://127.0.0.1:8765/api/v1/killswitch",   # loopback control surface
+    "http://[::1]/",                             # loopback v6
+    "file:///etc/passwd",                        # non-http scheme
+])
+def test_push_blocks_ssrf_to_internal_targets(monkeypatch, url):
+    """A caller-supplied push URL pointing at an internal/non-public host must
+    not result in an outbound request (SSRF guard, fail-closed)."""
+    posted = _spy_async_post(monkeypatch)
+    eng = TaskEngine(runner=_fake_runner)
+    t = eng._new_task(_msg("x"))
+    t.set_state("completed")
+    t.push_config = {"url": url}
+    asyncio.run(eng._fire_push(t))
+    assert posted == []  # request was blocked before any connection
+
+
+def test_push_allows_public_host(monkeypatch):
+    """A public push target still fires (the guard only blocks non-public)."""
+    posted = _spy_async_post(monkeypatch)
+    eng = TaskEngine(runner=_fake_runner)
+    t = eng._new_task(_msg("x"))
+    t.set_state("completed")
+    # Literal public IP: no DNS, so this is deterministic offline.
+    t.push_config = {"url": "http://93.184.216.34/wh"}
+    asyncio.run(eng._fire_push(t))
+    assert posted == ["http://93.184.216.34/wh"]
 
 
 # ---- HTTP wiring (FastAPI) -------------------------------------------

@@ -364,42 +364,37 @@ class TaskEngine:
         return {"taskId": task.id, "pushNotificationConfig": task.push_config}
 
     async def _fire_push(self, task: _Task) -> None:
-        """POST the terminal Task to a registered webhook (best-effort)."""
+        """POST the terminal Task to a registered webhook (best-effort).
+
+        The webhook URL is supplied by the (outward-facing) A2A caller, so it
+        is routed through the SSRF guard: a peer must not be able to make the
+        server POST the task to ``169.254.169.254`` / ``127.0.0.1`` / other
+        internal hosts. ``safe_async_client`` resolves once, rejects any
+        non-public address, and pins the connection (no rebind window).
+        """
         cfg = task.push_config
         if not cfg or task.state not in TERMINAL_STATES:
             return
-        url = cfg.get("url") or ""
-        # The push URL is supplied by the (authenticated) caller, and we make
-        # a server-side request to it -- a classic SSRF vector. Refuse non-
-        # http(s) schemes and hosts that resolve to a private/loopback/link-
-        # local/metadata address (honors MAVERICK_FETCH_ALLOW_PRIVATE=1).
         try:
-            from urllib.parse import urlparse
-
-            from .tools.http_fetch import is_blocked_host
-            parsed = urlparse(url)
-            if parsed.scheme not in ("http", "https") or not parsed.hostname:
-                log.warning("a2a push notify refused for %s: bad url %r", task.id, url)
-                return
-            if is_blocked_host(parsed.hostname):
-                log.warning(
-                    "a2a push notify refused for %s: %r resolves to a non-public "
-                    "address (SSRF guard)", task.id, parsed.hostname,
-                )
-                return
-        except Exception as e:  # pragma: no cover - defensive
-            log.warning("a2a push notify url validation failed for %s: %s", task.id, e)
-            return
-        try:
-            import httpx
+            from .tools._ssrf import BlockedHost, safe_async_client
         except Exception:  # pragma: no cover
             return
+        url = cfg.get("url") or ""
         headers = {}
         tok = cfg.get("token")
         if tok:
             headers["Authorization"] = f"Bearer {tok}"
+        # ``safe_async_client`` resolves the host once, rejects any non-public
+        # address, and pins the connection to that IP (Host/SNI preserved) --
+        # so there is no second lookup to rebind. A bad scheme or non-public
+        # host raises BlockedHost and we fail closed (no request sent).
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            client = safe_async_client(url, timeout=15.0)
+        except BlockedHost as e:
+            log.warning("a2a push notify blocked for %s (SSRF guard): %s", task.id, e)
+            return
+        try:
+            async with client:
                 await client.post(url, headers=headers, json=task.to_dict())
         except Exception as e:  # pragma: no cover
             log.warning("a2a push notify failed for %s: %s", task.id, e)
