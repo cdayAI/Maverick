@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 import re
 import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -377,8 +376,11 @@ def install_from_catalog(
 
 
 def _fetch_url(url: str) -> str:
+    # Route through the shared SSRF guard so a user-supplied https:// skill
+    # source can't be pointed at an internal/metadata address.
+    from .tools.http_fetch import guarded_urlopen
     try:
-        with urllib.request.urlopen(url, timeout=INSTALL_TIMEOUT) as resp:
+        with guarded_urlopen(url, timeout=INSTALL_TIMEOUT) as resp:
             if resp.status != 200:
                 raise ValueError(f"HTTP {resp.status} from {url}")
             chunks: list[bytes] = []
