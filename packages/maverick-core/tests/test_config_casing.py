@@ -66,3 +66,26 @@ class TestParseSpecProviderCasing:
     def test_only_first_colon_splits_provider(self):
         # Model ids can contain colons; split(":", 1) must preserve them.
         assert _parse_spec("openai:org/model:v2") == ("openai", "org/model:v2")
+
+
+class TestNotifyBackendCasing:
+    def test_mixed_case_backend_routes_to_handler(self, monkeypatch):
+        import maverick.notifications as notif
+        fired: list[str] = []
+        monkeypatch.setattr(notif, "_send_discord", lambda *a, **k: fired.append("discord") or True)
+        n = notif.notify("agent done", backends=["Discord"], async_dispatch=False)
+        assert fired == ["discord"]
+        assert n == 1
+
+    def test_backend_whitespace_and_case_tolerated(self, monkeypatch):
+        import maverick.notifications as notif
+        fired: list[str] = []
+        monkeypatch.setattr(notif, "_send_discord", lambda *a, **k: fired.append("discord") or True)
+        notif.notify("agent done", backends=["  DISCORD  "], async_dispatch=False)
+        assert fired == ["discord"]
+
+    def test_none_sentinel_is_case_insensitive(self, monkeypatch):
+        import maverick.notifications as notif
+        # "None" must disable just like "none" -- nothing dispatched, returns 0.
+        monkeypatch.setattr(notif, "_send_discord", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not fire")))
+        assert notif.notify("x", backends=["None"], async_dispatch=False) == 0
