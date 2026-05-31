@@ -258,8 +258,14 @@ def dashboard(host: str, port: int, token) -> None:
 
 
 @main.command()
-def mcp() -> None:
-    """Start the MCP server on stdio.
+@click.option("--http", "use_http", is_flag=True,
+              help="Serve over Streamable HTTP instead of stdio.")
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="Bind host (with --http).")
+@click.option("--port", default=8771, type=int, show_default=True,
+              help="Port (with --http).")
+def mcp(use_http: bool, host: str, port: int) -> None:
+    """Start the MCP server on stdio (or --http).
 
     This is Maverick's official cross-language surface. Any MCP-speaking
     client (TypeScript, Go, Rust, .NET, JVM, plus every IDE-side MCP
@@ -268,11 +274,23 @@ def mcp() -> None:
     docs/clients/typescript-quickstart.md for a 20-line example.
     """
     try:
-        from maverick_mcp.server import main as mcp_main
+        from maverick_mcp.server import MCPServer
     except ImportError:
         click.echo("Install: pip install maverick-mcp-server", err=True)
         sys.exit(2)
-    mcp_main()
+    if use_http:
+        try:
+            from maverick_mcp.http_transport import serve
+        except ImportError:
+            click.echo("Install: pip install 'maverick-mcp-server[http]'", err=True)
+            sys.exit(2)
+        serve(host=host, port=port)
+    else:
+        # Run the stdio server directly. Going through server.main() would
+        # re-parse sys.argv and reject the `mcp` subcommand token (the bug
+        # that made `maverick mcp` -- the command every quickstart uses --
+        # exit before serving).
+        MCPServer().run()
 
 
 @main.command()
