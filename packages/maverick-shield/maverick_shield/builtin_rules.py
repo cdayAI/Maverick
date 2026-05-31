@@ -19,7 +19,62 @@ users via the "agent-shield not installed" warning.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
+
+# --- Evasion-resistant normalization --------------------------------------
+# The rules below match plain text, so without a normalization pre-pass the
+# cheapest evasions defeat all of them: an invisible char splitting a keyword
+# ("ig<ZWSP>nore previous"), a look-alike letter from another script
+# ("ignоre" with a Cyrillic 'о'), or styled/full-width unicode ("ｉgnore").
+# `normalize_for_match` folds those back to ASCII so the rules see the real
+# instruction. We scan the normalized text *in addition to* the original, so
+# normalization can only ever add detections, never hide one.
+
+# Invisible characters to drop before matching: zero-width joiners/spaces and
+# the bidi-override block (the "Trojan Source" vector). Mirrors
+# maverick.safety.unicode_filter; kept self-contained so the shield has no
+# dependency on the agent kernel (it must be installable on its own).
+_STRIP_CODEPOINTS = frozenset({
+    0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF,                      # zero-width
+    0x202A, 0x202B, 0x202C, 0x202D, 0x202E,                      # bidi LRE..RLO
+    0x2066, 0x2067, 0x2068, 0x2069,                              # bidi isolates
+})
+_TAG_BLOCK = range(0xE0000, 0xE0080)  # invisible Unicode tag chars
+
+# Confusable letters NFKC does NOT fold (Cyrillic/Greek live in their own
+# scripts), mapped to the Latin letter they impersonate. Covers the common
+# homoglyph set used to smuggle keywords past keyword filters.
+_HOMOGLYPHS = str.maketrans({
+    # Cyrillic lower
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x",
+    "і": "i", "ј": "j", "ѕ": "s", "ԁ": "d", "ո": "n",
+    # Cyrillic upper
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O",
+    "Р": "P", "С": "C", "Т": "T", "У": "Y", "Х": "X",
+    # Greek
+    "α": "a", "ν": "v", "ο": "o", "ρ": "p", "τ": "t",
+    "Α": "A", "Β": "B", "Ε": "E", "Η": "H", "Ι": "I", "Κ": "K", "Μ": "M",
+    "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
+})
+
+
+def normalize_for_match(text: str) -> str:
+    """Fold common obfuscation back to ASCII so the rules see the real text.
+
+    NFKC (ligatures / full-width / styled letters -> ASCII) + invisible-char
+    stripping + homoglyph folding. Idempotent and allocation-light; safe to
+    run on every scan.
+    """
+    if not text:
+        return text
+    t = unicodedata.normalize("NFKC", text)
+    if any(ord(c) in _STRIP_CODEPOINTS or ord(c) in _TAG_BLOCK for c in t):
+        t = "".join(
+            c for c in t
+            if ord(c) not in _STRIP_CODEPOINTS and ord(c) not in _TAG_BLOCK
+        )
+    return t.translate(_HOMOGLYPHS)
 
 
 @dataclass
@@ -71,9 +126,17 @@ RULES: list[Rule] = [
          "URL parameter with base64 payload"),
 
     # Tool abuse markers (these trigger on tool-call args, not free text)
+    # Order-independent: matches rm with a recursive flag AND a force flag in
+    # any arrangement (-rf, -fr, -r -f, --recursive --force, -R...) targeting
+    # /, ~, or $HOME -- within a single command segment (no ; | & between).
     Rule("rm_rf_root", "critical",
-         _compile(r"\brm\s+-rf\s+(\/|~|\$HOME)(\s|$|\/)"),
-         "rm -rf against /, ~, or $HOME"),
+         _compile(
+             r"\brm\b"
+             r"(?=[^\n;|&]*(?:-[a-z]*r|--recursive))"
+             r"(?=[^\n;|&]*(?:-[a-z]*f|--force))"
+             r"[^\n;|&]*?(?:\s|=)(?:/|~|\$HOME)(?:\s|$|/)"
+         ),
+         "rm with recursive+force against /, ~, or $HOME"),
     Rule("sensitive_file_read", "high",
          _compile(r"(\/etc\/(passwd|shadow|ssh)|~\/\.ssh\/|~\/\.aws\/credentials|\.env\b)"),
          "Read of /etc/passwd, ssh keys, AWS creds, or .env"),
@@ -116,11 +179,18 @@ def scan(
     Blocked = True iff any rule fired at or above the configured threshold.
     """
     threshold_idx = _threshold_to_min_severity(block_threshold)
+    # Scan the raw text AND a de-obfuscated copy. Normalization only adds
+    # detections (it folds evasions back to ASCII), so checking both can never
+    # miss a match the raw scan would have made.
+    haystacks = [text]
+    normalized = normalize_for_match(text)
+    if normalized != text:
+        haystacks.append(normalized)
     matched: list[str] = []
     max_idx = -1
     max_sev = "none"
     for r in RULES:
-        if r.pattern.search(text):
+        if any(r.pattern.search(h) for h in haystacks):
             matched.append(r.name)
             idx = SEVERITY_ORDER[r.severity]
             if idx > max_idx:
