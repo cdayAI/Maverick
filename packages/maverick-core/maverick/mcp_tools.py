@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 # (b) smuggle the `__` namespace separator to collide with / shadow another
 # server's `mcp_<server>__<tool>` entry in the registry. Matches the MCP
 # spec's recommended tool-name shape.
-_VALID_TOOL_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_VALID_TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 
 
 def tools_from_mcp(client: MCPClient) -> list[Tool]:
@@ -43,7 +43,7 @@ def tools_from_mcp(client: MCPClient) -> list[Tool]:
         name = spec.get("name")
         if not name:
             continue
-        if not isinstance(name, str) or not _VALID_TOOL_NAME.match(name) or "__" in name:
+        if not isinstance(name, str) or not _VALID_TOOL_NAME.fullmatch(name) or "__" in name:
             # %r escapes any control chars, so the rejection log itself can't
             # be used to forge log lines.
             log.warning(
