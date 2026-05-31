@@ -145,6 +145,17 @@ class Shield:
         return cls(profile=safety["profile"], block_threshold=safety["block_threshold"])
 
     def _scan_via_backend(self, text: str) -> ShieldVerdict:
+        # Coerce non-str input to text BEFORE scanning. Previously a bytes /
+        # dict / None payload made the builtin regex `re.search` raise
+        # TypeError, which the except-clauses below swallowed into a fail-OPEN
+        # allow -- so `scan_input(b"ignore all previous instructions")` slipped
+        # a live payload straight through. Decode/stringify so the content is
+        # actually inspected.
+        if not isinstance(text, str):
+            if isinstance(text, (bytes, bytearray)):
+                text = bytes(text).decode("utf-8", errors="replace")
+            else:
+                text = str(text)
         if self.backend == self.BACKEND_NONE:
             return ShieldVerdict.allow()
         if self.backend == self.BACKEND_SDK:
