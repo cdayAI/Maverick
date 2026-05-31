@@ -604,13 +604,11 @@ _FORBIDDEN_PATH_PATTERNS = [
     # and plural `*_tests.py`.
     re.compile(r"(?:^|/)tests?\.py$"),
     re.compile(r"(?:^|/)[^/]+_tests\.py$"),
-    # NOTE: a `test[^/_][^/]*\.py$` pattern used to live here to catch
-    # `testfoo.py`-style names, but it also matched legitimate production
-    # modules (`testing.py`, `testutils.py`, `testimonials.py`), causing
-    # the grader-integrity blocker to refuse valid fixes to those files.
-    # The underscore-prefixed (`test_*.py`) and bare (`tests?.py`)
-    # conventions above already cover the real test-file naming schemes,
-    # so the over-broad prefix match is dropped.
+    # `unittest` discovery also treats bare `test*.py` names (for example
+    # `testfoo.py`) as tests.  Keep blocking those ambiguous names, but
+    # preserve known production modules that triggered the old broad
+    # `test[^/_][^/]*\.py$` false positive.
+    re.compile(r"(?:^|/)test(?!(?:ing|utils|imonials)\.py$)[^/_][^/]*\.py$"),
     re.compile(r"(?:^|/)__tests__/"),
     re.compile(r"\.test\.(?:js|jsx|ts|tsx)$"),
     re.compile(r"\.spec\.(?:js|jsx|ts|tsx|rb)$"),
