@@ -1265,12 +1265,21 @@ class Agent:
             blocked = False
             if run_parallel:
                 import asyncio as _asyncio
+                from . import net_concurrency as _netcc
                 # Account every call up front; record_tool_call mirrors
                 # the serial path (one per tool, same count).
                 for tc in resp.tool_calls:
                     self.ctx.budget.record_tool_call()
+
+                async def _run_capped(tc):
+                    # Per-host cap (#434): same-host network reads in this
+                    # turn are throttled by a semaphore; local/unknown tools
+                    # get a no-op context and stay fully concurrent.
+                    async with _netcc.limit(tc.name, tc.input):
+                        return await self._run_tool(tc.name, tc.input)
+
                 outputs = await _asyncio.gather(
-                    *(self._run_tool(tc.name, tc.input) for tc in resp.tool_calls)
+                    *(_run_capped(tc) for tc in resp.tool_calls)
                 )
                 # Preserve original call order in the results (matched by
                 # tool_use_id, but ordering keeps traces readable).
