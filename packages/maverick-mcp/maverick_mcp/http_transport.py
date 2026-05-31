@@ -6,10 +6,12 @@ For hosted Maverick — VPS deployments, multi-tenant setups, MCP
 gateways like Composio / MintMCP / Cloudflare — clients need an HTTP
 endpoint.
 
-This module ships the Streamable HTTP transport per MCP 2025-11-25:
-single POST endpoint that accepts JSON-RPC requests and returns
-JSON-RPC responses, with optional Server-Sent Events for streaming
-results (long-running tools, sampling).
+This module ships a single POST endpoint that accepts JSON-RPC
+requests and returns JSON-RPC responses synchronously. The MCP
+2025-11-25 Streamable HTTP spec also allows Server-Sent Events for
+streaming results (long-running tools, sampling); that SSE path is
+NOT implemented yet — every request gets one blocking JSON-RPC
+response. Clients that need streaming should not assume it here.
 
 Usage::
 

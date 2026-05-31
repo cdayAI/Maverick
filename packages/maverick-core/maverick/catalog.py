@@ -41,7 +41,6 @@ import hmac
 import json
 import logging
 import time
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -140,8 +139,11 @@ def _fetch_index_raw(url: str) -> Optional[dict]:
     if not url.startswith("https://"):
         log.warning("catalog: refusing non-https index url %s", url)
         return None
+    # Shared SSRF guard: a configured index URL must not resolve to a
+    # private/loopback/link-local/metadata address.
+    from .tools.http_fetch import guarded_urlopen
     try:
-        with urllib.request.urlopen(url, timeout=FETCH_TIMEOUT) as resp:  # noqa: S310 (https enforced above)
+        with guarded_urlopen(url, timeout=FETCH_TIMEOUT) as resp:
             if resp.status != 200:
                 return None
             data = json.loads(resp.read(2_000_000).decode("utf-8"))

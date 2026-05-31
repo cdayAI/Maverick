@@ -18,8 +18,11 @@ Config in ~/.maverick/config.toml::
 
 The actual TTS / STT happens on Vapi's side; Maverick is just the
 "reasoning brain" that Vapi calls when the user pauses. This keeps
-the channel adapter thin and provider-swappable (Retell, Bland AI,
-ElevenLabs Conversational AI all expose similar webhook contracts).
+the channel adapter thin and provider-swappable in principle (Retell,
+Bland AI, ElevenLabs Conversational AI all expose similar webhook
+contracts). Note: only ``provider = "vapi"`` is implemented today --
+outbound ``send()`` is a no-op (logs a warning) for any other
+provider until its REST contract is wired in.
 
 Requires::
 

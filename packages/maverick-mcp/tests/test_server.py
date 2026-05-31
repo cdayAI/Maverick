@@ -207,7 +207,10 @@ class TestProtocol2025_11_25:
         out = s.handle_initialize({"protocolVersion": "2025-11-25"})
         assert "resources" in out["capabilities"]
         assert "prompts" in out["capabilities"]
-        assert "elicitation" in out["capabilities"]
+        # Elicitation is intentionally NOT advertised: no handler exists, so
+        # advertising it would leave 2025-11-25 clients waiting on a request
+        # the server never sends.
+        assert "elicitation" not in out["capabilities"]
 
     def test_initialize_negotiates_down_for_old_clients(self):
         s = MCPServer()
