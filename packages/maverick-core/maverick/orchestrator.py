@@ -118,19 +118,35 @@ def _maybe_recall_prior_work(world, goal, shield) -> Optional[str]:
     }:
         return None
     try:
-        from .tools.recall import recall_past_goals
         try:
             k = max(1, int(os.environ.get("MAVERICK_AUTO_RECALL_K", "3")))
         except ValueError:
             k = 3
         query = f"{goal.title}\n{goal.description or ''}"
-        # Pull a few extra so we can drop the current goal + low-score hits.
-        matches = recall_past_goals(query, num_results=k + 2, world=world)
+        # Normalize both backends to (score, goal_id, title, result) rows.
+        # Prefer the indexed semantic store when configured (#432); fall
+        # back to the lexical/embedding linear scan otherwise.
+        rows: list[tuple[float, Any, str, str]] = []
+        from . import semantic_recall
+        sem = semantic_recall.search(
+            query, k=k + 2, exclude_goal_id=goal.id,
+        )
+        if sem is not None:
+            for score, meta in sem:
+                rows.append((
+                    score, meta.get("goal_id"),
+                    meta.get("title") or "", meta.get("result") or "",
+                ))
+        else:
+            from .tools.recall import recall_past_goals
+            # Pull extra so we can drop the current goal + low-score hits.
+            for score, g in recall_past_goals(query, num_results=k + 2, world=world):
+                rows.append((score, g.id, g.title or "", g.result or ""))
         lines: list[str] = []
-        for score, g in matches:
-            if g.id == goal.id or score < 0.10:
+        for score, gid, title, raw_result in rows:
+            if gid == goal.id or score < 0.10:
                 continue
-            result = (g.result or "").replace("\n", " ").strip()
+            result = (raw_result or "").replace("\n", " ").strip()
             if shield is not None and result:
                 try:
                     v = shield.scan_output(result)
@@ -140,7 +156,7 @@ def _maybe_recall_prior_work(world, goal, shield) -> Optional[str]:
                     pass
             snippet = result[:240] if result else "(no result captured)"
             lines.append(
-                f"- #{g.id} ({score:.2f}) {g.title or '(no title)'}\n"
+                f"- #{gid} ({score:.2f}) {title or '(no title)'}\n"
                 f"  -> {snippet}"
             )
             if len(lines) >= k:
@@ -520,6 +536,15 @@ async def run_goal(
 
         _end_episode_with_spend(world, episode_id, summary, "success", budget, goal_id)
         world.set_goal_status(goal_id, "done", result=summary)
+        # Index this finished goal into the semantic store (#432) so future
+        # runs recall it via vector search. No-op unless a [memory] backend
+        # is configured; never blocks the finalize path. Re-read the goal so
+        # the indexed status/result reflect the just-written 'done' state.
+        try:
+            from . import semantic_recall
+            semantic_recall.index_goal(world.get_goal(goal_id))
+        except Exception as e:  # pragma: no cover -- indexing never blocks a run
+            log.debug("semantic index skipped: %s", e)
         _fire_webhook("final_emitted", {
             "goal_id": goal_id,
             "patch_size_bytes": len(summary.encode("utf-8")),
