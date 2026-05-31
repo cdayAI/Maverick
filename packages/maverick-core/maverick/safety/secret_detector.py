@@ -69,7 +69,7 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     )),
     # Authorization: Bearer <token> headers (require a token-ish length to
     # avoid flagging the literal word "Bearer").
-    ("bearer_header",      re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._-]{12,}")),
+    ("bearer_header",      re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._\-+/=]{12,}")),
 ]
 
 
