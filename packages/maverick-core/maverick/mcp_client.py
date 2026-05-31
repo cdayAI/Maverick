@@ -251,12 +251,18 @@ class MCPClient:
         if self._proc is None or self._proc.stderr is None:
             return
         try:
+            from .secrets import scrub
+        except ImportError:  # pragma: no cover -- secrets is in-tree
+            scrub = lambda s: s  # noqa: E731
+        try:
             while True:
                 line = await self._proc.stderr.readline()
                 if not line:
                     return
+                # A hostile / buggy MCP server can echo bearer tokens or
+                # .env values to stderr; scrub before they hit the log.
                 log.debug("MCP[%s] stderr: %s", self.spec.name,
-                          line.decode("utf-8", errors="replace").rstrip())
+                          scrub(line.decode("utf-8", errors="replace").rstrip()))
         except asyncio.CancelledError:
             return
 

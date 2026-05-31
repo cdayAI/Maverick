@@ -30,9 +30,11 @@ class TestSignature:
     def test_missing_signature_rejects(self):
         assert verify_signature(b"{}", None, "s3cr3t") is False
 
-    def test_no_secret_accepts(self):
-        """Local dev: no secret configured -> accept (intentional)."""
-        assert verify_signature(b"{}", None, None) is True
+    def test_no_secret_rejects(self):
+        """No secret configured -> fail CLOSED (an unsigned request must not
+        be enough to clone + drive a swarm). Matches issue_webhooks/webhooks."""
+        assert verify_signature(b"{}", None, None) is False
+        assert verify_signature(b"{}", "sha256=anything", None) is False
 
 
 class TestParseWebhook:

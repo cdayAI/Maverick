@@ -20,8 +20,13 @@ import re
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # Anthropic API key (sk-ant-...)
     ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
+    # Stripe secret/restricted key (sk_live_, sk_test_, rk_live_, rk_test_).
+    # Underscore-delimited, so the openai `sk-` pattern never matches it.
+    ("stripe_key", re.compile(r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}\b")),
     # OpenAI / OpenRouter key (sk-...)
     ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
+    # Google / GCP API key (AIza...)
+    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
     # AWS access key id
     ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     # GitHub PAT (ghp_/gho_/ghu_/ghr_/ghs_ prefix)
@@ -31,9 +36,10 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # Generic bearer header (Authorization: Bearer ...)
     ("bearer", re.compile(r"(?i)\b(authorization\s*:\s*bearer\s+)([A-Za-z0-9._\-+/=]{16,})")),
     # .env-style KEY=value lines (only the value part; only redact when key
-    # contains TOKEN / KEY / SECRET / PASSWORD / PASS)
+    # contains TOKEN / KEY / SECRET / PASSWORD / PASS / CREDENTIAL). Tolerates
+    # a leading `export ` so shell-style `export FOO_TOKEN=...` is covered too.
     ("env_secret", re.compile(
-        r"((?:^|\n)\s*[A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASS)[A-Z0-9_]*\s*=\s*)([^\s\n]+)",
+        r"((?:^|\n)\s*(?:export\s+)?[A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASS|CREDENTIAL)[A-Z0-9_]*\s*=\s*)([^\s\n]+)",
         re.MULTILINE,
     )),
     # JWT (three base64url segments separated by dots, common shape)
