@@ -585,6 +585,37 @@ async def audit_page(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/safety", response_class=HTMLResponse)
+async def safety_page(request: Request) -> HTMLResponse:
+    """Shield activity: what the safety layer blocked, by stage and reason."""
+    from collections import Counter
+
+    from maverick.audit import default_audit_log
+    try:
+        n = max(1, min(int(request.query_params.get("n") or 1000), 5000))
+    except (TypeError, ValueError):
+        n = 1000
+    day = safe_audit_day(request.query_params.get("day"))
+    blocks = [
+        e for e in default_audit_log().tail(n, day=day)
+        if e.get("kind") == "shield_block"
+    ]
+    by_stage = Counter((e.get("stage") or "unknown") for e in blocks)
+    top_reasons = Counter((e.get("reason") or "unknown") for e in blocks).most_common(10)
+    recent = list(reversed(blocks))[:100]
+    return templates.TemplateResponse(
+        request, "safety.html",
+        {
+            "total": len(blocks),
+            "by_stage": dict(by_stage),
+            "top_reasons": top_reasons,
+            "events": recent,
+            "n": n,
+            "day": day,
+        },
+    )
+
+
 @app.get("/plugins", response_class=HTMLResponse)
 async def plugins_page(request: Request) -> HTMLResponse:
     """Discovered + enabled plugins."""
