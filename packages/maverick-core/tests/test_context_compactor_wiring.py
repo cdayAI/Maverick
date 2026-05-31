@@ -114,3 +114,46 @@ async def test_history_uses_last_10_when_disabled(monkeypatch, tmp_path: Path, f
     assert "compacted to save context" not in blob   # no compaction
     assert "message number 29" in blob               # last turn included
     assert "message number 0 about" not in blob       # turn 0 dropped (only last 10)
+
+def test_compactor_trims_oversized_tail_to_target():
+    old = [
+        {"role": "user", "content": f"old turn {i} " + ("padding " * 40)}
+        for i in range(12)
+    ]
+    oversized_tail = [
+        {"role": "user", "content": "fresh user " + ("A" * 800)},
+        {"role": "assistant", "content": "fresh assistant " + ("B" * 800)},
+    ]
+
+    out = cc.compact(old + oversized_tail, target_tokens=80, preserve_tail=2)
+    blob = "\n".join(str(m.get("content", "")) for m in out.messages)
+
+    assert out.tokens_after <= 80
+    assert "compacted to save context" in blob
+    assert "A" * 400 not in blob
+    assert "B" * 400 not in blob
+
+
+@pytest.mark.asyncio
+async def test_compact_history_caps_each_persisted_turn(monkeypatch, tmp_path: Path, fake_llm):
+    monkeypatch.setenv("MAVERICK_COMPACT_HISTORY", "1")
+    monkeypatch.setenv("MAVERICK_HISTORY_TOKENS", "1500")
+    monkeypatch.setenv("MAVERICK_HISTORY_WINDOW", "10")
+
+    world = WorldModel(path=tmp_path / "world.db")
+    conv = world.get_or_create_conversation("tg", "u1")
+    world.append_turn(conv.id, "user", ("A" * 320) + "UNSAFE_AFTER_300")
+    gid = world.create_goal("Continue safely", "")
+    fake_llm.scripted = [
+        LLMResponse(text="FINAL: done", thinking=None, stop_reason="end_turn", tool_calls=[]),
+    ]
+
+    await run_goal(
+        llm=fake_llm, world=world, budget=Budget(max_dollars=1.0),
+        goal_id=gid, sandbox=LocalBackend(workdir=tmp_path), max_depth=1,
+        conversation_id=conv.id,
+    )
+
+    blob = _prompt_blob(fake_llm)
+    assert "A" * 300 in blob
+    assert "UNSAFE_AFTER_300" not in blob

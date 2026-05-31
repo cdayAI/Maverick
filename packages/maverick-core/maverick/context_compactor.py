@@ -7,8 +7,9 @@ most-similar-to-current turns. Cheap (no model call) and reversible
 them to the world model for audit).
 
 Strategy:
-  1. Always preserve the system context AND the last K user turns
-     (the active conversation tail).
+  1. Prioritise the system context AND the last K user turns
+     (the active conversation tail), trimming oversized tail content
+     when needed to keep history bounded.
   2. From the remaining (older) turns, score each by Jaccard token
      overlap with the most recent user message — the simplest
      decent relevance proxy that has zero deps.
@@ -139,6 +140,38 @@ def estimate_tokens(messages: Iterable[dict]) -> int:
     return sum(_approx_tokens(_message_text(m)) for m in messages)
 
 
+def _with_text(msg: dict, text: str) -> dict:
+    out = dict(msg)
+    out["content"] = text
+    return out
+
+
+def _trim_message_to_tokens(msg: dict, max_tokens: int) -> dict:
+    """Return ``msg`` with text content bounded to ``max_tokens``."""
+    text = _message_text(msg)
+    if max_tokens <= 0:
+        return _with_text(msg, "")
+    if _approx_tokens(text) <= max_tokens:
+        return dict(msg)
+    return _with_text(msg, text[: max_tokens * 4])
+
+
+def _fit_recent_to_budget(messages: list[dict], budget_tokens: int) -> tuple[list[dict], int]:
+    """Fit messages into a token budget, prioritising the newest content."""
+    remaining = max(budget_tokens, 0)
+    fitted_reversed: list[dict] = []
+    for msg in reversed(messages):
+        cost = _approx_tokens(_message_text(msg))
+        if cost <= remaining:
+            fitted_reversed.append(dict(msg))
+            remaining -= cost
+            continue
+        fitted_reversed.append(_trim_message_to_tokens(msg, remaining))
+        remaining = 0
+    fitted_reversed.reverse()
+    return fitted_reversed, remaining
+
+
 def compact(
     messages: list[dict],
     *,
@@ -152,8 +185,9 @@ def compact(
     Args:
         messages: full message history (in order; oldest first).
         target_tokens: approximate token cap to compact toward.
-        preserve_tail: number of most-recent messages to keep
-            verbatim (the active conversation).
+        preserve_tail: number of most-recent messages to prioritise
+            (the active conversation). Oversized tail content may be
+            trimmed so the compacted history remains bounded.
         use_embeddings: if True, rank older turns by cosine to the
             most recent user message via :mod:`fastembed`. Requires
             the [embeddings] extra. Falls back to Jaccard on
@@ -179,9 +213,10 @@ def compact(
     tail = messages[-preserve_tail:] if preserve_tail > 0 else []
     head = messages[: -preserve_tail] if preserve_tail > 0 else list(messages)
     if not head:
+        fitted, _ = _fit_recent_to_budget(list(messages), target_tokens)
         return CompactResult(
-            messages=list(messages), dropped=[],
-            tokens_before=before, tokens_after=before, kept_marker=None,
+            messages=fitted, dropped=[],
+            tokens_before=before, tokens_after=estimate_tokens(fitted), kept_marker=None,
         )
 
     most_recent_user = ""
@@ -200,8 +235,12 @@ def compact(
         scored = _score_by_jaccard(head, most_recent_user)
 
     scored.sort(reverse=True)
-    tail_tokens = estimate_tokens(tail)
-    budget_remaining = max(target_tokens - tail_tokens, 0)
+    marker_budget = _approx_tokens(
+        f"[{len(head)} earlier turn(s) compacted to save context]"
+    )
+    fitted_tail, budget_remaining = _fit_recent_to_budget(
+        tail, target_tokens - marker_budget,
+    )
 
     kept_by_idx: dict[int, dict] = {}
     used = 0
@@ -224,7 +263,7 @@ def compact(
         "role": "user",
         "content": f"[{len(dropped)} earlier turn(s) compacted to save context]",
     }
-    new_messages = kept_head + [marker_msg] + list(tail)
+    new_messages = kept_head + [marker_msg] + fitted_tail
     return CompactResult(
         messages=new_messages,
         dropped=dropped,
