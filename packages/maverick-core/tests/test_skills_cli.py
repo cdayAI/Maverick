@@ -27,7 +27,11 @@ def test_curation_subcommands_registered():
     assert "evict" in skill.commands
 
 
-def test_stats_empty_library():
+def test_stats_empty_library(monkeypatch):
+    # SKILLS_DIR is import-bound to the real home, so don't rely on it being
+    # empty; force the no-skills branch deterministically.
+    import maverick.skills as sk
+    monkeypatch.setattr(sk, "load_skills", lambda *a, **k: [])
     runner = CliRunner()
     result = runner.invoke(main, ["skill", "stats"])
     assert result.exit_code == 0, result.output
