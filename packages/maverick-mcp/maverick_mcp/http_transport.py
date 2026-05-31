@@ -44,6 +44,9 @@ import os
 
 log = logging.getLogger(__name__)
 
+_MAX_PROGRESS_TOKEN_CHARS = 128
+_DEFAULT_MAX_PROGRESS_EVENTS = 240
+
 
 try:
     from fastapi import FastAPI, Header, HTTPException, Request
@@ -134,6 +137,45 @@ def _heartbeat_seconds() -> float:
         return 15.0
 
 
+def _max_progress_events() -> int:
+    """Maximum number of progress events sent on one SSE response."""
+    try:
+        return max(0, int(os.environ.get(
+            "MAVERICK_MCP_SSE_MAX_PROGRESS_EVENTS",
+            str(_DEFAULT_MAX_PROGRESS_EVENTS),
+        )))
+    except ValueError:
+        return _DEFAULT_MAX_PROGRESS_EVENTS
+
+
+def _progress_token(params: dict, http_exc):
+    """Return a bounded MCP progressToken or reject unsafe values.
+
+    Progress tokens are echoed in every progress notification, so keep them
+    scalar and small enough that heartbeats cannot amplify large request data.
+    """
+    meta = params.get("_meta") or {}
+    if not isinstance(meta, dict):
+        raise http_exc(status_code=400, detail="params._meta must be a JSON object")
+    token = meta.get("progressToken")
+    if token is None:
+        return None
+    if isinstance(token, bool) or not isinstance(token, (str, int, float)):
+        raise http_exc(
+            status_code=400,
+            detail="params._meta.progressToken must be a string or number",
+        )
+    if len(str(token)) > _MAX_PROGRESS_TOKEN_CHARS:
+        raise http_exc(
+            status_code=400,
+            detail=(
+                "params._meta.progressToken must be "
+                f"{_MAX_PROGRESS_TOKEN_CHARS} characters or fewer"
+            ),
+        )
+    return token
+
+
 def build_app(server) -> FastAPI:
     """Wrap an MCPServer instance in a Streamable HTTP transport.
 
@@ -172,6 +214,8 @@ def build_app(server) -> FastAPI:
         request_id = body.get("id")
         method = body.get("method", "")
         params = body.get("params", {}) or {}
+        if not isinstance(params, dict):
+            raise HTTPException(status_code=400, detail="params must be a JSON object")
         accepts_sse = "text/event-stream" in (request.headers.get("accept") or "")
 
         # Streamable HTTP: when the client accepts SSE and this is a real
@@ -181,7 +225,8 @@ def build_app(server) -> FastAPI:
         # run_goal_sync() -> asyncio.run, which can't run inline under
         # FastAPI's loop.
         if accepts_sse and not is_notification:
-            progress_token = (params.get("_meta") or {}).get("progressToken")
+            progress_token = _progress_token(params, HTTPException)
+            max_progress_events = _max_progress_events()
 
             async def _stream():
                 task = asyncio.create_task(
@@ -195,7 +240,7 @@ def build_app(server) -> FastAPI:
                         break
                     # Progress notifications are only valid when the client
                     # supplied a token to correlate them (per spec).
-                    if progress_token is not None:
+                    if progress_token is not None and progress < max_progress_events:
                         progress += 1
                         yield _sse({
                             "jsonrpc": "2.0",
