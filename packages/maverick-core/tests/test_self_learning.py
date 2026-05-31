@@ -303,11 +303,21 @@ class TestLearnTool:
         assert "openapi_runner" in out
 
     @pytest.mark.asyncio
-    async def test_find_api_with_base_url_lists_ops(self, stub_agent, monkeypatch):
+    async def test_find_api_with_base_url_lists_ops(self, stub_agent):
         from maverick import self_learning as sl
         spec = "https://api.example.com/openapi.json"
-        monkeypatch.setattr(sl, "probe_openapi_spec", lambda base, **kw: spec)
-        stub_agent.tools.register(_fake_tool("openapi_runner", "GET /widgets — list widgets"))
+
+        async def openapi_fn(args):
+            if args["spec"] == spec:
+                return "GET /widgets — list widgets"
+            return "ERROR: no spec here"
+
+        stub_agent.tools.register(Tool(
+            name="openapi_runner",
+            description="openapi_runner",
+            input_schema={"type": "object"},
+            fn=openapi_fn,
+        ))
         from maverick.tools.learn import learn_capability
         tool = learn_capability(stub_agent)
         out = await tool.fn({"op": "find_api", "need": "widgets api",
@@ -317,23 +327,36 @@ class TestLearnTool:
         assert sl.history()[0].kind == "api"   # recorded to the ledger
 
     @pytest.mark.asyncio
-    async def test_find_api_via_web_search(self, stub_agent, monkeypatch):
-        from maverick import self_learning as sl
+    async def test_find_api_via_web_search(self, stub_agent):
         spec = "https://api.example.com/openapi.json"
         stub_agent.tools.register(_fake_tool("web_search", f"docs at {spec}"))
-        monkeypatch.setattr(sl, "discover_openapi_spec",
-                            lambda **kw: spec if "openapi.json" in kw.get("search_text", "") else None)
+        stub_agent.tools.register(_fake_tool("openapi_runner", "GET /widgets — list widgets"))
         from maverick.tools.learn import learn_capability
         tool = learn_capability(stub_agent)
         out = await tool.fn({"op": "find_api", "need": "example api"})
         assert spec in out
 
     @pytest.mark.asyncio
+    async def test_find_api_does_not_probe_without_openapi_runner(self, stub_agent, monkeypatch):
+        from maverick import self_learning as sl
+
+        def fail_probe(*args, **kwargs):
+            raise AssertionError("learn_capability must not fetch outside tool dispatch")
+
+        monkeypatch.setattr(sl, "probe_openapi_spec", fail_probe)
+        monkeypatch.setattr(sl, "discover_openapi_spec", fail_probe)
+        from maverick.tools.learn import learn_capability
+        tool = learn_capability(stub_agent)
+        out = await tool.fn({"op": "find_api", "need": "widgets api",
+                             "base_url": "https://api.example.com"})
+        assert "openapi_runner" in out
+
+    @pytest.mark.asyncio
     async def test_find_api_no_spec_suggests_web_search(self, stub_agent):
         from maverick.tools.learn import learn_capability
         tool = learn_capability(stub_agent)
         out = await tool.fn({"op": "find_api", "need": "obscure api"})
-        assert "web_search" in out  # no web_search tool loaded -> hint to enable it
+        assert "openapi_runner" in out  # no OpenAPI runner loaded -> no network validation
 
 
 class TestPreflight:

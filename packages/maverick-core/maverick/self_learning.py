@@ -527,6 +527,51 @@ def _extract_urls(text: str, *, limit: int = 10) -> list[str]:
     return seen[:limit]
 
 
+def openapi_spec_candidates(
+    *, base_url: str = "", search_text: str = "", max_candidates: int = 6,
+) -> list[str]:
+    """Return candidate OpenAPI spec URLs without performing network I/O.
+
+    The caller is responsible for validating candidates through an allowed
+    network-capable tool (for example ``openapi_runner``), so ACLs, hooks,
+    and rate limits remain on the normal tool-dispatch path.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    out: list[str] = []
+
+    def add(url: str) -> None:
+        u = (url or "").rstrip("/")
+        if u.startswith(("http://", "https://")) and u not in out:
+            out.append(u)
+
+    def add_probe_urls(url: str) -> None:
+        base = (url or "").rstrip("/")
+        if not base:
+            return
+        add(base)
+        parts = urlsplit(base)
+        roots = [base]
+        if parts.scheme and parts.netloc:
+            origin = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+            if origin not in roots:
+                roots.append(origin)
+        for root in roots:
+            for path in WELL_KNOWN_SPEC_PATHS:
+                add(root + path)
+
+    if base_url:
+        add_probe_urls(base_url)
+
+    extracted = _extract_urls(search_text)[:max_candidates]
+    for url in extracted:
+        add(url)
+    if extracted:
+        add_probe_urls(extracted[0])
+
+    return out
+
+
 def discover_openapi_spec(
     *, base_url: str = "", search_text: str = "", opener=None, max_candidates: int = 6,
 ) -> str | None:
@@ -627,6 +672,6 @@ __all__ = [
     "enabled", "settings", "Learned", "record", "history",
     "Candidate", "search_capabilities", "acquire_skill", "add_mcp_server",
     "write_generated_tool", "load_generated_tools", "preflight",
-    "validate_spec_url", "probe_openapi_spec", "discover_openapi_spec",
+    "validate_spec_url", "probe_openapi_spec", "openapi_spec_candidates", "discover_openapi_spec",
     "LEARNED_PATH", "GENERATED_TOOLS_DIR", "TOOL_AUTHOR_SYSTEM",
 ]
