@@ -126,6 +126,17 @@ class Agent:
         self._last_step_score = 0.5
 
     def _build_tools(self) -> ToolRegistry:
+        # Honor [capabilities] from config: these gate the optional
+        # high-impact tools (computer_use / browser / web_search / mobile).
+        # Without this, enabling them in config (or the wizard) was a no-op --
+        # base_registry's enable_* flags defaulted off and nothing set them.
+        # The [security] ACL still applies on top (a capability can be enabled
+        # but a tool still denied).
+        try:
+            from .config import get_capabilities
+            caps = get_capabilities()
+        except Exception:  # pragma: no cover -- never block tool build on config
+            caps = {}
         reg = base_registry(
             self.ctx.world,
             self.ctx.sandbox,
@@ -134,6 +145,10 @@ class Agent:
             channel=self.ctx.channel,
             user_id=self.ctx.user_id,
             budget=self.ctx.budget,
+            enable_computer_use=bool(caps.get("computer_use", False)),
+            enable_browser=bool(caps.get("browser", False)),
+            enable_web_search=bool(caps.get("web_search", False)),
+            enable_mobile_tools=bool(caps.get("mobile_tools", False)),
         )
         # Cross-agent bus tools, bound to this agent's id so send records
         # the right sender and recv drains the right inbox.
