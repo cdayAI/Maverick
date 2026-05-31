@@ -939,7 +939,7 @@ async def webhook_start(request: Request, bg: BackgroundTasks) -> JSONResponse:
     w = _world()
     goal_id = w.create_goal(title[:200], description[:8000])
 
-    from maverick.runner import run_goal_in_thread
+    from maverick.runner import DEFAULT_MAX_DOLLARS, run_goal_in_thread
     budget = payload.get("budget")
     max_dollars = None
     if budget is not None:
@@ -947,6 +947,12 @@ async def webhook_start(request: Request, bg: BackgroundTasks) -> JSONResponse:
             max_dollars = float(budget)
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="budget must be a number")
+        # Clamp to the same ceiling the REST route enforces. run_goal_in_thread
+        # treats max_dollars as the highest-precedence override with no cap of
+        # its own, so an unclamped webhook value (negative, or arbitrarily
+        # large) would defeat the budget ceiling -- budget caps are not
+        # optional, even on an externally reachable signed endpoint.
+        max_dollars = min(max(max_dollars, 0.0), DEFAULT_MAX_DOLLARS)
     bg.add_task(run_goal_in_thread, goal_id, max_dollars)
     return JSONResponse({"goal_id": goal_id}, status_code=201)
 
