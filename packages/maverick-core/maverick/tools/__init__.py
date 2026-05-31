@@ -175,9 +175,25 @@ class ToolRegistry:
                                message=f"chaos: tool_dispatch on {name!r}")
                 except ImportError:
                     pass
-                result = self._tools[name].fn(args)
-                if inspect.isawaitable(result):
-                    result = await result
+                fn = self._tools[name].fn
+                if inspect.iscoroutinefunction(fn):
+                    result = await fn(args)
+                else:
+                    # Offload blocking sync tools (network/file I/O) to a
+                    # worker thread so they don't stall the event loop —
+                    # and so a turn's parallel_safe reads, gathered
+                    # concurrently by the agent loop, actually OVERLAP
+                    # instead of running back-to-back on the loop thread.
+                    # A sync wrapper (e.g. the rate-limiter) may still
+                    # return a coroutine; await it on the loop. Disable the
+                    # offload with MAVERICK_TOOL_THREAD_OFFLOAD=0.
+                    import asyncio as _asyncio
+                    if os.environ.get("MAVERICK_TOOL_THREAD_OFFLOAD", "1") != "0":
+                        result = await _asyncio.to_thread(fn, args)
+                    else:
+                        result = fn(args)
+                    if inspect.isawaitable(result):
+                        result = await result
                 try:
                     from ..observability import record_metric as _rm
                     _rm("tool_calls", labels={"tool": name, "status": "ok"})

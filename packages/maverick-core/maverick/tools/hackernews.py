@@ -171,4 +171,5 @@ def hackernews() -> Tool:
         ),
         input_schema=_HN_SCHEMA,
         fn=_run,
+        parallel_safe=True,
     )

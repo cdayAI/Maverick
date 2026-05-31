@@ -160,4 +160,5 @@ def arxiv() -> Tool:
         ),
         input_schema=_ARXIV_SCHEMA,
         fn=_run,
+        parallel_safe=True,
     )

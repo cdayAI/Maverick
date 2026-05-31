@@ -161,4 +161,5 @@ def semantic_scholar() -> Tool:
         ),
         input_schema=_SCHEMA,
         fn=_run,
+        parallel_safe=True,
     )

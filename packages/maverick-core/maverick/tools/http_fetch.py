@@ -320,4 +320,5 @@ def http_fetch() -> Tool:
         ),
         input_schema=_FETCH_INPUT_SCHEMA,
         fn=_run_fetch,
+        parallel_safe=True,
     )
