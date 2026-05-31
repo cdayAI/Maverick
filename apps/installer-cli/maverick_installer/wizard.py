@@ -794,6 +794,13 @@ def _docker_available() -> bool:
         return False
 
 
+# Container backends pick their image from the coding language (see
+# sandbox._IMAGE_BY_LANGUAGE). local/ssh run model shell on the host toolchain
+# and devcontainer reuses the user's own image, so the language hint only
+# changes anything for these three.
+_LANGUAGE_BACKENDS = {"docker", "podman", "kubernetes"}
+
+
 def pick_sandbox() -> dict[str, Any]:
     # Security-first default: keep Docker selected by default regardless
     # of current daemon reachability to avoid silently falling back to
@@ -813,7 +820,28 @@ def pick_sandbox() -> dict[str, Any]:
     )
     backend = pick.split()[0]
     workdir = _q_text("  Workspace directory", default=str(Path.home() / "maverick-workspace"))
-    return {"backend": backend, "workdir": workdir, "timeout": 60}
+    cfg: dict[str, Any] = {"backend": backend, "workdir": workdir, "timeout": 60}
+    # Non-Python coders get a toolchain image that can actually run their tests
+    # (cargo/go test, the JS runner, ...). Python is the default image, so we
+    # only write [sandbox] language when it's something else -- existing and
+    # Python configs stay byte-identical.
+    if backend in _LANGUAGE_BACKENDS:
+        languages = [
+            "python     - python:3.12-slim (default)",
+            "javascript - node:22 (JavaScript / TypeScript)",
+            "go         - golang:1",
+            "rust       - rust:1",
+            "java       - eclipse-temurin:21 (Java / Kotlin)",
+            "ruby       - ruby:3",
+        ]
+        lang = _q_select(
+            "  What do you mostly code in? (sets the container's toolchain)",
+            languages,
+            default=languages[0],
+        ).split()[0]
+        if lang != "python":
+            cfg["language"] = lang
+    return cfg
 
 
 # ---------- new wizard steps (council parity pass) ----------
