@@ -1,28 +1,33 @@
-"""Voice channel via Vapi (2026 leader: 62M calls/mo).
+"""Voice channel (Vapi / Retell / Bland).
 
-Tenth channel adapter. Vapi exposes a REST + webhook surface that
-matches Maverick's existing IncomingMessage / handler contract — when
-the user speaks, Vapi transcribes via Deepgram / Whisper / ElevenLabs
-and POSTs the transcript to our webhook; we run the swarm; the reply
-goes back via Vapi's TTS.
+Tenth channel adapter. A voice provider exposes a REST + webhook surface
+that matches Maverick's existing IncomingMessage / handler contract —
+when the user speaks, the provider transcribes (Deepgram / Whisper /
+ElevenLabs) and POSTs the transcript to our webhook; we run the swarm;
+the reply goes back via the provider's TTS.
 
 Config in ~/.maverick/config.toml::
 
     [channels.voice]
     enabled       = true
-    provider      = "vapi"
-    api_key       = "${VAPI_API_KEY}"
+    provider      = "vapi"            # vapi | retell | bland
+    api_key       = "${VAPI_API_KEY}" # RETELL_API_KEY / BLAND_API_KEY for those
     phone_number  = "+14155551234"
     port          = 8770
-    assistant_id  = "<your-vapi-assistant-id>"
+    assistant_id  = "<provider assistant/agent id>"
 
-The actual TTS / STT happens on Vapi's side; Maverick is just the
-"reasoning brain" that Vapi calls when the user pauses. This keeps
-the channel adapter thin and provider-swappable in principle (Retell,
-Bland AI, ElevenLabs Conversational AI all expose similar webhook
-contracts). Note: only ``provider = "vapi"`` is implemented today --
-outbound ``send()`` is a no-op (logs a warning) for any other
-provider until its REST contract is wired in.
+The TTS / STT happens on the provider's side; Maverick is just the
+"reasoning brain" the provider calls when the user pauses. This keeps
+the adapter thin.
+
+Provider support:
+  - Inbound webhook parsing is Vapi-shaped today (the swarm-facing
+    transcript handler). Retell/Bland inbound is not yet wired.
+  - Outbound ``send()`` (proactive calls) is provider-dispatched and
+    supports vapi, retell, and bland. The Vapi contract is live-tested;
+    the Retell and Bland contracts are wired from each vendor's public
+    API docs and should be smoke-tested with real credentials before
+    you depend on them.
 
 Requires::
 
@@ -37,6 +42,15 @@ import os
 from .base import Channel, IncomingMessage, is_allowed, normalize_allowlist
 
 log = logging.getLogger(__name__)
+
+# Which env var holds the API key for each provider. Used both to resolve
+# the key at construction and by the installer wizard to prompt for the
+# right secret.
+PROVIDER_KEY_ENV = {
+    "vapi": "VAPI_API_KEY",
+    "retell": "RETELL_API_KEY",
+    "bland": "BLAND_API_KEY",
+}
 
 
 try:
@@ -80,13 +94,16 @@ class VoiceChannel(Channel):
                 "fastapi/httpx not installed. Run: "
                 "pip install 'maverick-channels[voice]'"
             )
-        self.api_key = api_key or os.environ.get("VAPI_API_KEY")
+        self.provider = provider
+        # Each provider keeps its key in its own env var; fall back to the
+        # Vapi var for an unknown provider so the error message is sensible.
+        key_env = PROVIDER_KEY_ENV.get(provider, "VAPI_API_KEY")
+        self.api_key = api_key or os.environ.get(key_env)
         if not self.api_key:
-            raise ValueError("voice channel: VAPI_API_KEY not set")
+            raise ValueError(f"voice channel: {key_env} not set")
         self.phone_number = phone_number
         self.port = port
         self.assistant_id = assistant_id
-        self.provider = provider
         self.webhook_token = webhook_token or os.environ.get("VAPI_WEBHOOK_TOKEN")
         # Optional per-caller allowlist (by phone number). The webhook bearer
         # + loopback bind are the primary gate; when this is set we also
@@ -175,31 +192,70 @@ class VoiceChannel(Channel):
         self._uvicorn_server = uvicorn.Server(config)
         await self._uvicorn_server.serve()
 
-    async def send(self, user_id: str, text: str) -> None:
-        """Outbound: place a Vapi call to `user_id` (a phone number)
-        and have the assistant deliver `text`."""
-        if not self.assistant_id:
-            log.warning("voice send: no assistant_id configured; skipping outbound")
-            return
-        if self.provider != "vapi":
-            log.warning("voice send: provider %r not yet implemented", self.provider)
-            return
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(
-                "https://api.vapi.ai/call",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
+    def _outbound_request(self, user_id: str, text: str) -> dict:
+        """Build the provider-specific outbound-call HTTP request.
+
+        Returns a dict with ``url`` / ``headers`` / ``json``. Contracts
+        come from each vendor's public API docs — Vapi is live-tested;
+        Retell and Bland are wired from docs and want a real smoke test
+        before you rely on them. Raises ValueError for an unknown
+        provider so ``send()`` can fail soft.
+        """
+        if self.provider == "vapi":
+            return {
+                "url": "https://api.vapi.ai/call",
+                "headers": {"Authorization": f"Bearer {self.api_key}"},
+                "json": {
                     "assistantId": self.assistant_id,
                     "customer": {"number": user_id},
                     "phoneNumber": {"number": self.phone_number},
-                    "assistantOverrides": {
-                        "firstMessage": text,
-                    },
+                    "assistantOverrides": {"firstMessage": text},
                 },
+            }
+        if self.provider == "retell":
+            # https://docs.retellai.com/api-references/create-phone-call
+            return {
+                "url": "https://api.retellai.com/v2/create-phone-call",
+                "headers": {"Authorization": f"Bearer {self.api_key}"},
+                "json": {
+                    "from_number": self.phone_number,
+                    "to_number": user_id,
+                    "override_agent_id": self.assistant_id,
+                    "retell_llm_dynamic_variables": {"first_message": text},
+                },
+            }
+        if self.provider == "bland":
+            # https://docs.bland.ai/api-v1/post/calls
+            return {
+                "url": "https://api.bland.ai/v1/calls",
+                "headers": {"authorization": self.api_key or ""},
+                "json": {
+                    "phone_number": user_id,
+                    "from": self.phone_number,
+                    "task": text,
+                    "pathway_id": self.assistant_id,
+                },
+            }
+        raise ValueError(f"unsupported voice provider {self.provider!r}")
+
+    async def send(self, user_id: str, text: str) -> None:
+        """Outbound: place a call to `user_id` (a phone number) via the
+        configured provider and have the assistant deliver `text`."""
+        if not self.assistant_id:
+            log.warning("voice send: no assistant_id configured; skipping outbound")
+            return
+        try:
+            req = self._outbound_request(user_id, text)
+        except ValueError as e:
+            log.warning("voice send: %s", e)
+            return
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                req["url"], headers=req["headers"], json=req["json"],
             )
             if r.status_code >= 300:
-                log.warning("voice outbound call failed: %s %s",
-                            r.status_code, r.text[:200])
+                log.warning("voice outbound call failed (%s): %s %s",
+                            self.provider, r.status_code, r.text[:200])
 
     async def stop(self) -> None:
         if self._uvicorn_server is not None:

@@ -296,7 +296,9 @@ def _wire_voice(server, cfg):
     from maverick_channels.voice import VoiceChannel
     server.add_channel(VoiceChannel(
         handler=server._handle_message,
-        api_key=cfg.get("api_key") or os.environ.get("VAPI_API_KEY"),
+        # Let VoiceChannel resolve the key from the provider-specific env
+        # var (VAPI/RETELL/BLAND) when config doesn't pin one explicitly.
+        api_key=cfg.get("api_key"),
         phone_number=cfg.get("phone_number"),
         port=cfg.get("port", 8770),
         assistant_id=cfg.get("assistant_id"),

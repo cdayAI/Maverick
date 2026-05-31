@@ -97,3 +97,86 @@ def test_voice_webhook_accepts_valid_bearer_token(monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json() == {"response": "ok"}
+
+
+# ---- multi-provider outbound send() ----------------------------------
+
+async def _noop(_):
+    return ""
+
+
+def _chan(provider, **kw):
+    from maverick_channels.voice import VoiceChannel
+    kw.setdefault("api_key", "k")
+    kw.setdefault("assistant_id", "asst_xyz")
+    kw.setdefault("phone_number", "+14155551234")
+    return VoiceChannel(handler=_noop, provider=provider, **kw)
+
+
+@pytest.mark.skipif(not _have_deps(), reason="fastapi+httpx not installed")
+@pytest.mark.parametrize("provider,host,path", [
+    ("vapi", "api.vapi.ai", "/call"),
+    ("retell", "api.retellai.com", "/v2/create-phone-call"),
+    ("bland", "api.bland.ai", "/v1/calls"),
+])
+def test_outbound_request_per_provider(provider, host, path):
+    req = _chan(provider)._outbound_request("+14150000000", "hello there")
+    assert host in req["url"] and req["url"].endswith(path)
+    # the spoken text + destination number must be in the body somewhere
+    body = str(req["json"])
+    assert "hello there" in body
+    assert "+14150000000" in body
+    assert req["headers"]  # auth header present
+
+
+@pytest.mark.skipif(not _have_deps(), reason="fastapi+httpx not installed")
+def test_provider_key_env_resolution(monkeypatch):
+    from maverick_channels.voice import VoiceChannel
+    monkeypatch.delenv("VAPI_API_KEY", raising=False)
+    monkeypatch.setenv("RETELL_API_KEY", "retell-secret")
+    chan = VoiceChannel(handler=_noop, provider="retell")
+    assert chan.api_key == "retell-secret"
+    # wrong provider's key missing -> clear error naming the right env var
+    monkeypatch.delenv("BLAND_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="BLAND_API_KEY"):
+        VoiceChannel(handler=_noop, provider="bland")
+
+
+@pytest.mark.skipif(not _have_deps(), reason="fastapi+httpx not installed")
+def test_unsupported_provider_send_is_soft_noop():
+    chan = _chan("nope")
+    # _outbound_request rejects it; send() must swallow that, not raise.
+    with pytest.raises(ValueError, match="unsupported voice provider"):
+        chan._outbound_request("+1", "hi")
+    import asyncio
+    asyncio.run(chan.send("+14150000000", "hi"))  # no exception = pass
+
+
+@pytest.mark.skipif(not _have_deps(), reason="fastapi+httpx not installed")
+def test_send_posts_to_provider_endpoint(monkeypatch):
+    import asyncio
+
+    import maverick_channels.voice as voice
+
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, url, headers=None, json=None):
+            captured.update(url=url, headers=headers, json=json)
+            return _Resp()
+
+    monkeypatch.setattr(voice.httpx, "AsyncClient", _FakeClient)
+    chan = _chan("retell")
+    asyncio.run(chan.send("+14150000000", "ping"))
+    assert captured["url"].endswith("/v2/create-phone-call")
+    assert "+14150000000" in str(captured["json"])

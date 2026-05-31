@@ -23,8 +23,8 @@ def test_pick_channels_voice_collects_optional_callers(monkeypatch):
     from maverick_installer import wizard
 
     monkeypatch.setattr(wizard, "_q_checkbox", lambda msg, choices: ["voice  - Voice"])
-    # voice prompts: phone_number, assistant_id, provider, port, allowed_callers.
-    answers = iter(["", "", "vapi", "8770", "+12025550111"])
+    # voice prompts: provider, phone_number, assistant_id, port, allowed_callers.
+    answers = iter(["vapi", "", "", "8770", "+12025550111"])
     monkeypatch.setattr(wizard, "_q_text", lambda msg, default="": next(answers))
 
     channels, _ = wizard.pick_channels("vps")
