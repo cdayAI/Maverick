@@ -24,12 +24,9 @@ from moat import (  # noqa: E402
 
 
 def _scripted_runner(cold: RunMetrics, warm: RunMetrics):
-    """Returns a run_fn that yields ``cold`` for the first (cold) call of a
-    pair and ``warm`` for the second (warm) call."""
-    state = {"n": 0}
-
+    """Returns a run_fn that yields ``cold`` on the cold call (learning
+    off) and ``warm`` on the warm call (learning on)."""
     def run_fn(task_text: str, learning_enabled: bool) -> RunMetrics:
-        # learning_enabled is False on the cold call, True on the warm call.
         return warm if learning_enabled else cold
 
     return run_fn

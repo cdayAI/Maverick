@@ -1253,10 +1253,20 @@ class Agent:
             if blocked:
                 return AgentResult(blocked_on_user=True, role=self.role, name=self.name)
 
-            # PRM step scoring + early abandonment. A step "errored" if any
-            # tool_result was flagged is_error. No-op unless a non-null PRM
-            # backend is configured (MAVERICK_PRM=heuristic|remote).
-            step_errored = any(tr.get("is_error") for tr in tool_results)
+            # PRM step scoring + early abandonment. No-op unless a non-null
+            # PRM backend is configured (MAVERICK_PRM=heuristic|remote).
+            # A step "errored" if any tool surfaced the registry/shield
+            # error sentinel. We scan the tool_result CONTENT rather than
+            # the is_error flag because _run_tool wraps output in
+            # <tool_output> framing, so the flag's startswith() check never
+            # matches a wrapped "ERROR:". This is a soft heuristic feeding a
+            # soft (opt-in) signal, so a false positive only makes
+            # abandonment slightly more eager.
+            step_errored = any(
+                "ERROR:" in (tr.get("content") or "")
+                or "BLOCKED by Shield" in (tr.get("content") or "")
+                for tr in tool_results
+            )
             last_tool = resp.tool_calls[-1].name if resp.tool_calls else None
             if self._score_step(
                 step,
