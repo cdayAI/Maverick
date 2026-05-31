@@ -266,7 +266,11 @@ async def _run_one(spec: HookSpec, ctx: HookContext) -> bool:
         except asyncio.TimeoutError:
             try:
                 proc.kill()
-            except ProcessLookupError:
+                # Reap the killed child: without wait() it stays a zombie and
+                # its 3 stdio pipe fds are never closed -- a leak on every hook
+                # that times out (and hooks fire on every tool call).
+                await proc.wait()
+            except (ProcessLookupError, OSError):
                 pass
             log.warning("hook %s timed out (>%dms)", spec.command, spec.timeout_ms)
             return True  # timeouts don't block
