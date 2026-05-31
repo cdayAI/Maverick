@@ -205,11 +205,21 @@ def model_for_role(role: str) -> str:
 
 
 def _parse_spec(spec: str) -> tuple[str, str]:
-    """Parse ``provider:model-id`` or bare ``model-id`` (= anthropic)."""
+    """Parse ``provider:model-id`` or bare ``model-id`` (= anthropic).
+
+    The provider half is canonicalized (lowercased, alias-resolved via the
+    provider registry) so a user-typed ``Anthropic:`` or an advertised alias
+    like ``claude:`` resolves the same as ``anthropic:`` -- not just for client
+    creation (which already canonicalizes) but for the case-sensitive API-key
+    lookup in ``_provider_api_key``, which would otherwise miss the key and
+    fail auth at call time.
+    """
     if ":" in spec:
         provider, model_id = spec.split(":", 1)
-        return provider, model_id
-    return "anthropic", spec
+    else:
+        provider, model_id = "anthropic", spec
+    from .providers import _canonical
+    return _canonical(provider), model_id
 
 
 def _configured_provider_api_key(provider: str) -> str | None:

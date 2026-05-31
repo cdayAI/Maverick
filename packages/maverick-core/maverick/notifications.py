@@ -172,8 +172,16 @@ def notify(
     ``async_dispatch=False`` runs synchronously (mainly for tests).
     """
     cfg = _load_config()
-    requested = backends or [cfg.get("backend", "ntfy")]
-    requested = [b for b in requested if b and b != "none"]
+    # Normalize: backend names are user-typed (config/TOML or the `backends`
+    # arg) and matched case-sensitively in _dispatch ("ntfy"/"discord"/...), so
+    # "Discord" / "Ntfy" / "None" would otherwise dispatch to no handler or
+    # skip the "none" filter -- a user who configured notifications silently
+    # gets none. Lowercase + strip; drop empties and the "none" sentinel.
+    requested = [
+        b.strip().lower()
+        for b in (backends or [cfg.get("backend", "ntfy")])
+        if isinstance(b, str) and b.strip().lower() not in ("", "none")
+    ]
     if not requested:
         return 0
 
