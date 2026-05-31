@@ -76,4 +76,5 @@ the spec is small enough to fit in ~150 lines of Rust.
 
 - [TypeScript client quickstart](./typescript-quickstart.md)
 - [Go client quickstart](./go-quickstart.md)
+- [C# / .NET client quickstart](./csharp-quickstart.md)
 - [Java / JVM client quickstart](./java-quickstart.md)
