@@ -264,6 +264,7 @@ def base_registry(
     from .arxiv import arxiv
     from .asana_tool import asana_tool
     from .bitbucket_tool import bitbucket_tool
+    from .budget_status import budget_status
     from .calendar_tool import calendar_tool
     from .calendly_tool import calendly_tool
     from .cloudflare_tool import cloudflare_tool
@@ -368,6 +369,7 @@ def base_registry(
         reg.register(android())
         reg.register(ios_sim())
     reg.register(spend_report())
+    reg.register(budget_status(budget=budget))
     reg.register(test_impact())
     reg.register(youtube())
     reg.register(notion())
