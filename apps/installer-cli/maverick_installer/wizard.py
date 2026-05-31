@@ -890,7 +890,11 @@ def pick_plugins() -> list[str]:
         ):
             for ep in _entry_points(group):
                 discovered.add(ep.name)
-    except Exception:
+    except Exception as e:
+        console.print(
+            f"[yellow]Plugin discovery skipped: {e}[/yellow] "
+            "(no plugins will be offered; re-run the wizard to retry)"
+        )
         return []
     if not discovered:
         return []
