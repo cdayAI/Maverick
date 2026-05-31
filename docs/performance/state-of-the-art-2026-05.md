@@ -79,6 +79,32 @@ first-class, demoable benchmark and it becomes the headline.
 
 ## Shipped in this pass (with tests)
 
+### Learning-loop hardening (the moat, made trustworthy)
+
+The "moat" — skills distilled from past runs and recalled into future ones
+— was an open loop: any "success" wrote a skill, retrieval was raw keyword
+overlap, and nothing tracked whether a skill ever actually helped. Three
+changes close it into a self-curating system:
+
+- **Quality gate.** `distill()` skips writing (before the paid distiller
+  call) when the run's verifier confidence is below
+  `MAVERICK_DISTILL_MIN_CONFIDENCE` (default 0.75), so a low-confidence
+  "success" can't become a standing instruction in every future run. The
+  accepted confidence is stamped into the skill frontmatter as provenance.
+- **Quality-weighted retrieval.** `quality_weight()` re-ranks recall by
+  that provenance, applied to both the embedding cosine and the lexical
+  trigger score — relevance still dominates; a low-confidence skill yields
+  to an equally-relevant higher-confidence one but is never silenced.
+- **Usage tracking + decay** (`skill_stats.py`). Every recall records a
+  use; each run's outcome is attributed to the skills it used. A skill
+  that keeps riding along with failures decays in rank
+  (`floor + (1-floor)·win_rate` after a fair trial) and chronic losers are
+  flagged `evictable()`. Disable with `MAVERICK_SKILL_DECAY=0`.
+
+Covered by `tests/test_distill_quality_gate.py`,
+`tests/test_skill_quality_ranking.py`, `tests/test_skill_stats.py`, and
+`tests/test_skill_decay_integration.py`.
+
 ### Concurrent tool execution
 
 When a single model turn emits 2+ tool calls and **every** one is
