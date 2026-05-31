@@ -933,6 +933,71 @@ def skill_info(name: str) -> None:
     sys.exit(2)
 
 
+@skill.command("stats")
+def skill_stats_cmd() -> None:
+    """Show each distilled skill's track record (uses/wins/losses + decay).
+
+    The decay column is the track-record multiplier applied to retrieval
+    ranking: 1.00 = no penalty; lower = the skill keeps riding along with
+    failed runs and is being de-ranked.
+    """
+    from . import skill_stats
+    from .skills import load_skills
+    loaded = load_skills()
+    if not loaded:
+        click.echo("no skills yet.")
+        return
+    click.echo(f"{'skill':28s} {'conf':>5s} {'uses':>5s} "
+               f"{'win':>4s} {'loss':>5s} {'decay':>6s}")
+    for s in sorted(loaded, key=lambda x: x.name):
+        st = skill_stats.get(s.name)
+        uses = st.uses if st else 0
+        wins = st.wins if st else 0
+        losses = st.losses if st else 0
+        decay = skill_stats.decay_weight(s.name)
+        click.echo(
+            f"{s.name[:28]:28s} {s.distilled_confidence:5.2f} {uses:5d} "
+            f"{wins:4d} {losses:5d} {decay:6.2f}"
+        )
+
+
+@skill.command("evict")
+@click.option("--yes", is_flag=True,
+              help="Actually remove the candidates (default: dry-run preview).")
+@click.option("--min-uses", default=5, type=int,
+              help="Only consider skills used at least this many times.")
+@click.option("--max-win-rate", default=0.2, type=float,
+              help="Flag skills whose win rate is at or below this.")
+def skill_evict(yes: bool, min_uses: int, max_win_rate: float) -> None:
+    """List (and optionally remove) skills that rarely help.
+
+    A skill is a candidate when it has had a fair trial (>= --min-uses) and
+    its win rate is at or below --max-win-rate. Dry-run by default; pass
+    --yes to delete the candidates.
+    """
+    from . import skill_stats
+    from .skills import remove_skill
+    candidates = skill_stats.evictable(min_uses=min_uses, max_win_rate=max_win_rate)
+    if not candidates:
+        click.echo("no eviction candidates: no skill has a poor enough "
+                   "track record yet.")
+        return
+    for name in candidates:
+        st = skill_stats.get(name)
+        detail = (f"{st.wins}W/{st.losses}L over {st.uses} uses"
+                  if st else "no stats")
+        click.echo(f"  {name}  ({detail})")
+    if not yes:
+        click.echo(f"\n{len(candidates)} candidate(s). Re-run with --yes to remove.")
+        return
+    removed = 0
+    for name in candidates:
+        if remove_skill(name):
+            removed += 1
+            click.echo(f"removed: {name}")
+    click.echo(f"\nremoved {removed}/{len(candidates)} skill(s).")
+
+
 @main.command()
 @click.option("--goal-id", type=int, default=None, help="Specific goal to watch.")
 @click.option("--interval", type=float, default=1.5, help="Refresh seconds.")
