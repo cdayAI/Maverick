@@ -128,6 +128,32 @@ def test_resolve_pinned_override_returns_host_unchanged(monkeypatch):
     assert http_fetch._resolve_pinned("internal.svc") == "internal.svc"
 
 
+def test_pinned_https_handler_uses_urllib_context_without_check_hostname(monkeypatch):
+    """urllib.request.HTTPSHandler stores check_hostname on the SSL context,
+    not as a handler attribute; https_open must not read _check_hostname."""
+    from maverick.tools import http_fetch
+
+    captured = {}
+
+    def _fake_do_open(self, http_class, req, **kwargs):
+        captured["http_class"] = http_class
+        captured["req"] = req
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(http_fetch._PinnedHTTPSHandler, "do_open", _fake_do_open)
+
+    handler = http_fetch._PinnedHTTPSHandler()
+    req = urllib.request.Request("https://example.com/data")
+    out = handler.https_open(req)
+
+    assert out is not None
+    assert captured["http_class"] is http_fetch._PinnedHTTPSConnection
+    assert captured["req"] is req
+    assert "context" in captured["kwargs"]
+    assert "check_hostname" not in captured["kwargs"]
+
+
 def test_pinned_connection_opens_socket_to_validated_ip(monkeypatch):
     """The socket is opened to the pinned IP, but self.host (Host header / SNI
     / cert verification) stays the real hostname."""

@@ -291,10 +291,7 @@ class _PinnedHTTPHandler(urllib.request.HTTPHandler):
 
 class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
     def https_open(self, req):
-        return self.do_open(
-            _PinnedHTTPSConnection, req,
-            context=self._context, check_hostname=self._check_hostname,
-        )
+        return self.do_open(_PinnedHTTPSConnection, req, context=self._context)
 
 
 def guarded_urlopen(url: str, *, timeout: float, allow_http: bool = False):
