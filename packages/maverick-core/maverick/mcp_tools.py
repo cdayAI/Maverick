@@ -20,18 +20,31 @@ log = logging.getLogger(__name__)
 def tools_from_mcp(client: MCPClient) -> list[Tool]:
     """Return a Tool per MCP-exposed tool, namespaced by server.
 
-    Council finding (Tier 0): MCP tool descriptions and inputSchema
-    fields were rendered into the agent's tool catalog verbatim, so a
-    hostile MCP server could put attack instructions in a description
-    that the LLM would treat as authoritative. Each description is now
-    run through Shield.scan_input; tools that fail are silently dropped
-    with a warning log.
+    Two layers defend the agent's tool catalog from a hostile MCP server:
+
+    1. **Injection scan** (Tier 0). Descriptions + inputSchema string leaves
+       are rendered into the catalog verbatim, so each is run through
+       ``Shield.scan_input``; tools that fail are dropped with a warning.
+    2. **Rug-pull / drift detection** (``mcp_pinning``). The server's tool set
+       is pinned on first use; if a tool's definition later changes, it is
+       flagged (``warn``) or withheld (``enforce``) -- a server can't quietly
+       swap a tool's schema/behaviour after the operator approved it.
     """
     out: list[Tool] = []
     shield = _try_shield()
+    decision = _pin_decision(client)
     for spec in client.tools:
         name = spec.get("name")
         if not name:
+            continue
+        if name not in decision.allowed:
+            # enforce mode withholding a drifted/new tool (warn/off never gets
+            # here -- their `allowed` is the full set).
+            log.warning(
+                "mcp tool %s.%s withheld: definition drifted from its pin "
+                "(enforce mode). Re-approve with `maverick mcp-repin %s`.",
+                client.spec.name, name, client.spec.name,
+            )
             continue
         if not _spec_passes_shield(name, spec, shield):
             log.warning(
@@ -42,6 +55,45 @@ def tools_from_mcp(client: MCPClient) -> list[Tool]:
         prefixed = f"mcp_{client.spec.name}__{name}"
         out.append(_build_tool(client, prefixed, name, spec))
     return out
+
+
+def _pin_decision(client: MCPClient):
+    """Reconcile the server's advertised tools against its pin; log + audit
+    any drift. Best-effort: pinning must never break tool loading."""
+    try:
+        from .mcp_pinning import reconcile
+        decision = reconcile(client.spec.name, client.tools)
+    except Exception as e:  # pragma: no cover - defensive
+        log.warning("mcp_pinning: reconcile failed for %s (allowing): %s",
+                    client.spec.name, e)
+        from .mcp_pinning import PinDecision
+        return PinDecision(
+            allowed={s.get("name") for s in client.tools if s.get("name")},
+            mode="off",
+        )
+    if decision.first_use and client.tools:
+        log.info("mcp %s: pinned %d tool definition(s) on first use",
+                 client.spec.name, len(decision.allowed))
+    if not decision.ok:
+        log.warning(
+            "mcp %s: tool-set DRIFT since pin (mode=%s) drifted=%s added=%s "
+            "removed=%s", client.spec.name, decision.mode,
+            decision.drifted, decision.added, decision.removed,
+        )
+        try:
+            from .audit import record
+            record(
+                "mcp_tool_drift",
+                server=client.spec.name,
+                mode=decision.mode,
+                drifted=decision.drifted,
+                added=decision.added,
+                removed=decision.removed,
+            )
+        except Exception:  # pragma: no cover - audit is best-effort
+            pass
+    return decision
+
 
 
 def _try_shield():

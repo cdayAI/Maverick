@@ -143,6 +143,29 @@ def get_security_sentinel() -> dict:
     }
 
 
+def get_mcp() -> dict:
+    """Return the ``[mcp]`` section with defaults filled in.
+
+    ``tool_pinning`` controls rug-pull / drift detection for external MCP
+    servers' advertised tools (``maverick.mcp_pinning``):
+      - ``off`` (default) -- no pinning;
+      - ``warn`` -- pin on first use, flag later drift (log + audit);
+      - ``enforce`` -- withhold drifted/new tools until re-pinned.
+    Off by default so the kernel keeps current behaviour and writes no pin
+    store unless an operator opts in. Distinct from ``[mcp_servers]`` (which
+    lists the servers themselves). ``pins_path`` overrides the store location.
+    """
+    cfg = load_config().get("mcp", {})
+    cfg = cfg if isinstance(cfg, dict) else {}
+    mode = str(cfg.get("tool_pinning", "off")).strip().lower()
+    if mode not in ("off", "warn", "enforce"):
+        mode = "off"
+    return {
+        "tool_pinning": mode,
+        "pins_path": cfg.get("pins_path"),
+    }
+
+
 def get_skills() -> dict:
     """Return the ``[skills]`` section with signing defaults filled in.
 

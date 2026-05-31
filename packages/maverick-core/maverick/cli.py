@@ -232,6 +232,24 @@ def doctor() -> None:
     diagnose()
 
 
+@main.command("mcp-repin")
+@click.option("--server", default=None, help="Only re-pin this MCP server (default: all).")
+def mcp_repin(server: str | None) -> None:
+    """Forget pinned MCP tool definitions so the next run re-baselines (TOFU).
+
+    Run this after you've reviewed and accepted a legitimate update to an MCP
+    server's tools. Until you do, drifted tools are flagged (warn mode) or
+    withheld (enforce mode) by the rug-pull guard.
+    """
+    from .mcp_pinning import repin
+    n = repin(server)
+    if server:
+        click.echo(f"re-pinned {server!r} ({n} cleared)" if n
+                   else f"no pin found for {server!r}")
+    else:
+        click.echo(f"cleared {n} server pin(s); next run re-baselines")
+
+
 @main.command("security-audit")
 @click.option("--research/--no-research", default=False,
               help="Also pull recent advisories for the research brief (network).")

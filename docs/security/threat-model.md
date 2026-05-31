@@ -82,6 +82,8 @@ crossing those needs explicit consent or shield approval.
 |----------------------------------------------|--------------------------------------------------------------------------|
 | Audit log entries get edited or deleted after the fact | Daily-rotated NDJSON, chmod 600. Audit-log signing (Q3 26) adds an Ed25519 chain. |
 | Skill/plugin code is modified on disk between installs | Hash-pinned via `maverick skills install`. Signed skills (Q2 26).        |
+| External MCP server poisons a tool description / schema with injected instructions | Every advertised tool's description + schema string leaves are run through `Shield.scan_input`; failing tools are dropped (`mcp_tools`). |
+| External MCP server **rug-pulls** — advertises benign tools at approval, then changes a tool's schema/behaviour later | Tool definitions are pinned on first use; drift is flagged (`warn`) or the changed tool withheld (`enforce`) — `mcp_pinning`, `[mcp] tool_pinning`, guarded by the `mcp-tool-pinning` Sentinel invariant. Re-approve with `maverick mcp-repin`. |
 | Browser session cookie is replayed by a third process | chmod 600 + 0o700 parent dir. Encrypted at rest (Q1 27).                 |
 | World model gets corrupted mid-write       | SQLite WAL mode + autocheckpoint + `PRAGMA wal_checkpoint(TRUNCATE)` on close. |
 

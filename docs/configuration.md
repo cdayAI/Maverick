@@ -54,6 +54,14 @@ cadence  = "0 6 * * 1"            # 5-field cron; weekly Mon 06:00 UTC
 # report_dir = "~/.maverick/security"   # optional; this is the default
 # Run by hand any time:  maverick security-audit [--research]
 
+[mcp]                              # external MCP server hardening
+tool_pinning = "off"              # off | warn | enforce — rug-pull / drift guard
+# off:     no pinning (default).
+# warn:    pin each server's advertised tools on first use; flag later drift.
+# enforce: withhold a tool whose definition changed until you re-approve it.
+# After a legitimate server update:  maverick mcp-repin [--server NAME]
+# pins_path = "~/.maverick/mcp_pins.json"   # optional; this is the default
+
 [sandbox]
 backend = "local"                   # local | docker | ssh | podman | devcontainer | firecracker | kubernetes
 workdir = "~/maverick-workspace"
