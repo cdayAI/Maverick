@@ -52,7 +52,12 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # contains TOKEN / KEY / SECRET / PASSWORD / PASS / CREDENTIAL). Tolerates
     # a leading `export ` so shell-style `export FOO_TOKEN=...` is covered too.
     ("env_secret", re.compile(
-        r"((?:^|\n)\s*(?:export\s+)?[A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASS|CREDENTIAL)[A-Z0-9_]*\s*=\s*)([^\s\n]+)",
+        r"((?:^|\n)\s*(?:export\s+)?[A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASS|CREDENTIAL)[A-Z0-9_]*\s*=\s*)"
+        # Value: a single- or double-quoted string (which may contain
+        # spaces) OR a bare run of non-space chars. Without the quoted
+        # alternatives a value like FOO_SECRET="a b c" matched only "a,
+        # leaving `b c"` -- the real secret -- unredacted.
+        r"(\"[^\"\n]*\"|'[^'\n]*'|[^\s\n]+)",
         re.MULTILINE,
     )),
     # JWT (three base64url segments separated by dots, common shape)

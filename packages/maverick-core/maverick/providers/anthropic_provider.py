@@ -80,13 +80,14 @@ def _min_cache_tokens(model_id: str) -> int:
     """Minimum cumulative prompt tokens (up to + including breakpoint)
     required for prompt caching to actually take effect.
 
-    Claude 4.5+ (opus 4.5/4.6/4.7, sonnet 4.5/4.6, haiku 4.5): 4096.
+    Claude 4.5+ (opus 4.5/4.6/4.7/4.8, sonnet 4.5/4.6, haiku 4.5): 4096.
     Earlier 4.x and all 3.x: 1024.
     """
     if (
         model_id.startswith("claude-opus-4-5")
         or model_id.startswith("claude-opus-4-6")
         or model_id.startswith("claude-opus-4-7")
+        or model_id.startswith("claude-opus-4-8")
         or model_id.startswith("claude-sonnet-4-5")
         or model_id.startswith("claude-sonnet-4-6")
         or model_id.startswith("claude-haiku-4-5")
@@ -255,10 +256,17 @@ class AnthropicClient:
         # for any "claude-opus-/claude-sonnet-4" prefix — that breaks
         # against Opus 4.7 (400) and is wasted noise on 4.6.
         model_id = (model or self.DEFAULT_MODEL) or ""
-        is_opus_47 = model_id.startswith("claude-opus-4-7")
+        # Opus 4.7 AND 4.8 (the current default, incl. its `-fast` variant)
+        # only accept adaptive thinking; manual `enabled` returns 400.
+        # Gating on 4-7 alone left the default model on the `enabled` path.
+        is_opus_47 = (
+            model_id.startswith("claude-opus-4-7")
+            or model_id.startswith("claude-opus-4-8")
+        )
         is_modern_4x = (
             model_id.startswith("claude-opus-4-6")
             or model_id.startswith("claude-opus-4-7")
+            or model_id.startswith("claude-opus-4-8")
             or model_id.startswith("claude-sonnet-4-6")
             or model_id.startswith("claude-haiku-4-5")
         )

@@ -40,6 +40,9 @@ _ZERO_WIDTH = {
 
 # Bidirectional override block (the Trojan Source attack).
 _BIDI_OVERRIDES = {
+    0x200E,  # LRM (left-to-right mark)
+    0x200F,  # RLM (right-to-left mark)
+    0x061C,  # ALM (Arabic letter mark)
     0x202A,  # LRE
     0x202B,  # RLE
     0x202C,  # PDF (pop directional)

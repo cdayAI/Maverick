@@ -389,3 +389,29 @@ class TestASTCheck:
         from maverick.coding_mode import _ast_check_python_files
         errors = _ast_check_python_files(tmp_path, ["nonexistent.py"])
         assert errors == []
+
+
+class TestForbiddenPathPrecision:
+    """The grader-integrity blocker must catch real test files without
+    over-blocking production modules that merely start with 'test'."""
+
+    def _patch(self, path: str) -> str:
+        return (
+            f"diff --git a/{path} b/{path}\n"
+            f"--- a/{path}\n+++ b/{path}\n"
+            "@@ -1 +1 @@\n-x\n+y\n"
+        )
+
+    def test_production_modules_named_test_prefix_not_blocked(self):
+        from maverick.coding_mode import defensive_validate
+        for path in ("testing.py", "testutils.py", "testimonials.py",
+                     "pkg/testing.py"):
+            result = defensive_validate(self._patch(path))
+            assert path not in result.blocked_paths, f"{path} wrongly blocked"
+
+    def test_real_test_files_still_blocked(self):
+        from maverick.coding_mode import defensive_validate
+        for path in ("test_foo.py", "tests.py", "test.py",
+                     "foo_test.py", "foo_tests.py", "tests/x.py"):
+            result = defensive_validate(self._patch(path))
+            assert not result.ok, f"{path} should be blocked"

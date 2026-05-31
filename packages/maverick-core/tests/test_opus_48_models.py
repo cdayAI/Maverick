@@ -49,3 +49,48 @@ def test_gemini_35_priced_not_fallback():
     b.record_tokens(1_000_000, 1_000_000, model="gemini-3.5-flash")
     # 0.15 + 0.60 = $0.75 (Sonnet fallback would be $18).
     assert abs(b.dollars - 0.75) < 0.001
+
+
+# --- provider request shaping: Opus 4.8 was missing from every version
+# gate in anthropic_provider, so the default model used the wrong cache
+# threshold and the rejected `enabled` thinking mode. ---
+
+def test_opus_48_uses_adaptive_thinking_not_enabled():
+    from maverick.providers.anthropic_provider import AnthropicClient
+    client = AnthropicClient.__new__(AnthropicClient)
+    for mid in ("claude-opus-4-8", "claude-opus-4-8-fast"):
+        kwargs = client._build_request(
+            system="sys",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=4096,
+            thinking_budget=8000,
+            model=mid,
+        )
+        thinking = kwargs.get("thinking", {})
+        assert thinking.get("type") == "adaptive", (
+            f"{mid} must use adaptive thinking, not enabled; got {thinking}"
+        )
+
+
+def test_opus_48_defaults_to_adaptive_without_budget():
+    from maverick.providers.anthropic_provider import AnthropicClient
+    client = AnthropicClient.__new__(AnthropicClient)
+    kwargs = client._build_request(
+        system="sys",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None,
+        max_tokens=4096,
+        thinking_budget=None,
+        model="claude-opus-4-8",
+    )
+    assert kwargs.get("thinking", {}).get("type") == "adaptive"
+
+
+def test_opus_48_uses_4x_min_cache_threshold():
+    from maverick.providers.anthropic_provider import (
+        _MIN_CACHE_TOKENS_4X,
+        _min_cache_tokens,
+    )
+    assert _min_cache_tokens("claude-opus-4-8") == _MIN_CACHE_TOKENS_4X
+    assert _min_cache_tokens("claude-opus-4-8-fast") == _MIN_CACHE_TOKENS_4X
