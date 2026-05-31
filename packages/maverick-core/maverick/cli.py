@@ -21,6 +21,19 @@ import click
 from .world_model import DEFAULT_DB, open_world  # noqa: E402  -- cheap stdlib chain
 
 
+_TERMINAL_CONTROL_RE = re.compile(
+    r"(?:\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$))"
+    r"|(?:\x1b\[[0-?]*[ -/]*[@-~])"
+    r"|(?:\x1b[@-Z\\-_])"
+    r"|[\x00-\x1f\x7f-\x9f]"
+)
+
+
+def _strip_terminal_control(text: str) -> str:
+    """Remove terminal control bytes before rendering untrusted text."""
+    return _TERMINAL_CONTROL_RE.sub("", text)
+
+
 def _default_model() -> str:
     """Lazy resolver so the click default callback doesn't pull `.llm`
     (and the anthropic SDK) at module import time."""
@@ -397,7 +410,7 @@ def runs(ctx, as_json: bool, limit: int, goal_id) -> None:
     click.echo(click.style(f"Recent runs ({len(records)})", bold=True))
     for r in records:
         state = "running" if r["running"] else (r["outcome"] or "done")
-        title = (r["goal_title"] or "")[:48]
+        title = _strip_terminal_control(r["goal_title"] or "")[:48]
         click.echo(
             f"  ep #{r['episode_id']:<4} goal {r['goal_id']:<4} "
             f"[{state:<10}] ${r['cost_dollars']:.4f}  "
