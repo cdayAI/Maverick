@@ -166,8 +166,18 @@ def relevant_skills_embed(
     for name, entry in cache.items():
         if name not in by_name:
             continue
+        skill = by_name[name]
         score = _cosine(goal_vec, entry.vector)
+        # Relevance threshold is applied to the raw cosine; quality only
+        # re-ranks the survivors, so a low-confidence skill that's clearly
+        # relevant still surfaces — it just yields to an equally-relevant
+        # high-confidence one. Mirrors the lexical scorer.
         if score >= threshold:
-            scored.append((score, by_name[name]))
+            try:
+                from .skills import quality_weight
+                weighted = score * quality_weight(skill)
+            except Exception:  # pragma: no cover -- weighting never blocks recall
+                weighted = score
+            scored.append((weighted, skill))
     scored.sort(key=lambda x: -x[0])
     return [s for _, s in scored[:max_n]]

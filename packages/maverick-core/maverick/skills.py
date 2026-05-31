@@ -129,10 +129,25 @@ def load_skills(skills_dir: Path = SKILLS_DIR) -> list[Skill]:
     return out
 
 
+def quality_weight(skill: Skill) -> float:
+    """Multiplier in [0.5, 1.0] derived from a skill's distilled_confidence.
+
+    Quality-weights retrieval so an equally-relevant skill from a
+    high-confidence run outranks one from a barely-passing run, without
+    ever fully suppressing a low-confidence skill (it can still surface if
+    nothing better matches). Confidence c in [0,1] maps to 0.5 + 0.5*c.
+    Disabled (returns 1.0 for all) via MAVERICK_SKILL_QUALITY_WEIGHT=0.
+    """
+    if os.environ.get("MAVERICK_SKILL_QUALITY_WEIGHT", "1") == "0":
+        return 1.0
+    c = max(0.0, min(1.0, getattr(skill, "distilled_confidence", 1.0)))
+    return 0.5 + 0.5 * c
+
+
 def _relevant_skills_lexical(goal: str, all_skills: list[Skill], max_n: int = 3) -> list[Skill]:
     goal_lower = goal.lower()
     goal_words = set(re.findall(r"\w+", goal_lower))
-    scored: list[tuple[int, Skill]] = []
+    scored: list[tuple[float, Skill]] = []
     for s in all_skills:
         score = 0
         for trig in s.triggers:
@@ -141,7 +156,7 @@ def _relevant_skills_lexical(goal: str, all_skills: list[Skill], max_n: int = 3)
             if trig.lower() in goal_lower:
                 score += 5
         if score > 0:
-            scored.append((score, s))
+            scored.append((score * quality_weight(s), s))
     scored.sort(key=lambda x: -x[0])
     return [s for _, s in scored[:max_n]]
 
