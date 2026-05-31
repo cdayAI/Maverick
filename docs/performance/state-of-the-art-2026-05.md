@@ -98,6 +98,16 @@ those lessons into the orchestrator brief. Off by default; enable with
 `MAVERICK_REFLEXION=1` or `[reflexion] enable = true`. Covered by
 `tests/test_reflexion_wiring.py`.
 
+### Tree-of-thought planning, wired in
+
+`tree_of_thought.py` was imported nowhere. It is now an opt-in planning
+pre-pass in `run_goal`: with `[planning] mode = "tree_of_thought"` (or
+`MAVERICK_PLANNING=tree_of_thought`), the orchestrator forks N candidate
+plans, scores them with a critic, and prepends the winning plan to its
+brief. The synchronous planner runs in a worker thread so its N+1 calls
+don't block the event loop. Off by default (`mode = "single"`). Adds
+`config.get_planning()`. Covered by `tests/test_tot_wiring.py`.
+
 ### Self-consistency voting in best-of-N selection
 
 `select_best_candidate` previously broke all-zero-score ties (the common
