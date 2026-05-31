@@ -19,7 +19,6 @@ import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from .local import ExecResult
 
@@ -48,7 +47,7 @@ class DockerBackend:
                 "change [sandbox] backend to 'local' in ~/.maverick/config.toml."
             ) from e
 
-    def exec(self, cmd: str, timeout: Optional[float] = None) -> ExecResult:
+    def exec(self, cmd: str, timeout: float | None = None) -> ExecResult:
         # Wave 11: per-call `timeout` matches LocalBackend so the shell
         # tool can plumb a longer cap for pytest/npm test/etc. Falls
         # back to self.timeout (default 60 s).

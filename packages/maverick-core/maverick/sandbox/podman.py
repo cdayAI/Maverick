@@ -30,7 +30,6 @@ import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from .local import ExecResult
 
@@ -60,7 +59,7 @@ class PodmanBackend:
                 "~/.maverick/config.toml."
             ) from e
 
-    def exec(self, cmd: str, timeout: Optional[float] = None) -> ExecResult:
+    def exec(self, cmd: str, timeout: float | None = None) -> ExecResult:
         effective = self.timeout if timeout is None else timeout
         container_name = f"maverick-sandbox-{uuid.uuid4().hex}"
         # `:Z` relabels the SELinux context for the mount so rootless

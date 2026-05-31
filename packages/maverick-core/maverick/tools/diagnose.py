@@ -18,7 +18,6 @@ from typing import Any
 
 from . import Tool
 
-
 _DIAG_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {},

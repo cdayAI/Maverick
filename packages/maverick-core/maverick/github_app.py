@@ -35,7 +35,6 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -63,15 +62,15 @@ class WebhookPayload:
     issue_number: int
     issue_title: str
     issue_body: str
-    trigger_label: Optional[str] = None
-    comment_body: Optional[str] = None
+    trigger_label: str | None = None
+    comment_body: str | None = None
     sender_login: str = ""
 
 
 def verify_signature(
     body: bytes,
-    signature_header: Optional[str],
-    secret: Optional[str],
+    signature_header: str | None,
+    secret: str | None,
 ) -> bool:
     """HMAC-SHA256 verification of GitHub's X-Hub-Signature-256 header.
 
@@ -94,7 +93,7 @@ def verify_signature(
     return hmac.compare_digest(expected, signature_header)
 
 
-def parse_webhook(event: str, payload: dict) -> Optional[WebhookPayload]:
+def parse_webhook(event: str, payload: dict) -> WebhookPayload | None:
     """Normalize the GitHub webhook payload.
 
     Returns None for events we don't care about (e.g., issues.opened
@@ -175,10 +174,10 @@ def slugify(title: str, max_len: int = 40) -> str:
 @dataclass
 class PRResult:
     branch_name: str
-    pr_url: Optional[str]
+    pr_url: str | None
     workdir: Path
     summary: str   # agent's FINAL output
-    error: Optional[str] = None
+    error: str | None = None
 
 
 def clone_repo(repo_full_name: str, token: str, dest: Path) -> Path:
@@ -199,7 +198,7 @@ def create_pr_via_gh(
     pr_body: str,
     *,
     draft: bool = True,
-) -> Optional[str]:
+) -> str | None:
     """Use the `gh` CLI to push + open a draft PR. Returns the PR URL or None.
 
     The PR is opened as a draft per repo policy (see CLAUDE.md). The
@@ -247,7 +246,7 @@ def _origin_full_name(workdir: Path) -> str:
 async def process_issue(
     payload: WebhookPayload,
     *,
-    token: Optional[str] = None,
+    token: str | None = None,
     max_dollars: float = 5.0,
     max_wall_seconds: float = 1800.0,
     draft: bool = True,

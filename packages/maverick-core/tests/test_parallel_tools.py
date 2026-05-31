@@ -12,7 +12,6 @@ import asyncio
 from pathlib import Path
 
 import pytest
-
 from maverick.agent import Agent
 from maverick.blackboard import Blackboard
 from maverick.budget import Budget
