@@ -8,8 +8,6 @@ distinct file set. Toggle with MAVERICK_BON_CONSENSUS=0.
 """
 from __future__ import annotations
 
-import pytest
-
 from maverick.coding_mode import (
     Candidate,
     _changed_files_in_patch,

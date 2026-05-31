@@ -1680,6 +1680,7 @@ def select_best_candidate(candidates: list[Candidate]) -> Optional[Candidate]:
         # when every attempt touches a distinct file set, all consensus
         # counts are 0 and ordering reduces to the prior
         # (-index, -len, patch) rule. Disable with MAVERICK_BON_CONSENSUS=0.
+        import os
         if os.environ.get("MAVERICK_BON_CONSENSUS", "1") != "0":
             file_sets = [_changed_files_in_patch(c.patch) for c in usable]
             consensus = {
