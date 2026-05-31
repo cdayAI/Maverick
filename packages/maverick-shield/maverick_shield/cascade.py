@@ -164,12 +164,19 @@ class CascadedShield:
         # cheap-probe step saves measurable compute.
         return self.base.scan_tool_call(tool_name, args)
 
-    def scan_output(self, text: str):
+    def scan_output(self, text: str, known_prompt: str | None = None):
         probe = cheap_probe(text)
-        if probe.flagged or probe.score >= self.deep_threshold:
+        # When a known_prompt is supplied, the deep scan must run regardless of
+        # the cheap probe: verbatim system-prompt regurgitation is an
+        # output-side leak the input-tuned probe doesn't flag, so short-
+        # circuiting on a clean probe would silently skip regurgitation
+        # detection. ``known_prompt`` is forwarded to the base scanner (the
+        # signature ``Shield.scan_output`` already accepts); the optional
+        # ``deep_scan_output`` callable keeps its text-only contract.
+        if probe.flagged or probe.score >= self.deep_threshold or known_prompt is not None:
             verdict = (
                 self.deep_scan_output(text) if self.deep_scan_output
-                else self.base.scan_output(text)
+                else self.base.scan_output(text, known_prompt=known_prompt)
             )
             if probe.reasons and getattr(verdict, "reasons", None) is not None:
                 try:
