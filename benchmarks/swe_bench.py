@@ -631,7 +631,7 @@ def run_sonnet_single(instance_id: str, brief: str, **_kwargs) -> Row:
         cost_dollars=budget.dollars,
         tokens_in=budget.input_tokens,
         tokens_out=budget.output_tokens,
-        predicted_patch=text[:50_000],
+        predicted_patch=_sanitize_patch_for_csv(text[:50_000]),
         outcome="success" if text else "empty",
     )
 
@@ -730,7 +730,7 @@ def run_sonnet_self_consistency_n8(instance_id: str, brief: str, **_kwargs) -> R
         cost_dollars=budget.dollars,
         tokens_in=budget.input_tokens,
         tokens_out=budget.output_tokens,
-        predicted_patch=chosen[:50_000],
+        predicted_patch=_sanitize_patch_for_csv(chosen[:50_000]),
         outcome="success" if chosen else "empty",
     )
 
