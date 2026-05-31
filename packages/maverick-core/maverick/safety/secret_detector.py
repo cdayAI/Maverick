@@ -32,7 +32,10 @@ class SecretMatch:
 # match a specific provider format.
 _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("anthropic_api_key",  re.compile(r"\bsk-ant-[a-zA-Z0-9_-]{20,}\b")),
-    ("openai_api_key",     re.compile(r"\bsk-(?:proj-)?[a-zA-Z0-9]{20,}\b")),
+    # Body allows `_` and `-`: real sk-proj- keys contain them, and a
+    # `[a-zA-Z0-9]`-only body stopped at the first separator, detecting
+    # (and thus redacting) only a prefix and leaking the rest of the key.
+    ("openai_api_key",     re.compile(r"\bsk-(?:proj-)?[a-zA-Z0-9_-]{20,}")),
     ("aws_access_key_id",  re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     # AWS secret access keys are 40-char base64-ish; matching naked
     # 40-char strings produces too many false positives (hashes, UUIDs
