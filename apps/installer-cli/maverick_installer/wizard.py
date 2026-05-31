@@ -1439,7 +1439,24 @@ def write_config(
 ) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Re-running the wizard truncates config.toml / .env. The loader explicitly
+    # supports hand-editing, so back up any existing file first (0o600) instead
+    # of silently destroying a user's manual edits.
+    def _backup(path) -> None:
+        try:
+            if os.path.exists(path):
+                import shutil
+                bak = str(path) + ".bak"
+                shutil.copy2(path, bak)
+                try:
+                    os.chmod(bak, 0o600)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
     if keys:
+        _backup(ENV_FILE)
         # Atomic + perm-from-creation: previous version was
         # ``write_text(...)`` followed by ``chmod(0o600)``, which left
         # the file world-readable (0o644) for one syscall. Open with
@@ -1590,6 +1607,7 @@ def write_config(
     # topology and provider names. chmod 600 so multi-user hosts don't
     # leak it to other accounts.
     config_body = "\n".join(lines) + "\n"
+    _backup(CONFIG_FILE)
     fd = os.open(
         CONFIG_FILE,
         os.O_CREAT | os.O_WRONLY | os.O_TRUNC,
