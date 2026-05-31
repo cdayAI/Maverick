@@ -272,6 +272,18 @@ async def verify_proposal_ensemble(
     return _combine(verdicts, weighted=weighted)
 
 
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def _explicit_true(value: object) -> bool:
+    """Return True only for explicit verifier-ensemble opt-in values."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUE_VALUES
+    return False
+
+
 def _ensemble_enabled() -> bool:
     """Opt-in gate for the adversarial multi-verifier panel.
 
@@ -281,14 +293,12 @@ def _ensemble_enabled() -> bool:
     verifier cost). Spend still lands in the run's Budget, so the cap is
     respected either way.
     """
-    if os.environ.get("MAVERICK_VERIFY_ENSEMBLE", "").strip().lower() in {
-        "1", "true", "yes", "on",
-    }:
+    if _explicit_true(os.environ.get("MAVERICK_VERIFY_ENSEMBLE", "")):
         return True
     try:
         from .config import load_config
         cfg = (load_config() or {}).get("routing") or {}
-        return bool(cfg.get("verify_ensemble"))
+        return _explicit_true(cfg.get("verify_ensemble"))
     except Exception:
         return False
 

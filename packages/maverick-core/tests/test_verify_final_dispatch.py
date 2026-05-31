@@ -17,7 +17,7 @@ import asyncio
 
 import pytest
 
-from maverick import verifier
+from maverick import config, verifier
 from maverick.verifier import VerifierVerdict
 
 
@@ -65,6 +65,30 @@ def test_stringy_false_does_not_enable_ensemble(_clean, monkeypatch):
     calls = _patch_both(monkeypatch)
     asyncio.run(verifier.verify_final("brief", "answer", llm=None))
     assert calls == ["single"]
+
+
+def test_config_stringy_false_does_not_enable_ensemble(_clean, monkeypatch):
+    # TOML environment interpolation can leave string values such as "false";
+    # those must not opt in to the more expensive ensemble verifier.
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: {"routing": {"verify_ensemble": "false"}},
+    )
+    calls = _patch_both(monkeypatch)
+    asyncio.run(verifier.verify_final("brief", "answer", llm=None))
+    assert calls == ["single"]
+
+
+def test_config_true_string_enables_ensemble(_clean, monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: {"routing": {"verify_ensemble": "true"}},
+    )
+    calls = _patch_both(monkeypatch)
+    asyncio.run(verifier.verify_final("brief", "answer", llm=None))
+    assert calls == ["ensemble"]
 
 
 def test_verify_final_passes_proposer_model_through(_clean, monkeypatch):
