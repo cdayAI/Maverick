@@ -42,6 +42,13 @@ ENV_FILE = CONFIG_DIR / ".env"
 console = Console()
 
 
+VOICE_PROVIDER_KEY_ENV = {
+    "vapi": "VAPI_API_KEY",
+    "retell": "RETELL_API_KEY",
+    "bland": "BLAND_API_KEY",
+}
+
+
 # Channel catalog: (id, label, env_vars_needed)
 CHANNELS: list[tuple[str, str, list[str]]] = [
     ("telegram", "Telegram bot (free, easiest)",        ["TELEGRAM_BOT_TOKEN"]),
@@ -52,7 +59,7 @@ CHANNELS: list[tuple[str, str, list[str]]] = [
     ("matrix",   "Matrix (federated)",                  ["MATRIX_ACCESS_TOKEN"]),
     ("bluesky",  "Bluesky (AT Protocol)",               ["BLUESKY_HANDLE", "BLUESKY_PASSWORD"]),
     ("mastodon", "Mastodon (any instance)",             ["MASTODON_ACCESS_TOKEN"]),
-    ("voice",    "Voice (Vapi Voice in/out)",           ["VAPI_API_KEY", "VAPI_WEBHOOK_TOKEN"]),
+    ("voice",    "Voice (Vapi Voice in/out)",           ["VAPI_WEBHOOK_TOKEN"]),
     ("whatsapp", "WhatsApp (Twilio, needs webhook)",    ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]),
     ("sms",      "SMS (Twilio, needs webhook)",         ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]),
     ("imessage", "iMessage (macOS only)",               []),
@@ -626,11 +633,8 @@ def pick_channels(deployment: str) -> tuple[dict[str, dict[str, Any]], set[str]]
                 "  Voice provider (vapi, retell, bland)", default="vapi",
             ).strip().lower() or "vapi")
             cfg["provider"] = provider
-            key_env = {
-                "vapi": "VAPI_API_KEY",
-                "retell": "RETELL_API_KEY",
-                "bland": "BLAND_API_KEY",
-            }.get(provider, "VAPI_API_KEY")
+            key_env = VOICE_PROVIDER_KEY_ENV.get(provider, "VAPI_API_KEY")
+            envs.add(key_env)
             cfg["api_key"] = "${" + key_env + "}"
             # Inbound webhook auth is Vapi-shaped today; keep the token ref.
             cfg["webhook_token"] = "${VAPI_WEBHOOK_TOKEN}"
