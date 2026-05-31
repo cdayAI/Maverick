@@ -97,6 +97,68 @@ def _maybe_record_reflexion(
         log.debug("reflexion record skipped: %s", e)
 
 
+def _maybe_recall_prior_work(world, goal, shield) -> Optional[str]:
+    """Auto-recall the most similar PRIOR goals into a brief addendum.
+
+    Mirrors the reflexion-recall wiring but for finished prior goals + their
+    results, so the swarm reuses what it already did rather than waiting for
+    the agent to call ``recall_past_goals`` itself.
+
+    No-op (returns None) unless ``MAVERICK_AUTO_RECALL`` is truthy. The
+    current goal is excluded from matches. Each recalled result snippet is
+    shield-scanned (past results are persisted, possibly-poisoned text) and
+    redacted if flagged. Bounded to a few short entries. Never raises.
+
+    Tunables: ``MAVERICK_AUTO_RECALL_K`` (default 3); a minimum similarity
+    of 0.10 avoids injecting noise on an empty/novel history.
+    """
+    import os
+    if os.environ.get("MAVERICK_AUTO_RECALL", "").strip().lower() not in {
+        "1", "true", "yes", "on",
+    }:
+        return None
+    try:
+        from .tools.recall import recall_past_goals
+        try:
+            k = max(1, int(os.environ.get("MAVERICK_AUTO_RECALL_K", "3")))
+        except ValueError:
+            k = 3
+        query = f"{goal.title}\n{goal.description or ''}"
+        # Pull a few extra so we can drop the current goal + low-score hits.
+        matches = recall_past_goals(query, num_results=k + 2, world=world)
+        lines: list[str] = []
+        for score, g in matches:
+            if g.id == goal.id or score < 0.10:
+                continue
+            result = (g.result or "").replace("\n", " ").strip()
+            if shield is not None and result:
+                try:
+                    v = shield.scan_output(result)
+                    if not getattr(v, "allowed", True):
+                        result = "[result redacted by Shield]"
+                except Exception:  # pragma: no cover -- fail open
+                    pass
+            snippet = result[:240] if result else "(no result captured)"
+            lines.append(
+                f"- #{g.id} ({score:.2f}) {g.title or '(no title)'}\n"
+                f"  -> {snippet}"
+            )
+            if len(lines) >= k:
+                break
+        if not lines:
+            return None
+        return (
+            "\n## Relevant prior work (from past runs)\n"
+            "You (or the swarm) handled these similar goals before. Reuse "
+            "their approach/results where applicable instead of redoing the "
+            "work; verify they still apply before relying on them:\n\n"
+            + "\n".join(lines)
+        )
+    except Exception as e:  # pragma: no cover -- recall never blocks a run
+        log.debug("auto-recall skipped: %s", e)
+        return None
+
+
 async def _maybe_plan_tree_of_thought(
     llm: "LLM", goal_text: str, budget: Budget, blackboard
 ) -> Optional[str]:
@@ -297,6 +359,17 @@ async def run_goal(
                     brief = brief + "\n" + ctx_block
         except Exception as e:  # pragma: no cover -- recall never blocks a run
             log.debug("reflexion recall skipped: %s", e)
+
+        # Auto-surface cross-run memory: inject the most similar PRIOR goals
+        # (and their results) into the brief so the swarm reuses past work
+        # instead of redoing it — the moat, made automatic instead of
+        # waiting for the agent to call recall_past_goals. Opt-in via
+        # MAVERICK_AUTO_RECALL=1; no-op otherwise. Each snippet is
+        # shield-scanned because past results are persisted, possibly-
+        # poisoned text. Never blocks the run.
+        prior_block = _maybe_recall_prior_work(world, goal, shield)
+        if prior_block:
+            brief = brief + "\n" + prior_block
 
         # Opt-in tree-of-thought planning pre-pass: fork N candidate plans,
         # score them, and prepend the winner to the brief. No-op (returns
