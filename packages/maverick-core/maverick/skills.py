@@ -236,9 +236,8 @@ def _verify_skill_signature(parsed: "Skill") -> None:
       ``trusted_pubkeys`` is non-empty) and the Ed25519 signature must
       verify over the canonical bytes; otherwise reject.
 
-    Fail-open if ``cryptography`` is absent (CLAUDE.md rule 1): we can't
-    verify, so we warn and fall through to current behavior rather than
-    breaking the kernel.
+    If ``cryptography`` is absent, signed skills are rejected because the
+    signature and publisher trust cannot be verified safely.
     """
     from . import config as _config
     from .audit import signing
@@ -256,11 +255,10 @@ def _verify_skill_signature(parsed: "Skill") -> None:
         return
 
     if not signing._have_crypto():
-        log.warning(
-            "cryptography not installed; cannot verify skill signature -- "
-            "failing open (install 'maverick-agent[audit-signing]' to enforce)."
+        raise ValueError(
+            "skill rejected: cryptography is required to verify signed skills. "
+            "Install 'maverick-agent[audit-signing]' to enable signature verification."
         )
-        return
 
     if trusted and parsed.pubkey not in trusted:
         raise ValueError(
@@ -289,7 +287,7 @@ def _validate_and_write(content: str, skills_dir: Path) -> Skill:
 
     # Signed-skill policy: enforce [skills].require_signed / trusted_pubkeys
     # BEFORE the shield scan and BEFORE writing. Rejects forged or untrusted
-    # signatures; fail-open if cryptography is missing.
+    # signatures; reject signed skills if cryptography is missing.
     _verify_skill_signature(parsed)
 
     # Council finding (Tier 0): the body markdown gets concatenated into
