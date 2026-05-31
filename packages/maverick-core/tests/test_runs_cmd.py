@@ -3,7 +3,6 @@ extension's runs view consumes. Keep field names stable."""
 import json
 
 from click.testing import CliRunner
-
 from maverick import cli as cli_mod
 from maverick.world_model import WorldModel
 
