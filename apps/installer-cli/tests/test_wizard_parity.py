@@ -73,6 +73,30 @@ def test_new_pick_exists(name):
     assert callable(getattr(wizard, name)), f"{name} missing"
 
 
+def test_collect_api_keys_prompts_for_openai_compatible_base_url(monkeypatch):
+    from maverick_installer import wizard
+
+    prompts: list[str] = []
+    answers = {
+        "OPENAI_COMPATIBLE_API_KEY": "sk-compatible",
+        "OPENAI_COMPATIBLE_BASE_URL": "http://localhost:1234/v1",
+    }
+
+    def fake_secret(prompt: str, *args, **kwargs):
+        prompts.append(prompt)
+        for env_name, value in answers.items():
+            if env_name in prompt:
+                return value
+        return ""
+
+    monkeypatch.setattr(wizard, "_q_secret", fake_secret)
+    keys = wizard.collect_api_keys(["openai_compatible"], set())
+
+    assert keys == answers
+    assert any("OPENAI_COMPATIBLE_API_KEY" in prompt for prompt in prompts)
+    assert any("OPENAI_COMPATIBLE_BASE_URL" in prompt for prompt in prompts)
+
+
 # ---------- write_config emits new TOML sections ----------
 
 def _write_full_config(tmp_path: Path, monkeypatch, **overrides) -> dict:

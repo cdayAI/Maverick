@@ -17,7 +17,10 @@ import pytest
 @pytest.fixture
 def _clean(monkeypatch):
     monkeypatch.delenv("MAVERICK_COST_ROUTING", raising=False)
-    for prov in ("ANTHROPIC", "OPENAI", "DEEPSEEK", "MOONSHOT", "XAI", "GEMINI"):
+    for prov in (
+        "ANTHROPIC", "OPENAI", "DEEPSEEK", "MOONSHOT",
+        "XAI", "GEMINI", "GOOGLE",
+    ):
         monkeypatch.delenv(f"{prov}_API_KEY", raising=False)
     for role in ("CODER", "ORCHESTRATOR", "SUMMARIZER"):
         monkeypatch.delenv(f"MAVERICK_MODEL_OVERRIDE_{role}", raising=False)
@@ -78,3 +81,39 @@ def test_signal_for_role_tiers():
     assert cost_router.signal_for_role("summarizer").tier == cost_router.TIER_CHEAP
     assert cost_router.signal_for_role("coder").tier == cost_router.TIER_BASE
     assert cost_router.signal_for_role("revisor").output_heavy is True
+
+
+def test_enabled_defers_when_no_available_provider_at_required_tier(_clean, monkeypatch):
+    monkeypatch.setenv("MAVERICK_COST_ROUTING", "1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "x")
+    from maverick.llm import ROLE_MODELS, model_for_role
+
+    # DeepSeek has no premium-tier pricing row. The router must not fall back
+    # to an unconfigured premium provider such as Gemini; it should defer to
+    # the normal role default instead.
+    assert model_for_role("orchestrator") == ROLE_MODELS["orchestrator"]
+
+
+def test_config_provider_key_is_passed_to_provider_client(_clean, monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[providers.deepseek]\napi_key = " config-key "\n')
+    monkeypatch.setenv("MAVERICK_CONFIG", str(cfg))
+
+    calls = []
+
+    class DummyClient:
+        pass
+
+    def fake_get_provider_client(name, api_key=None):
+        calls.append((name, api_key))
+        return DummyClient()
+
+    import maverick.providers as providers
+    from maverick.llm import LLM
+
+    monkeypatch.setattr(providers, "get_provider_client", fake_get_provider_client)
+
+    client = LLM("deepseek:deepseek-reasoner")._get_client("deepseek")
+
+    assert isinstance(client, DummyClient)
+    assert calls == [("deepseek", "config-key")]
