@@ -153,7 +153,17 @@ def build_sandbox(
     # actually applies.
     chosen = str(backend or cfg.get("backend") or "local").strip().lower()
     wd = Path(workdir or cfg.get("workdir", str(Path.cwd()))).expanduser()
-    timeout = float(cfg.get("timeout", 60))
+    # Coerce defensively: [sandbox] timeout is hand-editable, and a non-numeric
+    # ("fast") or non-positive value would otherwise raise here and crash the
+    # kernel at startup -- config.py's contract is to fall back to defaults on
+    # bad config, not abort. Warn + default so a typo doesn't take the agent down.
+    try:
+        timeout = float(cfg.get("timeout", 60))
+        if timeout <= 0:
+            raise ValueError("non-positive")
+    except (TypeError, ValueError):
+        log.warning("invalid [sandbox] timeout %r; using 60s", cfg.get("timeout"))
+        timeout = 60.0
 
     if chosen == "docker":
         image = _resolve_image(full_cfg)

@@ -1,8 +1,9 @@
-"""User-typed config values must apply regardless of case/whitespace.
+"""Hand-edited config must apply (case/whitespace) and tolerate bad values.
 
 profile/backend/provider etc. come from hand-edited TOML (or CLI flags) and
 were compared against lowercase literals, so "Docker" / "Anthropic:" silently
-misapplied. These tests pin the normalization at the two highest-impact
+misapplied; a non-numeric [sandbox] timeout crashed the kernel outright. These
+tests pin normalization + defensive coercion at the highest-impact
 chokepoints:
 
   - build_sandbox(): a mis-cased backend must NOT silently degrade to the
@@ -120,3 +121,25 @@ class TestDiagnosticsSandboxCasing:
         monkeypatch.setattr(d, "_TOOLCHAINS", [("cobol", "maverick-no-such-binary-xyz")])
         joined = "\n".join(d._check_toolchains())
         assert "can't build/test" in joined           # treated as local despite casing
+
+
+class TestSandboxTimeoutCoercion:
+    # [sandbox] timeout is hand-editable; a bad value must fall back to the
+    # default, not crash build_sandbox() (and with it the whole agent startup).
+    def test_non_numeric_timeout_falls_back_to_default(self, monkeypatch):
+        from maverick import config
+        monkeypatch.setattr(config, "get_sandbox", lambda: {"backend": "local", "timeout": "fast"})
+        sb = build_sandbox()  # must not raise
+        assert isinstance(sb, LocalBackend)
+        assert sb.timeout == 60.0
+
+    def test_non_positive_timeout_falls_back_to_default(self, monkeypatch):
+        from maverick import config
+        for bad in (-5, 0):
+            monkeypatch.setattr(config, "get_sandbox", lambda: {"backend": "local", "timeout": bad})
+            assert build_sandbox().timeout == 60.0
+
+    def test_valid_timeout_is_honored(self, monkeypatch):
+        from maverick import config
+        monkeypatch.setattr(config, "get_sandbox", lambda: {"backend": "local", "timeout": 30})
+        assert build_sandbox().timeout == 30.0
