@@ -97,7 +97,7 @@ class _PinnedTransport:
         self._ip = ip
         self._inner = inner
 
-    def handle_request(self, request: "httpx.Request") -> "httpx.Response":
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == self._host:
             request.headers["Host"] = self._host_header
             request.extensions = {**request.extensions, "sni_hostname": self._host}
@@ -107,14 +107,14 @@ class _PinnedTransport:
     def close(self) -> None:
         self._inner.close()
 
-    def __enter__(self) -> "_PinnedTransport":
+    def __enter__(self) -> _PinnedTransport:
         return self
 
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
 
-def safe_client(url: str, **client_kwargs: Any) -> "httpx.Client":
+def safe_client(url: str, **client_kwargs: Any) -> httpx.Client:
     """Return an ``httpx.Client`` pinned to a validated public IP for ``url``.
 
     Raises ``BlockedHost`` if the scheme is not http/https or the host
@@ -135,7 +135,7 @@ def safe_client(url: str, **client_kwargs: Any) -> "httpx.Client":
     return httpx.Client(**client_kwargs)
 
 
-def safe_get(url: str, **kwargs: Any) -> "httpx.Response":
+def safe_get(url: str, **kwargs: Any) -> httpx.Response:
     """SSRF-safe ``httpx.get``: validates + pins the host, then fetches.
 
     Splits httpx ``Client`` kwargs (timeout, headers, verify, ...) from
