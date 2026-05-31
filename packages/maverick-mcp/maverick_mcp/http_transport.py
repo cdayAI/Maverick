@@ -96,7 +96,23 @@ def build_app(server) -> FastAPI:
     ):
         if not _check_bearer(authorization):
             raise HTTPException(status_code=401, detail="invalid bearer")
-        body = await request.json()
+        # Parse defensively: a malformed body (JSONDecodeError) or a non-object
+        # body (top-level array/string -> AttributeError on .get) would 500 with
+        # a stack trace. Return a clean JSON-RPC error instead.
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"jsonrpc": "2.0", "id": None,
+                 "error": {"code": -32700, "message": "parse error"}},
+                status_code=400,
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"jsonrpc": "2.0", "id": None,
+                 "error": {"code": -32600, "message": "invalid request"}},
+                status_code=400,
+            )
         request_id = body.get("id")
         # Match the stdio transport: a JSON-RPC notification is a message
         # with no id (or id == null). Keying on `"id" not in body` diverged
