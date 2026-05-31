@@ -560,19 +560,42 @@ class Agent:
         May 26 council fix (API audit #4): set ``is_error: true`` on
         tool_results that surface an error. Per Anthropic docs, this
         tells Claude the tool failed so it can recover instead of
-        treating the error string as a normal output. Our tool registry
-        prefixes errors with "ERROR: " and the shield emits
-        "BLOCKED by Shield".
+        treating the error string as a normal output.
+
+        ``_run_tool`` produces two shapes:
+          * shield/hook BLOCK messages, returned unframed, prefixed ``⚠``;
+          * normal tool output, wrapped in ``<tool_output ...>\\n{inner}\\n
+            </tool_output ...>`` framing — the tool registry prefixes a
+            failed call's ``inner`` with ``ERROR:``.
+        The earlier check ran ``startswith("ERROR")`` against the FRAMED
+        string, so it never matched once framing was added and the flag
+        went dead. Unwrap the frame and inspect the inner prefix so the
+        recovery hint actually reaches the model.
         """
-        stripped = (output or "").lstrip()
         tr: dict = {
             "type": "tool_result",
             "tool_use_id": tool_use_id,
             "content": output,
         }
-        if stripped.startswith("ERROR") or stripped.startswith("BLOCKED by Shield"):
+        if Agent._looks_like_error(output):
             tr["is_error"] = True
         return tr
+
+    @staticmethod
+    def _looks_like_error(output: str) -> bool:
+        s = (output or "").lstrip()
+        # Unframed shield/hook blocks.
+        if s.startswith("⚠") or s.startswith("BLOCKED by Shield"):
+            return True
+        # Unwrap the <tool_output ...> frame and check the inner prefix.
+        if s.startswith("<tool_output"):
+            nl = s.find("\n")
+            if nl != -1:
+                inner = s[nl + 1:].lstrip()
+                return inner.startswith("ERROR")
+            return False
+        # Unframed (e.g. tests or future callers passing raw output).
+        return s.startswith("ERROR")
 
     async def run(self) -> AgentResult:
         bb = self.ctx.blackboard

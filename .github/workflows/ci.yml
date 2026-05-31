@@ -100,6 +100,15 @@ jobs:
           pip install pytest pytest-asyncio
       - name: Show installed packages
         run: pip list
+      - name: Behavioral regression gate
+        # Run the cross-cutting loop-contract suite FIRST and as its own
+        # step so a behavioral regression (verify fires, budget gate holds,
+        # tool-output framing, parallel/serial dispatch, is_error flagging,
+        # halt/ask_user/max_steps termination) is an obvious, named failure
+        # rather than one needle in the full 2000-test haystack. Fast: pure
+        # FakeLLM, no network, no spend.
+        run: python -m pytest -vvs --tb=short
+          packages/maverick-core/tests/test_behavioral_regression_gate.py
       - name: Test
         run: pytest -vvs --tb=long
 
