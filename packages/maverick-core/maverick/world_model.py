@@ -422,6 +422,30 @@ class WorldModel:
             finally:
                 self._write_depth -= 1
 
+    def _read_all(self, sql: str, params: tuple[Any, ...] = ()) -> list:
+        """Run a read under the connection lock and eagerly fetch all rows.
+
+        The single sqlite3 connection is shared across threads
+        (``check_same_thread=False``), so under ``serve`` several goal
+        threads read it concurrently with the writer. Without holding the
+        same RLock ``_writing()`` uses, a read can run while another thread
+        is mid-transaction on that connection and observe half-applied (or
+        rolled-back) writes -- e.g. a goal could read a torn conversation
+        context. Fetch INSIDE the lock and return the rows so the caller
+        never touches the connection lock-free. The RLock is reentrant, so a
+        read nested inside a write (or another read) on the same thread does
+        not deadlock; WAL's concurrent-reader benefit is only across
+        separate connections, so on one connection access must be
+        serialised regardless.
+        """
+        with self._write_lock:
+            return self.conn.execute(sql, params).fetchall()
+
+    def _read_one(self, sql: str, params: tuple[Any, ...] = ()):
+        """Single-row counterpart to :meth:`_read_all` (see its note)."""
+        with self._write_lock:
+            return self.conn.execute(sql, params).fetchone()
+
     def close(self) -> None:
         """Close the underlying SQLite connection.
 
@@ -571,7 +595,7 @@ class WorldModel:
             )
 
     def get_goal(self, goal_id: int) -> Goal | None:
-        row = self.conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
+        row = self._read_one("SELECT * FROM goals WHERE id = ?", (goal_id,))
         return Goal(**dict(row)) if row else None
 
     def list_goals(
@@ -599,13 +623,13 @@ class WorldModel:
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
             params = params + (max(1, int(limit)), max(0, int(offset)))
-        rows = self.conn.execute(sql, params).fetchall()
+        rows = self._read_all(sql, params)
         return [Goal(**dict(r)) for r in rows]
 
     def active_goal(self) -> Goal | None:
-        row = self.conn.execute(
+        row = self._read_one(
             "SELECT * FROM goals WHERE status IN ('active', 'blocked') ORDER BY updated_at DESC LIMIT 1"
-        ).fetchone()
+        )
         return Goal(**dict(row)) if row else None
 
     # ----- episodes -----
@@ -642,7 +666,7 @@ class WorldModel:
         goal_id: int | None = None,
     ) -> list[EpisodeSpend]:
         if goal_id is not None:
-            rows = self.conn.execute(
+            rows = self._read_all(
                 "SELECT id, goal_id, started_at, ended_at, outcome, "
                 "COALESCE(cost_dollars, 0) AS cost_dollars, "
                 "COALESCE(input_tokens, 0) AS input_tokens, "
@@ -651,9 +675,9 @@ class WorldModel:
                 "FROM episodes WHERE goal_id = ? "
                 "ORDER BY started_at DESC LIMIT ?",
                 (goal_id, limit),
-            ).fetchall()
+            )
         else:
-            rows = self.conn.execute(
+            rows = self._read_all(
                 "SELECT id, goal_id, started_at, ended_at, outcome, "
                 "COALESCE(cost_dollars, 0) AS cost_dollars, "
                 "COALESCE(input_tokens, 0) AS input_tokens, "
@@ -661,16 +685,16 @@ class WorldModel:
                 "COALESCE(tool_calls, 0) AS tool_calls "
                 "FROM episodes ORDER BY started_at DESC LIMIT ?",
                 (limit,),
-            ).fetchall()
+            )
         return [EpisodeSpend(**dict(r)) for r in rows]
 
     def total_spend(self) -> dict[str, float]:
-        row = self.conn.execute(
+        row = self._read_one(
             "SELECT COALESCE(SUM(cost_dollars), 0) AS dollars, "
             "COALESCE(SUM(input_tokens), 0) AS in_tok, "
             "COALESCE(SUM(output_tokens), 0) AS out_tok, "
             "COUNT(*) AS runs FROM episodes WHERE ended_at IS NOT NULL"
-        ).fetchone()
+        )
         return {
             "dollars": row["dollars"],
             "input_tokens": row["in_tok"],
@@ -688,11 +712,11 @@ class WorldModel:
             return cur.lastrowid
 
     def goal_events(self, goal_id: int, since_id: int = 0, limit: int = 200) -> list[GoalEvent]:
-        rows = self.conn.execute(
+        rows = self._read_all(
             "SELECT id, goal_id, agent, kind, content, ts FROM goal_events "
             "WHERE goal_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
             (goal_id, since_id, limit),
-        ).fetchall()
+        )
         return [GoalEvent(**dict(r)) for r in rows]
 
     def prune_goal_events(self, older_than_seconds: float = 30 * 24 * 3600) -> int:
@@ -712,7 +736,7 @@ class WorldModel:
             )
 
     def get_facts(self) -> dict[str, str]:
-        rows = self.conn.execute("SELECT key, value FROM facts ORDER BY updated_at DESC").fetchall()
+        rows = self._read_all("SELECT key, value FROM facts ORDER BY updated_at DESC")
         return {r["key"]: r["value"] for r in rows}
 
     # ----- questions -----
@@ -733,19 +757,19 @@ class WorldModel:
 
     def open_questions(self, goal_id: int | None = None) -> list[Question]:
         if goal_id is not None:
-            rows = self.conn.execute(
+            rows = self._read_all(
                 "SELECT * FROM questions WHERE answer IS NULL AND goal_id = ? ORDER BY id", (goal_id,)
-            ).fetchall()
+            )
         else:
-            rows = self.conn.execute(
+            rows = self._read_all(
                 "SELECT * FROM questions WHERE answer IS NULL ORDER BY id"
-            ).fetchall()
+            )
         return [Question(**dict(r)) for r in rows]
 
     def all_questions(self, goal_id: int) -> list[Question]:
-        rows = self.conn.execute(
+        rows = self._read_all(
             "SELECT * FROM questions WHERE goal_id = ? ORDER BY id", (goal_id,)
-        ).fetchall()
+        )
         return [Question(**dict(r)) for r in rows]
 
     # ----- approvals (high-risk action queue) -----
@@ -767,15 +791,15 @@ class WorldModel:
             return cur.lastrowid
 
     def get_approval(self, approval_id: int) -> Approval | None:
-        row = self.conn.execute(
+        row = self._read_one(
             "SELECT * FROM approvals WHERE id = ?", (approval_id,)
-        ).fetchone()
+        )
         return Approval(**dict(row)) if row else None
 
     def pending_approvals(self) -> list[Approval]:
-        rows = self.conn.execute(
+        rows = self._read_all(
             "SELECT * FROM approvals WHERE status = 'pending' ORDER BY id"
-        ).fetchall()
+        )
         return [Approval(**dict(r)) for r in rows]
 
     def decide_approval(self, approval_id: int, status: str) -> bool:
@@ -803,11 +827,11 @@ class WorldModel:
             )
 
     def search_messages(self, query: str, limit: int = 10) -> list[dict]:
-        rows = self.conn.execute(
+        rows = self._read_all(
             "SELECT m.* FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid "
             "WHERE messages_fts MATCH ? ORDER BY m.ts DESC LIMIT ?",
             (query, limit),
-        ).fetchall()
+        )
         return [dict(r) for r in rows]
 
     # ----- conversations (multi-turn per channel user) -----
@@ -849,23 +873,23 @@ class WorldModel:
     def recent_turns(self, conversation_id: int, limit: int = 20) -> list[Turn]:
         """Return the most recent N turns in chronological (ascending) order
         so they can be fed straight into a chat-format prompt."""
-        rows = self.conn.execute(
+        rows = self._read_all(
             "SELECT id, conversation_id, goal_id, role, content, ts FROM turns "
             "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
             (conversation_id, limit),
-        ).fetchall()
+        )
         return list(reversed([Turn(**dict(r)) for r in rows]))
 
     def list_conversations(self, channel: str | None = None) -> list[Conversation]:
         if channel:
-            rows = self.conn.execute(
+            rows = self._read_all(
                 "SELECT * FROM conversations WHERE channel = ? ORDER BY last_seen DESC",
                 (channel,),
-            ).fetchall()
+            )
         else:
-            rows = self.conn.execute(
+            rows = self._read_all(
                 "SELECT * FROM conversations ORDER BY last_seen DESC"
-            ).fetchall()
+            )
         return [Conversation(**dict(r)) for r in rows]
 
     # ----- channel dedup -----
@@ -905,11 +929,11 @@ class WorldModel:
         is null' (returns 0). Callers that just need "have we seen this?"
         should use ``is_processed_message`` to avoid that ambiguity.
         """
-        row = self.conn.execute(
+        row = self._read_one(
             "SELECT goal_id FROM processed_messages "
             "WHERE channel = ? AND external_id = ?",
             (channel, external_id),
-        ).fetchone()
+        )
         if row is None:
             return None
         return row[0] if row[0] is not None else 0
@@ -934,11 +958,11 @@ class WorldModel:
     def is_processed_message(self, channel: str, external_id: str) -> bool:
         """Returns True iff a row exists for (channel, external_id),
         regardless of whether goal_id is set."""
-        row = self.conn.execute(
+        row = self._read_one(
             "SELECT 1 FROM processed_messages "
             "WHERE channel = ? AND external_id = ? LIMIT 1",
             (channel, external_id),
-        ).fetchone()
+        )
         return row is not None
 
     # ----- attachments -----
@@ -960,11 +984,11 @@ class WorldModel:
             return cur.lastrowid
 
     def list_attachments(self, goal_id: int) -> list[Attachment]:
-        rows = self.conn.execute(
+        rows = self._read_all(
             "SELECT id, goal_id, filename, mime, size_bytes, sha256, path, created_at "
             "FROM attachments WHERE goal_id = ? ORDER BY id",
             (goal_id,),
-        ).fetchall()
+        )
         return [Attachment(**dict(r)) for r in rows]
 
     def prune_conversations(self, idle_for_seconds: float = 90 * 24 * 3600) -> int:
