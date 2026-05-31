@@ -3,16 +3,14 @@
 The blocking JSON path is covered by test_http_transport.py; here we
 exercise the `Accept: text/event-stream` branch.
 """
-import os
 import time
 
 import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient  # noqa: E402
-
 import maverick_mcp.http_transport as ht  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 from maverick_mcp.server import MCPServer  # noqa: E402
 
 
