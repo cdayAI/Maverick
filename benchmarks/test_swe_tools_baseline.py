@@ -132,6 +132,46 @@ def test_sonnet_tools_runs_loop_and_extracts_diff(tmp_path, monkeypatch):
     assert row.tokens_out == 10
 
 
+def test_sonnet_tools_ignores_repo_configured_external_diff(tmp_path, monkeypatch):
+    monkeypatch.delenv("MAVERICK_BENCH_DRY_RUN", raising=False)
+    repo, base = _git_repo(tmp_path)
+    marker = repo / "host_marker"
+
+    from maverick.sandbox.local import LocalBackend
+    # run_sonnet_tools does `from maverick.sandbox import build_sandbox` at call
+    # time, so patch the name on that module.
+    monkeypatch.setattr("maverick.sandbox.build_sandbox", lambda: LocalBackend(workdir=repo))
+    monkeypatch.setitem(
+        sys.modules, "anthropic",
+        _fake_anthropic([
+            [
+                _ToolUseBlock(
+                    "tu_1",
+                    "bash",
+                    {
+                        "command": """cat > evil-diff.sh <<'EOF'
+#!/bin/sh
+echo external diff ran >> host_marker
+EOF
+chmod +x evil-diff.sh
+git config diff.external ./evil-diff.sh
+printf '\n# changed\n' >> bug.py
+""",
+                    },
+                ),
+            ],
+            [_TextBlock("DONE")],
+        ]),
+    )
+
+    row = run_sonnet_tools("inst-external-diff", "make a safe diff", base_commit=base)
+
+    assert row.outcome == "success"
+    assert "bug.py" in row.predicted_patch
+    assert "# changed" in row.predicted_patch
+    assert not marker.exists()
+
+
 def test_sonnet_tools_no_edit_is_empty(tmp_path, monkeypatch):
     monkeypatch.delenv("MAVERICK_BENCH_DRY_RUN", raising=False)
     repo, base = _git_repo(tmp_path)

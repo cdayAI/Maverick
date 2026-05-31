@@ -639,11 +639,24 @@ def run_sonnet_single(instance_id: str, brief: str, **_kwargs) -> Row:
 def _git_diff(workdir) -> str:
     """The agent's edits to the working tree, as a unified diff. Empty on
     any failure (no repo, git missing) -- the row's outcome reflects that."""
+    import os
     import subprocess
+
+    # The repository was just modified by model-controlled shell commands. Do
+    # not let untrusted repo/global Git configuration turn patch extraction into
+    # host command execution via diff.external, textconv filters, or inherited
+    # secret-bearing environment variables.
+    env = {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_OPTIONAL_LOCKS": "0",
+        "PATH": os.environ.get("PATH", ""),
+    }
     try:
         out = subprocess.run(
-            ["git", "-C", str(workdir), "diff"],
-            capture_output=True, text=True, timeout=60,
+            ["git", "-C", str(workdir), "diff", "--no-ext-diff", "--no-textconv"],
+            capture_output=True, text=True, timeout=60, env=env,
         )
         return out.stdout or ""
     except (subprocess.SubprocessError, OSError):
