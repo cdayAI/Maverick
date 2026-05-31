@@ -284,6 +284,25 @@ async def run_goal(
         except Exception as e:  # pragma: no cover -- recall never blocks a run
             log.debug("reflexion recall skipped: %s", e)
 
+        # Tree-of-thought (opt-in via [planning] mode = "tree_of_thought" or
+        # MAVERICK_TREE_OF_THOUGHT=1): fork N candidate plans, let a critic
+        # pick the winner, and prepend it as guidance. Default mode skips this
+        # entirely (no extra LLM calls), so behaviour is unchanged. The
+        # shared budget is passed through, so planning counts against the
+        # goal's cap; if it exhausts the budget, root.run() below surfaces the
+        # graceful "hit your limit" message.
+        try:
+            from . import tree_of_thought as _tot
+            if _tot.enabled():
+                _plan = _tot.plan_tree_of_thought(
+                    llm, f"{goal.title}\n{goal.description or ''}",
+                    n=_tot.candidate_count(), budget=budget,
+                )
+                if _plan.winning_plan:
+                    brief = brief + "\n\nSuggested plan (tree-of-thought):\n" + _plan.winning_plan
+        except Exception as e:  # pragma: no cover -- planning never blocks a run
+            log.debug("tree-of-thought planning skipped: %s", e)
+
         root = Agent(
             ctx=ctx,
             role="orchestrator",
