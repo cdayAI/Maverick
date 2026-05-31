@@ -183,7 +183,12 @@ def _mount_task_endpoint(app: Any) -> None:
         method = body.get("method")
         params = body.get("params") or {}
 
-        auth_err = engine.auth_error(authorization)
+        # Pass the socket peer so the "unauthenticated = trusted localhost"
+        # opt-out can't be exercised by a remote caller (this endpoint has no
+        # outer bearer middleware on the MCP HTTP transport). Empty string ->
+        # fail closed, never None (None means in-process/programmatic).
+        peer = request.client.host if request.client else ""
+        auth_err = engine.auth_error(authorization, peer=peer)
         if auth_err is not None:
             return JSONResponse(
                 _rpc_error(req_id, auth_err["code"], auth_err["message"]),

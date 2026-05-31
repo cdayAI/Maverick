@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import logging
 import os
 import uuid
@@ -169,13 +170,30 @@ class TaskEngine:
 
     # ---- auth + limits -------------------------------------------------
 
-    def auth_error(self, authorization: str | None) -> dict | None:
+    def auth_error(
+        self, authorization: str | None, *, peer: str | None = None
+    ) -> dict | None:
         """Return a JSON-RPC error object if the request isn't authorised,
-        else None. Bearer required unless explicitly opted out."""
+        else None. Bearer required unless explicitly opted out.
+
+        ``peer`` is the remote socket host at the HTTP boundary (``None`` for
+        in-process/programmatic callers). The ``MAVERICK_A2A_ALLOW_UNAUTHENTICATED``
+        opt-out is documented as "trusted localhost", so it is honored only
+        for a loopback (or in-process) peer -- a publicly bound transport must
+        not become unauthenticated just because the flag is set. This is the
+        only protection on ``/a2a/v1`` when it is mounted on the MCP HTTP
+        transport, which has no outer bearer middleware.
+        """
         token = os.environ.get("MAVERICK_A2A_TOKEN", "").strip()
         if not token:
             if _env_true("MAVERICK_A2A_ALLOW_UNAUTHENTICATED"):
-                return None
+                if _is_loopback_peer(peer):
+                    return None
+                return _err(
+                    _AUTH_REQUIRED,
+                    "A2A unauthenticated mode is limited to localhost; set "
+                    "MAVERICK_A2A_TOKEN to allow remote callers.",
+                )
             return _err(
                 _AUTH_REQUIRED,
                 "A2A task endpoint requires auth: set MAVERICK_A2A_TOKEN "
@@ -406,6 +424,24 @@ STREAM_METHODS = {"message/stream"}
 
 def _env_true(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_loopback_peer(host: str | None) -> bool:
+    """True for an in-process/loopback caller (safe for the localhost opt-out).
+
+    ``None`` means there is no remote socket (a programmatic/in-process call),
+    which is inherently local. A real HTTP boundary always passes a string:
+    Starlette's in-process TestClient reports ``"testclient"``; everything else
+    must parse as a loopback IP, so an empty or remote peer fails closed.
+    """
+    if host is None:
+        return True
+    if host in ("localhost", "testclient"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _err(code: int, message: str) -> dict:

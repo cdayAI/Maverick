@@ -121,6 +121,29 @@ def test_auth_model(monkeypatch):
     assert eng.auth_error("Bearer sekret") is None
 
 
+def test_unauthenticated_optout_is_localhost_only(monkeypatch):
+    """MAVERICK_A2A_ALLOW_UNAUTHENTICATED is a 'trusted localhost' opt-out: a
+    remote peer must still be rejected (the MCP HTTP transport has no outer
+    bearer middleware around /a2a/v1)."""
+    eng = TaskEngine(runner=_fake_runner)
+    monkeypatch.delenv("MAVERICK_A2A_TOKEN", raising=False)
+    monkeypatch.setenv("MAVERICK_A2A_ALLOW_UNAUTHENTICATED", "1")
+    # in-process / programmatic (no peer) -> allowed
+    assert eng.auth_error(None) is None
+    # loopback peers -> allowed
+    assert eng.auth_error(None, peer="127.0.0.1") is None
+    assert eng.auth_error(None, peer="::1") is None
+    assert eng.auth_error(None, peer="testclient") is None
+    # remote / unknown peers -> rejected even with the opt-out set
+    assert eng.auth_error(None, peer="203.0.113.7") is not None
+    assert eng.auth_error(None, peer="10.0.0.4") is not None
+    assert eng.auth_error(None, peer="") is not None
+    # a real token still beats the opt-out regardless of peer
+    monkeypatch.setenv("MAVERICK_A2A_TOKEN", "sekret")
+    assert eng.auth_error("Bearer sekret", peer="203.0.113.7") is None
+    assert eng.auth_error("Bearer wrong", peer="127.0.0.1") is not None
+
+
 def test_budget_is_clamped_to_ceiling(monkeypatch):
     monkeypatch.setenv("MAVERICK_A2A_MAX_DOLLARS", "2.5")
     captured = {}
