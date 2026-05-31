@@ -86,6 +86,14 @@ TOOLS: list[dict[str, Any]] = [
             },
             "required": ["title"],
         },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "goal_id": {"type": "integer"},
+                "answer": {"type": "string"},
+            },
+            "required": ["goal_id", "answer"],
+        },
     },
     {
         "name": "maverick_status",
@@ -126,6 +134,14 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {"goal_id": {"type": "integer"}},
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "goal_id": {"type": "integer"},
+                "answer": {"type": "string"},
+            },
+            "required": ["goal_id", "answer"],
         },
     },
     {
@@ -381,6 +397,10 @@ class MCPServer:
         missing = [r for r in required if r not in arguments]
         if missing:
             raise _ProtocolError(-32602, f"missing required argument(s) for {name}: {missing}")
+        # Side-effectful action tools (start/resume) can't be re-derived, so
+        # they stash their structured result here during dispatch; reset per
+        # call so a prior call's value can't leak.
+        self._structured_override = None
         try:
             result = self._dispatch_tool(name, arguments)
         except Exception as e:
@@ -406,7 +426,12 @@ class MCPServer:
         # never fails the call.
         if "outputSchema" in tool_spec:
             try:
-                structured = self._structured_result(name)
+                # Action tools stash their structured result during dispatch
+                # (can't be re-derived); query tools re-derive from the world
+                # model.
+                structured = self._structured_override
+                if structured is None:
+                    structured = self._structured_result(name)
             except Exception:  # pragma: no cover -- structured form is best-effort
                 structured = None
             if structured is not None:
@@ -500,9 +525,11 @@ class MCPServer:
         goal_id = world.create_goal(title, description)
         llm = LLM()
         sandbox = build_sandbox()
-        return run_goal_sync(
+        answer = run_goal_sync(
             llm, world, budget, goal_id, sandbox=sandbox, max_depth=max_depth,
         )
+        self._structured_override = {"goal_id": goal_id, "answer": answer}
+        return answer
 
     def _tool_status(self) -> str:
         from maverick.world_model import WorldModel
@@ -552,10 +579,12 @@ class MCPServer:
             ceiling=os.environ.get("MAVERICK_MCP_MAX_DEPTH", 3),
         )
         budget = Budget(max_dollars=max_dollars, max_wall_seconds=max_wall)
-        return run_goal_sync(
+        answer = run_goal_sync(
             LLM(), w, budget, goal_id,
             sandbox=build_sandbox(), max_depth=max_depth,
         )
+        self._structured_override = {"goal_id": goal_id, "answer": answer}
+        return answer
 
     def _tool_answer(self, args: dict) -> str:
         from maverick.world_model import WorldModel
