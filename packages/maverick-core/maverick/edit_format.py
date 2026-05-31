@@ -226,6 +226,23 @@ def _whitespace_collapse(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _spanned_lines(s: str) -> int:
+    """Number of source lines `s` covers.
+
+    A single trailing newline terminates the last line rather than
+    starting a new (empty) one, so ``"a\nb\n"`` and ``"a\nb"`` both span
+    2 lines. Using ``count("\n") + 1`` unconditionally over-counts by one
+    whenever the text ends in a newline (which it almost always does --
+    ``parse_blocks`` appends a trailing ``\n`` to every SEARCH body), and
+    that extra line silently widens the replaced slice into the following
+    line of the file.
+    """
+    if not s:
+        return 0
+    n = s.count("\n")
+    return n if s.endswith("\n") else n + 1
+
+
 def _find_with_fuzzy(content: str, needle: str) -> tuple[int | None, int | None, str]:
     """Locate `needle` in `content` with the fuzzy ladder.
 
@@ -254,8 +271,8 @@ def _find_with_fuzzy(content: str, needle: str) -> tuple[int | None, int | None,
         # in the ORIGINAL content.
         original_lines = content.split("\n")
         start = sum(len(ln) + 1 for ln in original_lines[:target_line])
-        # End is after needle.count("\n")+1 lines in the original.
-        end_line = target_line + needle_rs.count("\n") + 1
+        # End is after the lines the needle spans in the original.
+        end_line = target_line + _spanned_lines(needle_rs)
         end = sum(len(ln) + 1 for ln in original_lines[:end_line])
         # Verify by re-checking the slice still rstrip-matches.
         if _rstrip_lines(content[start:end]).startswith(needle_rs):
@@ -274,7 +291,7 @@ def _find_with_fuzzy(content: str, needle: str) -> tuple[int | None, int | None,
         target_line = content_ni[:idx].count("\n")
         original_lines = content.split("\n")
         start = sum(len(ln) + 1 for ln in original_lines[:target_line])
-        end_line = target_line + needle_ni.count("\n") + 1
+        end_line = target_line + _spanned_lines(needle_ni)
         end = sum(len(ln) + 1 for ln in original_lines[:end_line])
         # Re-verify the mapped-back slice still indent-matches (mirror
         # step 2's recheck) before committing to it.
@@ -290,7 +307,7 @@ def _find_with_fuzzy(content: str, needle: str) -> tuple[int | None, int | None,
         first_line = needle.split("\n", 1)[0].strip()
         if first_line:
             original_lines = content.split("\n")
-            needle_lines = needle.count("\n") + 1
+            needle_lines = _spanned_lines(needle)
             # Collect EVERY window that ws-collapse-matches, so we can
             # refuse rather than silently edit the first of several
             # equally-valid (or worse, different) locations.
@@ -312,7 +329,7 @@ def _find_with_fuzzy(content: str, needle: str) -> tuple[int | None, int | None,
     # the best. If 2+ windows are within 0.02 of the top ratio, the
     # match is ambiguous — silently picking the first by `>` (current
     # code) lands the edit at the wrong place.
-    needle_lines = needle.count("\n") + 1
+    needle_lines = _spanned_lines(needle)
     content_lines = content.split("\n")
     best_ratio = 0.0
     best_start = best_end = -1
