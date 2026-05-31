@@ -423,7 +423,8 @@ class MCPServer:
         # return structuredContent, so typed cross-language clients get parsed
         # JSON instead of re-parsing the text block. Additive + best-effort:
         # the text block stays for back-compat, and a structured-form failure
-        # never fails the call.
+        # never fails the call. Structured data is scanned before it is
+        # attached, because it may contain fields not present in the text.
         if "outputSchema" in tool_spec:
             try:
                 # Action tools stash their structured result during dispatch
@@ -435,6 +436,20 @@ class MCPServer:
             except Exception:  # pragma: no cover -- structured form is best-effort
                 structured = None
             if structured is not None:
+                if self._shield is not None:
+                    verdict = self._shield.scan_output(
+                        json.dumps(structured, ensure_ascii=False, sort_keys=True)
+                    )
+                    if not verdict.allowed:
+                        return {
+                            "isError": True,
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": f"⚠ Output blocked: {'; '.join(verdict.reasons)}",
+                                }
+                            ],
+                        }
                 response["structuredContent"] = structured
         return response
 
