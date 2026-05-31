@@ -117,6 +117,7 @@ PROVIDERS: dict[str, dict] = {
         "status": "ready",
         "label": "OpenAI-compatible endpoint (LM Studio / llama.cpp / Together / Groq)",
         "env": "OPENAI_COMPATIBLE_API_KEY",
+        "env_vars": ["OPENAI_COMPATIBLE_BASE_URL"],
         "models": [
             {"id": "openai-compatible", "notes": "Set base_url to your endpoint; model id is whatever it serves."},
         ],
