@@ -130,18 +130,31 @@ def load_skills(skills_dir: Path = SKILLS_DIR) -> list[Skill]:
 
 
 def quality_weight(skill: Skill) -> float:
-    """Multiplier in [0.5, 1.0] derived from a skill's distilled_confidence.
+    """Combined retrieval multiplier from a skill's CREATE-time confidence
+    and its in-circulation TRACK RECORD.
 
-    Quality-weights retrieval so an equally-relevant skill from a
-    high-confidence run outranks one from a barely-passing run, without
-    ever fully suppressing a low-confidence skill (it can still surface if
-    nothing better matches). Confidence c in [0,1] maps to 0.5 + 0.5*c.
-    Disabled (returns 1.0 for all) via MAVERICK_SKILL_QUALITY_WEIGHT=0.
+    Two independent signals, multiplied:
+      * distilled_confidence — how good the run that wrote the skill was
+        (0.5-1.0 via 0.5 + 0.5*c). Disable with
+        MAVERICK_SKILL_QUALITY_WEIGHT=0.
+      * decay_weight — how the skill performs once recalled into runs
+        (wins vs. losses). Disable with MAVERICK_SKILL_DECAY=0.
+
+    Neither ever fully suppresses a skill (both floor at 0.5), so a clearly
+    relevant skill still surfaces; they only break near-ties in favour of
+    higher-quality, better-performing skills.
     """
     if os.environ.get("MAVERICK_SKILL_QUALITY_WEIGHT", "1") == "0":
-        return 1.0
-    c = max(0.0, min(1.0, getattr(skill, "distilled_confidence", 1.0)))
-    return 0.5 + 0.5 * c
+        conf_w = 1.0
+    else:
+        c = max(0.0, min(1.0, getattr(skill, "distilled_confidence", 1.0)))
+        conf_w = 0.5 + 0.5 * c
+    try:
+        from .skill_stats import decay_weight
+        track_w = decay_weight(skill.name)
+    except Exception:  # pragma: no cover -- stats never block recall
+        track_w = 1.0
+    return conf_w * track_w
 
 
 def _relevant_skills_lexical(goal: str, all_skills: list[Skill], max_n: int = 3) -> list[Skill]:

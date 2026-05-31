@@ -399,6 +399,12 @@ async def run_goal(
                 failure_msg=result.error or "",
                 blackboard=blackboard,
             )
+            # Attribute the failure to any skills this run recalled (decay).
+            try:
+                from . import skill_stats
+                skill_stats.record_outcome(sorted(ctx.skills_used), success=False)
+            except Exception:  # pragma: no cover
+                pass
             world.set_goal_status(goal_id, "blocked", result=result.error)
             _fire_webhook("goal_finished", {
                 "goal_id": goal_id, "status": "blocked", "result": result.error,
@@ -493,6 +499,15 @@ async def run_goal(
                 world.append_turn(conversation_id, "assistant", summary, goal_id=goal_id)
             except Exception as e:  # pragma: no cover -- never block on history
                 log.warning("conversation turn write failed: %s", e)
+
+        # Attribute this successful run to the skills it recalled, so a
+        # skill that keeps riding along with wins holds its rank and one
+        # that doesn't decays (skill_stats). Fail-safe.
+        try:
+            from . import skill_stats
+            skill_stats.record_outcome(sorted(ctx.skills_used), success=True)
+        except Exception:  # pragma: no cover
+            pass
 
         _speculative_finalize = os.getenv(
             "MAVERICK_SPECULATIVE_FINALIZE", "1",

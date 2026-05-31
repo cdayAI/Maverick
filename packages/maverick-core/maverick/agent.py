@@ -193,6 +193,19 @@ class Agent:
                 skills = relevant_skills(self.brief, load_skills())
                 if skills:
                     base = base + "\n\n" + render_for_prompt(skills)
+                    # Track which skills were recalled so the learning loop
+                    # can attribute this run's outcome to them (decay). Record
+                    # the use now; the orchestrator records win/loss at
+                    # finalize from ctx.skills_used. Fail-safe.
+                    try:
+                        from . import skill_stats
+                        names = [s.name for s in skills]
+                        skill_stats.record_use(names)
+                        used = getattr(self.ctx, "skills_used", None)
+                        if used is not None:
+                            used.update(names)
+                    except Exception:
+                        pass
             except (ImportError, FileNotFoundError, ValueError):
                 pass
 

@@ -59,6 +59,10 @@ class SwarmContext:
     channel: Optional[str] = None
     user_id: Optional[str] = None
     max_total_spawns: int = field(default_factory=_default_max_total_spawns)
+    # Names of distilled skills recalled into any agent of this run. The
+    # orchestrator attributes the run's final outcome to these for skill
+    # decay (skill_stats.record_outcome) at finalize.
+    skills_used: set = field(default_factory=set)
     _spawns_used: int = 0
     _workdir_lock: Optional[asyncio.Lock] = field(default=None, repr=False)
 
