@@ -133,21 +133,22 @@ def _provider_available(provider: str) -> bool:
     Keeps the dependency surface tiny — we don't probe network.
     """
     env_keys = {
-        "anthropic": "ANTHROPIC_API_KEY",
-        "openai":    "OPENAI_API_KEY",
-        "deepseek":  "DEEPSEEK_API_KEY",
-        "moonshot":  "MOONSHOT_API_KEY",
-        "xai":       "XAI_API_KEY",
-        "gemini":    "GEMINI_API_KEY",
+        "anthropic": ("ANTHROPIC_API_KEY",),
+        "openai":    ("OPENAI_API_KEY",),
+        "deepseek":  ("DEEPSEEK_API_KEY",),
+        "moonshot":  ("MOONSHOT_API_KEY",),
+        "xai":       ("XAI_API_KEY", "GROK_API_KEY"),
+        "gemini":    ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     }
-    var = env_keys.get(provider)
-    if var and os.environ.get(var, "").strip():
-        return True
+    for var in env_keys.get(provider, ()):
+        if os.environ.get(var, "").strip():
+            return True
     # Also accept "configured via maverick config" — cheap check.
     try:
         from .config import load_config
         cfg = (load_config() or {}).get("providers") or {}
-        return bool((cfg.get(provider) or {}).get("api_key"))
+        key = (cfg.get(provider) or {}).get("api_key")
+        return bool(key.strip()) if isinstance(key, str) else bool(key)
     except Exception:
         return False
 
@@ -190,9 +191,10 @@ def pick(signal: CostSignal) -> Optional[str]:
         return cost * err_pen
 
     available = [c for c in candidates if _provider_available(c[0])]
-    pool = available or candidates  # fall back to listing even if no key
-    pool.sort(key=_score)
-    provider, model, *_ = pool[0]
+    if not available:
+        return None
+    available.sort(key=_score)
+    provider, model, *_ = available[0]
     return f"{provider}:{model}"
 
 

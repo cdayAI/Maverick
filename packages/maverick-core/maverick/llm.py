@@ -204,6 +204,41 @@ def _parse_spec(spec: str) -> tuple[str, str]:
     return "anthropic", spec
 
 
+def _configured_provider_api_key(provider: str) -> Optional[str]:
+    """Return a provider api_key from config, normalized for client use."""
+    from .config import get_provider_config
+
+    try:
+        key = (get_provider_config(provider) or {}).get("api_key")
+    except Exception:
+        return None
+    if isinstance(key, str):
+        return key.strip() or None
+    return str(key).strip() if key else None
+
+
+def _provider_api_key(provider: str, anthropic_api_key: Optional[str]) -> Optional[str]:
+    """Return the explicit API key override for provider-client creation."""
+    if provider == "anthropic" and anthropic_api_key:
+        return anthropic_api_key
+    key = _configured_provider_api_key(provider)
+    if key:
+        return key
+    env_keys = {
+        "anthropic": ("ANTHROPIC_API_KEY",),
+        "openai": ("OPENAI_API_KEY",),
+        "deepseek": ("DEEPSEEK_API_KEY",),
+        "moonshot": ("MOONSHOT_API_KEY",),
+        "xai": ("XAI_API_KEY", "GROK_API_KEY"),
+        "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    }
+    for env_key in env_keys.get(provider, ()):
+        value = os.environ.get(env_key, "").strip()
+        if value:
+            return value
+    return None
+
+
 def _run_preflight(model_id, system, messages, tools, max_tokens) -> None:
     """Token preflight before an LLM dispatch (roadmap 'token preflight v1').
 
@@ -258,20 +293,27 @@ class LLM:
         with self._clients_lock:
             # Re-check under the lock in case another thread populated it.
             if provider not in self._clients:
+                from .providers import KNOWN_PROVIDERS, get_provider_client
                 from .session_providers import is_session_provider
-                if is_session_provider(provider):
-                    # Session providers get auto-wrapped in the tool
-                    # simulator so tool-using roles (orchestrator,
-                    # coder, researcher) work transparently. The
-                    # wrapper is a no-op when tools=None.
-                    from .session_providers import get_session_client
-                    self._clients[provider] = get_session_client(
-                        provider, simulate_tools=True,
-                    )
-                else:
-                    from .providers import get_provider_client
-                    key = self._anthropic_api_key if provider == "anthropic" else None
+                key = _provider_api_key(provider, self._anthropic_api_key)
+                use_api_provider = (
+                    provider in KNOWN_PROVIDERS
+                    and (not is_session_provider(provider) or key)
+                )
+                if use_api_provider or key:
                     self._clients[provider] = get_provider_client(provider, api_key=key)
+                else:
+                    if is_session_provider(provider):
+                        # Session providers get auto-wrapped in the tool
+                        # simulator so tool-using roles (orchestrator,
+                        # coder, researcher) work transparently. The
+                        # wrapper is a no-op when tools=None.
+                        from .session_providers import get_session_client
+                        self._clients[provider] = get_session_client(
+                            provider, simulate_tools=True,
+                        )
+                    else:
+                        self._clients[provider] = get_provider_client(provider, api_key=key)
             return self._clients[provider]
 
     def complete(
