@@ -1013,7 +1013,13 @@ def status(ctx) -> None:
 def answer(ctx, question_id: int, answer: tuple[str, ...]) -> None:
     """Answer a pending question."""
     world = open_world(ctx.obj["db"])
-    world.answer(question_id, " ".join(answer))
+    if not world.answer(question_id, " ".join(answer)):
+        click.echo(
+            f"no such question #{question_id}. "
+            "See open questions with `maverick status`.",
+            err=True,
+        )
+        sys.exit(1)
     click.echo(f"answered #{question_id}")
 
 
