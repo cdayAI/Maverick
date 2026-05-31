@@ -122,10 +122,34 @@ def learn_capability(agent: Agent) -> Tool:
 
         if op == "find_api":
             base_url = (args.get("base_url") or "").strip()
+            tool_names = {t.name for t in agent.tools.all()}
+            has_openapi_runner = "openapi_runner" in tool_names
+            has_web_search = "web_search" in tool_names
             spec_url = None
+            ops_preview = ""
+
+            async def try_candidates(candidates: list[str]) -> str | None:
+                nonlocal ops_preview
+                if not has_openapi_runner:
+                    return None
+                for candidate in candidates:
+                    try:
+                        out = await agent.tools.run(
+                            "openapi_runner",
+                            {"op": "list_ops", "spec": candidate},
+                        )
+                    except Exception:
+                        out = ""
+                    if out and not out.startswith("ERROR"):
+                        ops_preview = out
+                        return candidate
+                return None
+
             if base_url:
-                spec_url = self_learning.probe_openapi_spec(base_url)
-            if not spec_url and any(t.name == "web_search" for t in agent.tools.all()):
+                spec_url = await try_candidates(
+                    self_learning.openapi_spec_candidates(base_url=base_url)
+                )
+            if not spec_url and has_web_search:
                 try:
                     hits = await agent.tools.run(
                         "web_search",
@@ -133,13 +157,18 @@ def learn_capability(agent: Agent) -> Tool:
                     )
                 except Exception:
                     hits = ""
-                spec_url = self_learning.discover_openapi_spec(search_text=hits or "")
+                spec_url = await try_candidates(
+                    self_learning.openapi_spec_candidates(search_text=hits or "")
+                )
             if not spec_url:
+                hint = ""
+                if not has_openapi_runner:
+                    hint = " (enable the openapi_runner tool to validate and use specs)"
+                elif not has_web_search:
+                    hint = " (enable the web_search tool to let me search for one)"
                 return (
                     "Could not auto-discover an OpenAPI spec"
-                    + (" (enable the web_search tool to let me search for one)"
-                       if not any(t.name == "web_search" for t in agent.tools.all())
-                       else "")
+                    + hint
                     + ".\nIf you know the service's base URL, retry with "
                     "base_url=<https://host>. Or call any REST API yourself via "
                     "the `openapi_runner` tool once you have a spec URL:\n"
@@ -150,16 +179,8 @@ def learn_capability(agent: Agent) -> Tool:
                 )
             self_learning.record(need or base_url, "api", spec_url, source=spec_url)
             bb.post(agent.name, "observation", f"found API spec: {spec_url}")
-            ops_preview = ""
-            if any(t.name == "openapi_runner" for t in agent.tools.all()):
-                try:
-                    ops_preview = await agent.tools.run(
-                        "openapi_runner", {"op": "list_ops", "spec": spec_url},
-                    )
-                except Exception:
-                    ops_preview = ""
             msg = f"Found an OpenAPI spec for {need or base_url!r}:\n  {spec_url}\n\n"
-            if ops_preview and not ops_preview.startswith("ERROR"):
+            if ops_preview:
                 msg += f"Operations:\n{ops_preview}\n\n"
             msg += (
                 f"Call it with the openapi_runner tool: op=call spec={spec_url} "
