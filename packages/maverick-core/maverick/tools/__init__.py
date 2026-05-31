@@ -162,6 +162,29 @@ class ToolRegistry:
             return
         self._tools[tool.name] = tool
 
+    def register_plugin(
+        self, tool: Tool, *, ep_name: str, manifest=None, allow_shadow: bool = False,
+    ) -> tuple[bool, str]:
+        """Register a third-party plugin tool under enforcement.
+
+        Unlike :meth:`register`, this refuses to overwrite an existing tool
+        (anti-shadowing) and enforces the plugin's manifest. Returns
+        ``(registered, reason)``; a refused tool is logged by the caller.
+        """
+        from ..plugins import admit_plugin_tool
+        ok, reason = admit_plugin_tool(
+            tool.name, ep_name,
+            existing_names=set(self._tools),
+            manifest=manifest,
+            allow_shadow=allow_shadow,
+        )
+        if not ok:
+            return False, reason
+        if not self._acl_allows(tool.name):
+            return False, "blocked by tool ACL / max-risk"
+        self._tools[tool.name] = tool
+        return True, "ok"
+
     def get(self, name: str) -> Tool:
         return self._tools[name]
 
@@ -506,18 +529,33 @@ def base_registry(
 
     # Plugin tools registered via the `maverick.tools` entry point. Each
     # factory is called with no args and must return a Tool. A broken
-    # plugin logs but never takes the swarm down.
+    # plugin logs but never takes the swarm down. Enforcement: a plugin tool
+    # may not shadow a built-in/MCP tool name, and (when the plugin ships a
+    # manifest) may only register tools it declared in capabilities.tools.
     try:
-        from ..plugins import discover_tools
-        for name, factory in discover_tools():
+        import logging as _logging
+
+        from ..plugins import discover_tools_enforced
+        _plog = _logging.getLogger(__name__)
+        allow_shadow = False
+        try:
+            from ..config import load_config
+            allow_shadow = bool(
+                (load_config().get("plugins") or {}).get("allow_tool_shadowing", False)
+            )
+        except Exception:
+            pass
+        for name, factory, manifest in discover_tools_enforced():
             try:
                 t = factory()
-                reg.register(t)
             except Exception as e:  # pragma: no cover -- plugin failure
-                import logging
-                logging.getLogger(__name__).warning(
-                    "plugin tool %s factory raised: %s", name, e
-                )
+                _plog.warning("plugin tool %s factory raised: %s", name, e)
+                continue
+            ok, reason = reg.register_plugin(
+                t, ep_name=name, manifest=manifest, allow_shadow=allow_shadow,
+            )
+            if not ok:
+                _plog.warning("plugin tool refused: %s", reason)
     except Exception:  # pragma: no cover -- importlib quirks
         pass
 

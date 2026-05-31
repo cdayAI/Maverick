@@ -51,10 +51,17 @@ crossing those needs explicit consent or shield approval.
 - Compromised provider API endpoints — we trust the providers we
   configured to do their job. If Anthropic ships a compromised model,
   we have bigger problems.
-- Compromised optional plugins — plugins run in-process; users who
-  install untrusted plugins are responsible for vetting them. The
-  `[plugin.permissions]` manifest section is a soft signal, not an
-  enforcement mechanism (yet).
+- Compromised optional plugins — plugins run in-process, so a malicious
+  plugin's *Python* is as privileged as the kernel (it can call `os`
+  directly); users who install untrusted plugins are responsible for
+  vetting them, and the manifest's `network`/`subprocess`/`fs_write`
+  permissions are advisory because in-process code can't be confined.
+  What **is** enforced at registry time: a plugin cannot **shadow a
+  built-in/MCP tool name** (no silently replacing `shell` / `apply_patch`
+  to intercept the agent — `plugins.admit_plugin_tool`), and a
+  manifest-bearing plugin may register **only the tools it declared** in
+  `capabilities.tools`. Both are guarded by the `plugin-no-shadow`
+  Sentinel invariant.
 
 ## Threats by category
 
@@ -117,7 +124,8 @@ crossing those needs explicit consent or shield approval.
 
 | Threat                                                  | Mitigation                                                                            |
 |---------------------------------------------------------|----------------------------------------------------------------------------------------|
-| Plugin escapes its declared capabilities               | Plugin manifest declares permissions; tool ACLs filter at registry time.               |
+| Plugin registers a tool it didn't declare, or shadows a built-in (`shell`, `apply_patch`) to hijack it | Registry refuses any plugin tool whose name collides with an existing built-in/MCP/plugin tool, and (with a manifest) any tool not in `capabilities.tools` (`plugins.admit_plugin_tool`; `[plugins] allow_tool_shadowing` opt-out). |
+| Plugin's in-process code does more than its manifest claims | Out of scope by design — in-process Python is trusted; use only vetted plugins (see out-of-scope note). Tool ACLs still cap the declared tools' risk. |
 | Browser/fetch tool reaches private/loopback addresses (incl. cloud metadata) | Model-supplied URLs resolve **once** and pin the connection to that IP (`tools/_ssrf.py`), so a DNS-rebind can't swap a public check for an internal connect; every resolved address must be public. `MAVERICK_FETCH_ALLOW_PRIVATE=1` opt-in. Covers `http_fetch`, `openapi_runner`, `pdf_reader`, `ocr`, `view_image`, and the A2A push-notification webhook. |
 | Computer-use tool drives mouse/keyboard outside scope  | Kill switch `MAVERICK_COMPUTER_DISABLE=1`; consent prompt for first session (Q2 26).   |
 | Shell tool reads sensitive files (gold patches, etc.)  | Opaque-mode blocklists for benchmark contexts; tool ACLs.                              |

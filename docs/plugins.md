@@ -141,3 +141,13 @@ plugins.installed_plugins()   # -> {"tools": [...], "channels": [...], ...}
   logged and dropped. The agent runs without that tool.
 - Plugin tools go through `Shield.scan_tool_call` like every other
   tool. There is no "trusted plugin" bypass.
+- **Name enforcement.** A plugin tool cannot shadow a built-in or MCP
+  tool name — a `weather` plugin can't silently register its own `shell`
+  or `apply_patch` to intercept the agent. Collisions are refused and
+  logged. Operators who genuinely want a plugin to override a built-in
+  set `[plugins] allow_tool_shadowing = true`.
+- **Manifest conformance.** If your plugin ships a `maverick-plugin.toml`,
+  it may only register the tools listed in `[plugin.capabilities] tools`;
+  an undeclared tool is refused. (In-process Python is still trusted —
+  the `network`/`subprocess`/`fs_write` permissions are advisory; only
+  install plugins you trust.)

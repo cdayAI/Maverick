@@ -144,6 +144,94 @@ def discover_tools() -> list[Any]:
     return out
 
 
+def _manifest_for(ep) -> Any | None:
+    """Best-effort: locate + parse this plugin's ``maverick-plugin.toml``.
+
+    The manifest ships in the plugin's distribution. We find it via the entry
+    point's ``dist`` (importlib.metadata, 3.10+). Returns ``None`` when the
+    plugin ships no manifest, so enforcement degrades to anti-shadowing only.
+    """
+    try:
+        dist = ep.dist  # importlib.metadata EntryPoint.dist (3.10+)
+    except Exception:
+        return None
+    if dist is None:
+        return None
+    try:
+        files = list(dist.files or [])
+    except Exception:
+        return None
+    for f in files:
+        if getattr(f, "name", "") == "maverick-plugin.toml":
+            try:
+                from pathlib import Path
+
+                from .plugin_manifest import parse
+                return parse(Path(str(dist.locate_file(f))))
+            except Exception as e:  # pragma: no cover - defensive
+                log.warning("plugin %s: manifest unreadable: %s", ep.name, e)
+                return None
+    return None
+
+
+def admit_plugin_tool(
+    tool_name: str,
+    ep_name: str,
+    *,
+    existing_names: set[str],
+    manifest: Any | None = None,
+    allow_shadow: bool = False,
+) -> tuple[bool, str]:
+    """Decide whether a plugin-provided tool may register. Pure + testable.
+
+    Two enforcement rules turn the manifest from a soft signal into a real
+    boundary:
+
+      1. **Anti-shadowing.** A plugin tool whose name already exists (a
+         built-in, an MCP tool, or an earlier plugin's tool) is refused -- a
+         plugin must not be able to silently replace ``shell`` / ``apply_patch``
+         / ``http_fetch`` and intercept the agent's most powerful tools.
+         ``allow_shadow`` (operator opt-in) lifts this.
+      2. **Manifest conformance.** When the plugin ships a manifest, the tool's
+         name must appear in its declared ``capabilities.tools`` -- a plugin
+         can only register what it declared, so a ``weather`` plugin can't
+         quietly register a ``shell`` tool.
+
+    Returns ``(allowed, reason)``.
+    """
+    if tool_name in existing_names and not allow_shadow:
+        return False, (
+            f"plugin {ep_name!r} tool {tool_name!r} shadows an existing tool; "
+            "refused (set [plugins] allow_tool_shadowing=true to override)"
+        )
+    if manifest is not None:
+        declared = set(getattr(manifest.capabilities, "tools", []) or [])
+        if declared and tool_name not in declared:
+            return False, (
+                f"plugin {ep_name!r} tool {tool_name!r} is not in its manifest "
+                f"capabilities.tools {sorted(declared)}; refused"
+            )
+    return True, "ok"
+
+
+def discover_tools_enforced() -> list[tuple[str, Callable[[], Any], Any | None]]:
+    """Like :func:`discover_tools` but also returns each plugin's parsed
+    manifest (or ``None``) so the registry can enforce conformance. Kept
+    separate so the 2-tuple ``discover_tools`` contract stays stable."""
+    allow = _allowed_plugin_names()
+    out: list[tuple[str, Callable[[], Any], Any | None]] = []
+    for ep in _entry_points("maverick.tools"):
+        if not _is_allowed(ep.name, allow):
+            continue
+        target = _load(ep, "tools")
+        if target is None or not callable(target):
+            if target is not None:
+                log.warning("plugin tool %s is not callable; skipping", ep.name)
+            continue
+        out.append((ep.name, target, _manifest_for(ep)))
+    return out
+
+
 def discover_channels() -> list[tuple[str, Any]]:
     """Return (name, Channel subclass) tuples for installed channel plugins."""
     allow = _allowed_plugin_names()

@@ -284,6 +284,37 @@ def _inv_shield_evasion_resistant() -> InvariantResult:
     )
 
 
+def _inv_plugin_no_shadow() -> InvariantResult:
+    """A third-party plugin must not be able to shadow a built-in tool name
+    (e.g. register its own ``shell``), and a manifest-bearing plugin may only
+    register tools it declared."""
+    try:
+        from .plugins import admit_plugin_tool
+    except Exception as e:
+        return InvariantResult(
+            "plugin-no-shadow", "Plugins can't shadow built-in tools", False,
+            "high", f"import failed: {e}",
+        )
+    shadow_ok, _ = admit_plugin_tool("shell", "evil", existing_names={"shell"})
+    novel_ok, _ = admit_plugin_tool("weather", "weather", existing_names={"shell"})
+
+    class _Caps:
+        tools = ["weather"]
+
+    class _M:
+        capabilities = _Caps()
+
+    undeclared_ok, _ = admit_plugin_tool(
+        "shell", "weather", existing_names=set(), manifest=_M(),
+    )
+    passed = (shadow_ok is False) and novel_ok and (undeclared_ok is False)
+    return InvariantResult(
+        "plugin-no-shadow", "Plugins can't shadow built-in tools", passed, "high",
+        "refuses name collisions + undeclared manifest tools"
+        if passed else "plugin admission control is not active",
+    )
+
+
 def _inv_inbound_webhook_constant_time() -> InvariantResult:
     """Inbound webhook signature verification must reject a tampered signature
     (and use a constant-time compare)."""
@@ -315,6 +346,7 @@ INVARIANTS: tuple[Callable[[], InvariantResult], ...] = (
     _inv_ssrf_pinning,
     _inv_a2a_auth_fail_closed,
     _inv_shield_evasion_resistant,
+    _inv_plugin_no_shadow,
     _inv_inbound_webhook_constant_time,
     _inv_no_shell_true_in_tools,
     _inv_no_bare_tomllib,
