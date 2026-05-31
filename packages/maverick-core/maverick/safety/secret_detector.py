@@ -32,7 +32,10 @@ class SecretMatch:
 # match a specific provider format.
 _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("anthropic_api_key",  re.compile(r"\bsk-ant-[a-zA-Z0-9_-]{20,}\b")),
-    ("openai_api_key",     re.compile(r"\bsk-(?:proj-)?[a-zA-Z0-9]{20,}\b")),
+    # Body allows `_` and `-`: real sk-proj- keys contain them, and a
+    # `[a-zA-Z0-9]`-only body stopped at the first separator, detecting
+    # (and thus redacting) only a prefix and leaking the rest of the key.
+    ("openai_api_key",     re.compile(r"\bsk-(?:proj-)?[a-zA-Z0-9_-]{20,}")),
     ("aws_access_key_id",  re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     # AWS secret access keys are 40-char base64-ish; matching naked
     # 40-char strings produces too many false positives (hashes, UUIDs
@@ -67,6 +70,19 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     # Authorization: Bearer <token> headers (require a token-ish length to
     # avoid flagging the literal word "Bearer").
     ("bearer_header",      re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._-]{12,}")),
+    # .env-style KEY=value lines whose name contains TOKEN/KEY/SECRET/
+    # PASSWORD/PASS/CREDENTIAL. The module's docstring advertised "generic
+    # high-entropy" coverage but no such rule existed, so a generically
+    # named secret (INTERNAL_API_TOKEN=..., DB_PASSWORD=...) was written to
+    # the audit log and fed back to the model in plaintext. Mirrors the
+    # `env_secret` rule in maverick.secrets so both redactors agree. Only the
+    # value (named group ``val``) is redacted, keeping the var name readable.
+    ("env_secret",         re.compile(
+        r"(?:^|\n)\s*(?:export\s+)?[A-Z][A-Z0-9_]*"
+        r"(?:TOKEN|KEY|SECRET|PASSWORD|PASS|CREDENTIAL)[A-Z0-9_]*\s*=\s*"
+        r"(?P<val>[^\s\n]+)",
+        re.MULTILINE,
+    )),
 ]
 
 
@@ -78,11 +94,14 @@ def scan(text: str) -> list[SecretMatch]:
     seen_spans: set[tuple[int, int]] = set()
     for name, pat in _PATTERNS:
         for m in pat.finditer(text):
-            span = m.span()
+            # Patterns may redact only a value sub-group (named ``val``),
+            # e.g. ``env_secret`` keeps the ``NAME=`` prefix visible.
+            grp = "val" if "val" in m.re.groupindex else 0
+            span = m.span(grp)
             if span in seen_spans:
                 continue
             seen_spans.add(span)
-            raw = m.group(0)
+            raw = m.group(grp)
             preview = raw[:6] + "..." if len(raw) > 12 else "..."
             matches.append(SecretMatch(name=name, span=span, value_preview=preview))
     return matches

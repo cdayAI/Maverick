@@ -117,8 +117,10 @@ class CascadedShield:
         shield.scan_input(text)   # cheap probe -> base scan if flagged
 
     `base` is the existing Shield (or any object exposing scan_input /
-    scan_tool_call / scan_output). When probe says "clean", we short-
-    circuit allow without paying the deep-scan cost.
+    scan_tool_call / scan_output). The base scan ALWAYS runs (it is the
+    cheap regex floor); the cheap probe only decides whether to additionally
+    pay for the optional expensive deep scanner on a base-allowed input. The
+    cascade is therefore never weaker than the base it wraps.
     """
     base: object
     deep_threshold: float = 0.3
@@ -186,8 +188,17 @@ class CascadedShield:
         # cheap-probe step saves measurable compute.
         return self.base.scan_tool_call(tool_name, args)
 
-    def scan_output(self, text: str):
-        return self._cascade(text, self.base.scan_output(text), self.deep_scan_output)
+    def scan_output(self, text: str, known_prompt: str | None = None):
+        # Forward known_prompt to the base scanner so its output-policy
+        # regurgitation detector runs (a system-prompt-leak the input-tuned
+        # cheap probe cannot flag). The base scan is always the floor;
+        # _cascade only lets the optional deep scanner TIGHTEN a base-allowed
+        # verdict, so the cascade is never weaker than the base.
+        return self._cascade(
+            text,
+            self.base.scan_output(text, known_prompt=known_prompt),
+            self.deep_scan_output,
+        )
 
 
 def cascade_enabled() -> bool:

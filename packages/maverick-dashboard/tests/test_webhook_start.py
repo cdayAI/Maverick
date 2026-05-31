@@ -179,3 +179,28 @@ def test_lengthless_webhook_body_stream_is_bounded():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(read())
     assert exc.value.status_code == 413
+
+
+def test_oversized_budget_clamped_to_default_ceiling(_configured, _no_real_run):
+    # An unclamped webhook budget would defeat the budget cap. The route
+    # must clamp to DEFAULT_MAX_DOLLARS, exactly as the REST route does.
+    from maverick.runner import DEFAULT_MAX_DOLLARS
+    body = json.dumps({"title": "greedy", "budget": 1_000_000}).encode()
+    resp = client.post(
+        "/webhook/start",
+        content=body,
+        headers={"X-Maverick-Signature": _sign(body)},
+    )
+    assert resp.status_code == 201
+    assert _no_real_run[0][1] == DEFAULT_MAX_DOLLARS
+
+
+def test_negative_budget_clamped_to_zero(_configured, _no_real_run):
+    body = json.dumps({"title": "neg", "budget": -5}).encode()
+    resp = client.post(
+        "/webhook/start",
+        content=body,
+        headers={"X-Maverick-Signature": _sign(body)},
+    )
+    assert resp.status_code == 201
+    assert _no_real_run[0][1] == 0.0

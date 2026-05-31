@@ -133,6 +133,56 @@ class TestApplyBlocks:
         assert summary.ok
         assert summary.results[0].match_kind == "rstrip"
 
+    def test_rstrip_match_does_not_eat_following_line(self, tmp_path):
+        # Regression: the rstrip fuzzy path computed end_line with a
+        # `+1` that over-consumed one line past the needle, silently
+        # deleting the line *after* the matched block (the `.startswith`
+        # verify masked it). The earlier drift test only had the block at
+        # EOF, where the extra line is empty -- so the corruption hid.
+        from maverick.edit_format import SearchReplaceBlock, apply_blocks
+        repo = _make_git_repo(tmp_path)
+        # Block to edit is followed by an unrelated line that must survive.
+        (repo / "seed.py").write_text(
+            "a = 1\nif x:   \n    y = 2\nz = 3\n"
+        )
+        subprocess.run(["git", "-C", str(repo), "add", "seed.py"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-q", "-m", "ws"], check=True,
+        )
+        blk = SearchReplaceBlock(
+            path="seed.py",
+            search="if x:\n    y = 2\n",
+            replace="if x:\n    y = 4\n",
+        )
+        summary = apply_blocks([blk], repo)
+        assert summary.ok
+        assert summary.results[0].match_kind == "rstrip"
+        # `z = 3` must NOT have been deleted.
+        assert (repo / "seed.py").read_text() == "a = 1\nif x:\n    y = 4\nz = 3\n"
+
+    def test_indent_norm_match_does_not_eat_following_line(self, tmp_path):
+        # Same off-by-one shared by the indent-normalised fuzzy path.
+        from maverick.edit_format import SearchReplaceBlock, apply_blocks
+        repo = _make_git_repo(tmp_path)
+        # Body indented one level deeper than the model's needle.
+        (repo / "seed.py").write_text(
+            "def f():\n        a = 1\n        b = 2\nTAIL = 9\n"
+        )
+        subprocess.run(["git", "-C", str(repo), "add", "seed.py"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-q", "-m", "indent"], check=True,
+        )
+        blk = SearchReplaceBlock(
+            path="seed.py",
+            search="a = 1\nb = 2\n",
+            replace="a = 1\nb = 3\n",
+        )
+        summary = apply_blocks([blk], repo)
+        assert summary.ok
+        # TAIL must survive whatever fuzzy kind matched.
+        assert (repo / "seed.py").read_text().endswith("TAIL = 9\n")
+        assert "b = 3" in (repo / "seed.py").read_text()
+
     def test_no_match_reports_near_miss(self, tmp_path):
         from maverick.edit_format import SearchReplaceBlock, apply_blocks
         repo = _make_git_repo(tmp_path)

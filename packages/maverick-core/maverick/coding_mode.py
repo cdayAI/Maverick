@@ -600,11 +600,17 @@ _FORBIDDEN_PATH_PATTERNS = [
     re.compile(r"(?:^|/)tests?/"),
     re.compile(r"(?:^|/)test_[^/]+\.py$"),
     re.compile(r"(?:^|/)[^/]+_test\.py$"),
-    # Wave 12 hardening: Django convention `tests.py` (no underscore),
-    # plural `*_tests.py`, and bare `mytest.py` / `testfoo.py`.
+    # Wave 12 hardening: Django convention `tests.py` (no underscore)
+    # and plural `*_tests.py`.
     re.compile(r"(?:^|/)tests?\.py$"),
     re.compile(r"(?:^|/)[^/]+_tests\.py$"),
-    re.compile(r"(?:^|/)test[^/_][^/]*\.py$"),
+    # NOTE: a `test[^/_][^/]*\.py$` pattern used to live here to catch
+    # `testfoo.py`-style names, but it also matched legitimate production
+    # modules (`testing.py`, `testutils.py`, `testimonials.py`), causing
+    # the grader-integrity blocker to refuse valid fixes to those files.
+    # The underscore-prefixed (`test_*.py`) and bare (`tests?.py`)
+    # conventions above already cover the real test-file naming schemes,
+    # so the over-broad prefix match is dropped.
     re.compile(r"(?:^|/)__tests__/"),
     re.compile(r"\.test\.(?:js|jsx|ts|tsx)$"),
     re.compile(r"\.spec\.(?:js|jsx|ts|tsx|rb)$"),

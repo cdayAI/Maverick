@@ -236,19 +236,36 @@ async def run_goal(
         # each turn here and drop any that the shield now flags.
         history_block = ""
         if conversation_id is not None:
-            turns = world.recent_turns(conversation_id, limit=10)
+            # Compaction (opt-in via [context] compact / MAVERICK_COMPACT_HISTORY):
+            # pull a larger window and compact it to a token budget so a long
+            # conversation keeps the most relevant older turns, not just the
+            # last 10. Default: the last 10 turns, each truncated to 300 chars
+            # (unchanged behaviour).
+            from . import context_compactor as _cc
+            if _cc.enabled():
+                _turns = world.recent_turns(conversation_id, limit=_cc.window())
+                _msgs = [{"role": t.role, "content": t.content} for t in _turns]
+                _kept = _cc.compact(_msgs, target_tokens=_cc.target_tokens()).messages
+                pairs = [
+                    (str(m.get("role") or "user"), str(m.get("content") or ""))
+                    for m in _kept
+                ]
+            else:
+                pairs = [
+                    (t.role, t.content[:300])
+                    for t in world.recent_turns(conversation_id, limit=10)
+                ]
             history_lines: list[str] = []
-            for t in turns:
-                content = t.content[:300]
+            for role, content in pairs:
                 if shield is not None:
                     try:
-                        v = shield.scan_input(content) if t.role == "user" else shield.scan_output(content)
+                        v = shield.scan_input(content) if role == "user" else shield.scan_output(content)
                         if not v.allowed:
-                            history_lines.append(f"  {t.role}: [redacted by Shield]")
+                            history_lines.append(f"  {role}: [redacted by Shield]")
                             continue
                     except Exception:  # pragma: no cover
                         pass
-                history_lines.append(f"  {t.role}: {content}")
+                history_lines.append(f"  {role}: {content}")
             if history_lines:
                 history_block = (
                     "\nPrior conversation (most recent last):\n"
@@ -256,10 +273,32 @@ async def run_goal(
                     + "\n"
                 )
 
+        # Thread answered clarifying questions back in, so a resumed goal
+        # KNOWS what it already asked + the user's reply. Without this the
+        # agent re-asks the same question on every `maverick resume`, leaving
+        # the goal blocked forever -- the human-in-the-loop flow never closes.
+        qa_block = ""
+        try:
+            answered = [
+                q for q in world.all_questions(goal_id)
+                if getattr(q, "answer", None)
+            ]
+        except Exception:  # pragma: no cover -- never block a run on this
+            answered = []
+        if answered:
+            qa_lines = [
+                f"  Q: {q.question}\n  A: {q.answer}" for q in answered
+            ]
+            qa_block = (
+                "\nYou already asked the user these question(s); use their "
+                "answers and do NOT ask again:\n" + "\n".join(qa_lines) + "\n"
+            )
+
         brief = (
             f"Top-level goal: {goal.title}\n"
             f"Description: {goal.description or '(none)'}\n"
-            f"{history_block}\n"
+            f"{history_block}"
+            f"{qa_block}\n"
             f"Known facts about the user:\n{facts_block}\n\n"
             "Decompose into sub-tasks, spawn workers (parallel where possible), "
             "synthesize their findings, verify, and respond with FINAL:."
@@ -283,6 +322,25 @@ async def run_goal(
                     brief = brief + "\n" + ctx_block
         except Exception as e:  # pragma: no cover -- recall never blocks a run
             log.debug("reflexion recall skipped: %s", e)
+
+        # Tree-of-thought (opt-in via [planning] mode = "tree_of_thought" or
+        # MAVERICK_TREE_OF_THOUGHT=1): fork N candidate plans, let a critic
+        # pick the winner, and prepend it as guidance. Default mode skips this
+        # entirely (no extra LLM calls), so behaviour is unchanged. The
+        # shared budget is passed through, so planning counts against the
+        # goal's cap; if it exhausts the budget, root.run() below surfaces the
+        # graceful "hit your limit" message.
+        try:
+            from . import tree_of_thought as _tot
+            if _tot.enabled():
+                _plan = _tot.plan_tree_of_thought(
+                    llm, f"{goal.title}\n{goal.description or ''}",
+                    n=_tot.candidate_count(), budget=budget,
+                )
+                if _plan.winning_plan:
+                    brief = brief + "\n\nSuggested plan (tree-of-thought):\n" + _plan.winning_plan
+        except Exception as e:  # pragma: no cover -- planning never blocks a run
+            log.debug("tree-of-thought planning skipped: %s", e)
 
         root = Agent(
             ctx=ctx,

@@ -157,6 +157,8 @@ MCP-speaking language can drive the swarm from outside Python:
 - **TypeScript / JavaScript** → [docs/clients/typescript-quickstart.md](./docs/clients/typescript-quickstart.md)
 - **Go** → [docs/clients/go-quickstart.md](./docs/clients/go-quickstart.md)
 - **Rust** → [docs/clients/rust-quickstart.md](./docs/clients/rust-quickstart.md)
+- **C# / .NET** → [docs/clients/csharp-quickstart.md](./docs/clients/csharp-quickstart.md)
+- **Java / JVM** → [docs/clients/java-quickstart.md](./docs/clients/java-quickstart.md)
 
 Each is a 20-line program: spawn `maverick mcp`, list tools, call one.
 Why this and not a separate `@maverick/core` port?

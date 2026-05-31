@@ -102,7 +102,7 @@ class TestCascadedShieldWrapper:
                 return ShieldVerdict(allowed=False, severity="high",
                                      reasons=["builtin: persona_takeover"])
 
-            def scan_output(self, t):
+            def scan_output(self, t, known_prompt=None):
                 return ShieldVerdict(allowed=False, severity="high",
                                      reasons=["builtin: exfil"])
 
@@ -187,3 +187,39 @@ class TestCascadeEnabled:
     def test_env_on(self, monkeypatch):
         monkeypatch.setenv("MAVERICK_CASCADE_SHIELD", "1")
         assert cascade_enabled() is True
+
+
+class TestCascadeScanOutputKnownPrompt:
+    """Regression: CascadedShield.scan_output dropped ``known_prompt``, so
+    system-prompt-regurgitation detection was silently disabled when the
+    cascade wrapped the shield (and a clean cheap-probe short-circuited the
+    deep scan entirely)."""
+
+    class _Base:
+        backend = "builtin"
+
+        def __init__(self):
+            self.calls = []
+
+        def scan_output(self, text, known_prompt=None):
+            self.calls.append(known_prompt)
+            from maverick_shield.guard import ShieldVerdict
+            return ShieldVerdict(allowed=True, severity="info", reasons=[])
+
+    def test_known_prompt_is_forwarded_to_base(self):
+        b = self._Base()
+        c = CascadedShield(base=b)
+        # Benign text the cheap probe would clear, but a known_prompt is given:
+        # the base scan must still run AND receive the known_prompt.
+        c.scan_output("a perfectly ordinary answer", known_prompt="MY SYSTEM PROMPT")
+        assert b.calls == ["MY SYSTEM PROMPT"]
+
+    def test_clean_probe_still_runs_base_output(self):
+        # Security invariant (changed from the old short-circuit): the base
+        # output scan ALWAYS runs, even on a clean probe with no known_prompt,
+        # so the cascade can never be weaker than the base. known_prompt is
+        # None here, but the base call still happens.
+        b = self._Base()
+        c = CascadedShield(base=b)
+        c.scan_output("a perfectly ordinary answer")
+        assert b.calls == [None]  # base called (with no known_prompt)

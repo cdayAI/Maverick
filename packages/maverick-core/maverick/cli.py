@@ -664,6 +664,10 @@ def chat(ctx, max_depth: int, max_dollars: float, workdir) -> None:
     world = open_world(ctx.obj["db"])
     llm = k.LLM(model=ctx.obj["model"] or k.DEFAULT_MODEL)
     sandbox = k.build_sandbox(workdir=workdir)
+    # Thread every turn through one conversation so the swarm has prior-turn
+    # context -- otherwise `chat` is amnesiac (each message was an isolated
+    # goal with no history). Mirrors the channel server's pattern.
+    conversation = world.get_or_create_conversation("cli", "local")
     click.echo(click.style("Maverick chat. Type 'exit' to leave.", fg="cyan"))
     click.echo(click.style(
         "Multi-line: end a line with \\ or wrap a block in \"\"\".",
@@ -724,12 +728,16 @@ def chat(ctx, max_depth: int, max_dollars: float, workdir) -> None:
 
         title = full.splitlines()[0][:80]
         goal_id = world.create_goal(title, full)
+        # Record the user's turn so run_goal threads it (and the assistant's
+        # reply, which run_goal appends) into the next turn's context.
+        world.append_turn(conversation.id, "user", full, goal_id=goal_id)
         click.echo(click.style(f"  ... goal #{goal_id}", fg="bright_black"))
         from .budget import budget_from_config
         bud = budget_from_config(max_dollars=max_dollars)
         try:
             result = k.run_goal_sync(llm, world, bud, goal_id,
-                                   sandbox=sandbox, max_depth=max_depth)
+                                   sandbox=sandbox, max_depth=max_depth,
+                                   conversation_id=conversation.id)
         except Exception as e:
             click.echo(click.style(f"  ✗ {e}", fg="red"))
             continue
@@ -973,7 +981,12 @@ def resume(ctx, goal_id, max_depth: int, max_dollars, max_wall_seconds) -> None:
         max_dollars=max_dollars,
         max_wall_seconds=max_wall_seconds,
     )
-    result = k.run_goal_sync(llm, world, bud, goal_id, max_depth=max_depth)
+    # Honor the configured [sandbox] backend on resume too -- without this,
+    # resume always fell back to run_goal's default local backend, ignoring a
+    # user who configured docker/podman (a quiet safety + consistency gap).
+    sandbox = k.build_sandbox()
+    result = k.run_goal_sync(llm, world, bud, goal_id,
+                             sandbox=sandbox, max_depth=max_depth)
     click.echo(result)
 
 
