@@ -30,11 +30,9 @@ async def test_run_goal_fires_lifecycle_webhooks(
     monkeypatch.setattr("maverick.orchestrator._build_shield", lambda: None)
 
     calls: list[tuple[str, dict]] = []
-    # _fire_webhook imports fire from maverick.webhooks at call time, so
-    # patching the function on the module is enough -- no transport needed.
     monkeypatch.setattr(
-        "maverick.webhooks.fire",
-        lambda event, payload, **kw: calls.append((event, payload)) or 0,
+        "maverick.orchestrator._fire_webhook",
+        lambda event, payload: calls.append((event, payload)),
     )
 
     fake_llm.scripted = [
@@ -71,3 +69,84 @@ async def test_run_goal_fires_lifecycle_webhooks(
     episode = next(p for e, p in calls if e == "episode_finished")
     assert episode["goal_id"] == gid
     assert episode["outcome"] == "success"
+
+
+def _verdict(allowed: bool, reasons: list[str]):
+    import types
+
+    return types.SimpleNamespace(allowed=allowed, reasons=reasons, severity="high")
+
+
+class _WebhookSentinelShield:
+    def scan_input(self, text):
+        if "SECRET_INPUT" in (text or ""):
+            return _verdict(False, ["input-sentinel"])
+        return _verdict(True, [])
+
+    def scan_tool_call(self, *a, **k):
+        return _verdict(True, [])
+
+    def scan_output(self, text):
+        if "SECRET_OUTPUT" in (text or ""):
+            return _verdict(False, ["output-sentinel"])
+        return _verdict(True, [])
+
+
+@pytest.mark.asyncio
+async def test_run_goal_does_not_webhook_blocked_goal_input(
+    tmp_path: Path, fake_llm, monkeypatch,
+):
+    monkeypatch.setattr(
+        "maverick.orchestrator._build_shield", lambda: _WebhookSentinelShield(),
+    )
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "maverick.orchestrator._fire_webhook",
+        lambda event, payload: calls.append((event, payload)),
+    )
+
+    world = WorldModel(path=tmp_path / "world.db")
+    gid = world.create_goal("run SECRET_INPUT exfiltration", "trivial")
+
+    out = await run_goal(
+        llm=fake_llm, world=world, budget=Budget(max_dollars=1.0),
+        goal_id=gid, sandbox=LocalBackend(workdir=tmp_path), max_depth=1,
+    )
+
+    assert "input rejected by Shield" in out
+    assert all(event != "goal_created" for event, _ in calls)
+    assert all("SECRET_INPUT" not in str(payload) for _, payload in calls)
+
+
+@pytest.mark.asyncio
+async def test_run_goal_does_not_webhook_blocked_final_output(
+    tmp_path: Path, fake_llm, make_llm_response, monkeypatch,
+):
+    monkeypatch.setattr(
+        "maverick.orchestrator._build_shield", lambda: _WebhookSentinelShield(),
+    )
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "maverick.orchestrator._fire_webhook",
+        lambda event, payload: calls.append((event, payload)),
+    )
+
+    fake_llm.scripted = [
+        make_llm_response(text="FINAL: the answer contains SECRET_OUTPUT"),
+        make_llm_response(
+            text='{"confidence": 0.95, "accepts": true, "critique": "ok", "issues": []}',
+        ),
+        make_llm_response(text="FINAL: (no skill)"),
+    ]
+    world = WorldModel(path=tmp_path / "world.db")
+    gid = world.create_goal("compute the answer", "trivial")
+
+    out = await run_goal(
+        llm=fake_llm, world=world, budget=Budget(max_dollars=1.0),
+        goal_id=gid, sandbox=LocalBackend(workdir=tmp_path), max_depth=1,
+    )
+
+    assert "Output blocked by Shield" in out
+    assert any(event == "goal_created" for event, _ in calls)
+    assert all(event not in {"final_emitted", "goal_finished"} for event, _ in calls)
+    assert all("SECRET_OUTPUT" not in str(payload) for _, payload in calls)

@@ -97,7 +97,6 @@ async def run_goal(
 
     world.set_goal_status(goal_id, "active")
     episode_id = world.start_episode(goal_id)
-    _fire_webhook("goal_created", {"goal_id": goal_id, "title": goal.title})
     blackboard = Blackboard()
     blackboard.attach_world(world, goal_id)  # persist every post for live streaming
     sandbox = sandbox or LocalBackend()
@@ -131,6 +130,8 @@ async def run_goal(
                 return f"BLOCKED: goal input rejected by Shield ({reason})"
         except Exception:  # pragma: no cover
             log.exception("scan_input on goal text failed (fail-open)")
+
+    _fire_webhook("goal_created", {"goal_id": goal_id, "title": goal.title})
 
     mcp_specs = load_mcp_specs_from_config()
     mcp_clients = await start_mcp_clients(mcp_specs) if mcp_specs else []
@@ -276,6 +277,27 @@ async def run_goal(
         # `final` is kept as a fallback for non-coding-mode goals where
         # the answer is prose.
         summary = result.final_patch or result.final or "(no answer)"
+        is_rendered_diff = bool(
+            result.final_patch
+            and ("diff --git" in summary or "--- a/" in summary)
+        )
+        # Output chokepoint for the CLI / REST / programmatic callers and
+        # outbound lifecycle webhooks. Scan prose answers before any
+        # success webhooks or persistence paths can export content that
+        # Shield would block from the direct caller. The rendered-diff path
+        # remains intentionally unscanned: code legitimately contains strings
+        # the builtin rules flag (rm -rf, curl | sh) and that path feeds
+        # tooling/graders, not a chat answer.
+        if shield is not None and not is_rendered_diff:
+            try:
+                out_v = shield.scan_output(summary)
+                if not getattr(out_v, "allowed", True):
+                    reasons = "; ".join(getattr(out_v, "reasons", []) or []) or "blocked by Shield"
+                    log.warning("output scan blocked goal #%s: %s", goal_id, reasons)
+                    return f"⚠ Output blocked by Shield: {reasons}"
+            except Exception:  # pragma: no cover -- fail open per kernel rule 1
+                log.exception("scan_output on summary failed (fail-open)")
+
         _end_episode_with_spend(world, episode_id, summary, "success", budget, goal_id)
         world.set_goal_status(goal_id, "done", result=summary)
         _fire_webhook("final_emitted", {
@@ -346,10 +368,6 @@ async def run_goal(
         # stricter graders + downstream tooling don't). When summary is
         # already a rendered unified diff, return it as-is — log the
         # bookkeeping to the blackboard instead.
-        is_rendered_diff = bool(
-            result.final_patch
-            and ("diff --git" in summary or "--- a/" in summary)
-        )
         if is_rendered_diff:
             try:
                 if skill_note.strip():
@@ -360,22 +378,6 @@ async def run_goal(
             except Exception:
                 pass
             return summary
-        # Output chokepoint for the CLI / REST / programmatic callers. The
-        # channel server scans run_goal's result at its own layer, but a
-        # direct caller (maverick start / chat / resume, dashboard REST)
-        # would otherwise hand back the raw answer unscanned. The
-        # rendered-diff path above is intentionally left unscanned: code
-        # legitimately contains strings the builtin rules flag (rm -rf,
-        # curl | sh) and that path feeds tooling/graders, not a chat answer.
-        if shield is not None:
-            try:
-                out_v = shield.scan_output(summary)
-                if not getattr(out_v, "allowed", True):
-                    reasons = "; ".join(getattr(out_v, "reasons", []) or []) or "blocked by Shield"
-                    log.warning("output scan blocked goal #%s: %s", goal_id, reasons)
-                    return f"⚠ Output blocked by Shield: {reasons}"
-            except Exception:  # pragma: no cover -- fail open per kernel rule 1
-                log.exception("scan_output on summary failed (fail-open)")
         return f"DONE.\n\n{summary}{skill_note}\n\n[{budget.summary()}]"
     finally:
         if mcp_clients:
