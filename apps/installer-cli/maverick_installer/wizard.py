@@ -35,7 +35,6 @@ except ImportError:  # pragma: no cover
 
 from . import models as catalog
 
-
 CONFIG_DIR = Path.home() / ".maverick"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 ENV_FILE = CONFIG_DIR / ".env"
@@ -1205,8 +1204,8 @@ def collect_browser_sessions(providers: list[str]) -> list[str]:
 def _capture_via_playwright(provider: str) -> bool:
     """Drive the Playwright auto-capture flow. Returns True on success."""
     try:
-        from maverick.session_providers.browser_capture import auto_capture
         from maverick.session_providers import cookie_store
+        from maverick.session_providers.browser_capture import auto_capture
     except ImportError:
         return False
     console.print(f"[bold]Auto-capturing {provider}[/bold]")

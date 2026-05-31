@@ -12,7 +12,6 @@ import math
 from types import SimpleNamespace
 
 import pytest
-
 from maverick_mcp.server import (
     PROTOCOL_VERSION,
     TOOLS,
@@ -143,8 +142,8 @@ class TestProtocol:
         """Regression: string NaN limits must not bypass Budget checks."""
         from maverick import llm as llm_mod
         from maverick import orchestrator as orchestrator_mod
-        from maverick import world_model as world_model_mod
         from maverick import sandbox as sandbox_mod
+        from maverick import world_model as world_model_mod
 
         captured = {}
 

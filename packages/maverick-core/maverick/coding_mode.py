@@ -25,8 +25,6 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
-
 
 CODER_CODING_MODE_TEMPLATE = """You are a coding agent solving a real software-engineering task on an
 existing codebase. Your goal is to resolve the issue described in
@@ -391,7 +389,7 @@ def _mask_fenced_code(text: str) -> str:
     return ''.join(out)
 
 
-def find_final_marker_end(text: str) -> Optional[int]:
+def find_final_marker_end(text: str) -> int | None:
     """Return the offset right after the last `FINAL:` marker in `text`
     that is NOT inside a fenced code block, or None if no such marker
     exists.
@@ -416,7 +414,7 @@ def has_final_marker(text: str) -> bool:
     return find_final_marker_end(text) is not None
 
 
-def extract_unified_diff(text: str) -> Optional[str]:
+def extract_unified_diff(text: str) -> str | None:
     """Extract the unified diff from an LLM reply, or None.
 
     Wave 10 rewrite: normalise CRLF, accept `diff --git` headers
@@ -1658,11 +1656,11 @@ class Candidate:
     patch: str
     score: float
     apply_check_passed: bool
-    test_result: Optional["TestRunResult"] = None
+    test_result: TestRunResult | None = None
     error: str = ""
 
 
-def select_best_candidate(candidates: list[Candidate]) -> Optional[Candidate]:
+def select_best_candidate(candidates: list[Candidate]) -> Candidate | None:
     """Pick the candidate with the highest test score; tiebreak by
     proximity to median patch length (Occam, but not "smallest at all
     costs" — see Wave 12 council finding F1).
@@ -1747,9 +1745,9 @@ async def evaluate_candidate(
         cand.score = 0.5
         return cand
 
+    import shutil as _shutil
     import subprocess as _subprocess
     import tempfile as _tempfile
-    import shutil as _shutil
 
     wt_root = Path(_tempfile.mkdtemp(prefix=f"maverick-cand-{index}-"))
     wt_path = wt_root / "wt"

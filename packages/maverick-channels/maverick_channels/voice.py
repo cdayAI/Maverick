@@ -33,7 +33,6 @@ from __future__ import annotations
 import hmac
 import logging
 import os
-from typing import Optional
 
 from .base import Channel, IncomingMessage, is_allowed, normalize_allowlist
 
@@ -41,8 +40,8 @@ log = logging.getLogger(__name__)
 
 
 try:
-    from fastapi import FastAPI, Header, HTTPException, Request, Response
     import httpx
+    from fastapi import FastAPI, Header, HTTPException, Request, Response
     _HAVE_DEPS = True
 except ImportError:
     _HAVE_DEPS = False
@@ -67,12 +66,12 @@ class VoiceChannel(Channel):
     def __init__(
         self,
         handler,
-        api_key: Optional[str] = None,
-        phone_number: Optional[str] = None,
+        api_key: str | None = None,
+        phone_number: str | None = None,
         port: int = 8770,
-        assistant_id: Optional[str] = None,
+        assistant_id: str | None = None,
         provider: str = "vapi",
-        webhook_token: Optional[str] = None,
+        webhook_token: str | None = None,
         allowed_callers=None,
     ):
         super().__init__(handler)
@@ -101,7 +100,7 @@ class VoiceChannel(Channel):
         self._app.post("/webhook/voice")(self._handle_webhook)
         self._uvicorn_server = None
 
-    def _check_webhook_auth(self, authorization: Optional[str]) -> bool:
+    def _check_webhook_auth(self, authorization: str | None) -> bool:
         """Require bearer auth for inbound webhook events."""
         expected = self.webhook_token
         if not expected:
@@ -113,8 +112,8 @@ class VoiceChannel(Channel):
 
     async def _handle_webhook(
         self,
-        request: "Request",
-        authorization: Optional[str] = Header(None),
+        request: Request,
+        authorization: str | None = Header(None),
     ):
         if not self._check_webhook_auth(authorization):
             raise HTTPException(status_code=401, detail="invalid webhook bearer")

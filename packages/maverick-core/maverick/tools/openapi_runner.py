@@ -28,8 +28,8 @@ import json
 import logging
 import os
 import threading
-from urllib.parse import urlparse
 from typing import Any
+from urllib.parse import urlparse
 
 from . import Tool
 from .http_fetch import _is_private_ip

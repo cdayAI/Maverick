@@ -10,7 +10,6 @@ import os
 import secrets as _secrets
 import uuid
 from dataclasses import dataclass
-from typing import Optional
 
 from . import killswitch
 from ._envparse import env_int
@@ -20,7 +19,6 @@ from .swarm import SwarmContext
 from .tools import ToolRegistry, base_registry
 from .tools.agent_bus_tool import recv_from_agent, send_to_agent
 from .tools.spawn import spawn_subagent_tool, spawn_swarm_tool
-
 
 WORKER_SYSTEM_TEMPLATE = """You are a specialist agent in Maverick, a long-horizon multi-agent swarm.
 
@@ -65,9 +63,9 @@ External MCP tools (if any) appear as `mcp_<server>__<tool>`."""
 
 @dataclass
 class AgentResult:
-    final: Optional[str] = None
+    final: str | None = None
     blocked_on_user: bool = False
-    error: Optional[str] = None
+    error: str | None = None
     role: str = ""
     name: str = ""
     # Verifier signals (only populated on the orchestrator's FINAL).
@@ -79,7 +77,7 @@ class AgentResult:
     # of re-extracting from prose at orchestrator.py:364 — the prior
     # path silently dropped SR-only candidates that produced a perfect
     # rendered diff but had no `--- a/` substring in `result`.
-    final_patch: Optional[str] = None
+    final_patch: str | None = None
 
 
 class Agent:
@@ -88,9 +86,9 @@ class Agent:
         ctx: SwarmContext,
         role: str,
         brief: str,
-        model_override: Optional[str] = None,
+        model_override: str | None = None,
         depth: int = 0,
-        parent: Optional["Agent"] = None,
+        parent: Agent | None = None,
         max_steps: int = 25,
     ):
         self.ctx = ctx
@@ -142,7 +140,8 @@ class Agent:
         # rejects -> Wave 8 contributes negative value. (council code
         # reviewer finding #1)
         try:
-            from .coding_mode import CODER_CODING_MODE_TEMPLATE, from_env as _cm_from_env
+            from .coding_mode import CODER_CODING_MODE_TEMPLATE
+            from .coding_mode import from_env as _cm_from_env
             _coding_cfg = _cm_from_env()
         except Exception:
             _coding_cfg = None
@@ -179,7 +178,7 @@ class Agent:
 
         return base
 
-    def _thinking_budget(self) -> Optional[int]:
+    def _thinking_budget(self) -> int | None:
         if self.role in ("orchestrator", "revisor"):
             return 8000
         return None
@@ -202,13 +201,18 @@ class Agent:
         4.1 / 57% of Gemini failures on Pro per Scale's Table 4).
         """
         from pathlib import Path as _Path
+
         from .coding_mode import (
             _ast_check_python_files,
             extract_unified_diff,
         )
         from .edit_format import (
-            ApplyResult, ApplySummary, SearchReplaceBlock, apply_blocks,
-            parse_blocks, render_diff,
+            ApplyResult,
+            ApplySummary,
+            SearchReplaceBlock,
+            apply_blocks,
+            parse_blocks,
+            render_diff,
         )
 
         workdir = _Path(getattr(self.ctx.sandbox, "workdir", "."))
@@ -326,8 +330,8 @@ class Agent:
             except Exception:
                 pass
             return
-        from pathlib import Path as _Path
         import subprocess as _sub
+        from pathlib import Path as _Path
         workdir = _Path(getattr(sandbox, "workdir", "."))
         try:
             _sub.run(
@@ -404,7 +408,8 @@ class Agent:
         # PreToolUse hooks: any registered hook can BLOCK the call by
         # returning a non-zero exit code (shell hook) or a falsy value
         # (Python callable). Modeled on Claude Code's hook surface.
-        from .hooks import HookContext, HookEvent, dispatch as _dispatch_hooks
+        from .hooks import HookContext, HookEvent
+        from .hooks import dispatch as _dispatch_hooks
         pre_ctx = HookContext(
             event=HookEvent.PRE_TOOL_USE,
             tool_name=name, tool_args=args,
@@ -707,6 +712,8 @@ class Agent:
                     try:
                         from .coding_mode import (
                             from_env as _cm_from_env,
+                        )
+                        from .coding_mode import (
                             validate_patch,
                         )
                         coding_cfg = _cm_from_env()
@@ -880,6 +887,7 @@ class Agent:
                                 and (coding_cfg.fail_to_pass or coding_cfg.pass_to_pass)):
                             async with self.ctx.workdir_lock:
                                 from pathlib import Path as _Path
+
                                 from .coding_mode import run_failing_tests
                                 workdir = _Path(getattr(self.ctx.sandbox, "workdir", "."))
                                 # Wave 11: reuse the patch produced by the
@@ -1105,7 +1113,8 @@ class Agent:
                     )
                     # Stop hooks: the agent has decided on FINAL. Post-style
                     # (non-blocking) -- observers/loggers, cannot veto.
-                    from .hooks import HookEvent, emit as _emit_hook
+                    from .hooks import HookEvent
+                    from .hooks import emit as _emit_hook
                     await _emit_hook(
                         HookEvent.STOP,
                         goal_id=self.ctx.goal_id, agent_role=self.role,
@@ -1209,6 +1218,7 @@ class Agent:
         # if there are uncommitted changes.
         try:
             from pathlib import Path as _Path
+
             from .edit_format import render_diff
             workdir = _Path(getattr(self.ctx.sandbox, "workdir", "."))
             if (workdir / ".git").exists():
