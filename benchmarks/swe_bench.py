@@ -636,21 +636,120 @@ def run_sonnet_single(instance_id: str, brief: str, **_kwargs) -> Row:
     )
 
 
-def run_sonnet_tools(instance_id: str, brief: str, **_kwargs) -> Row:
-    """Baseline #2: Sonnet with bash + read/write tools, no swarm.
+def _git_diff(workdir) -> str:
+    """The agent's edits to the working tree, as a unified diff. Empty on
+    any failure (no repo, git missing) -- the row's outcome reflects that."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(workdir), "diff"],
+            capture_output=True, text=True, timeout=60,
+        )
+        return out.stdout or ""
+    except (subprocess.SubprocessError, OSError):
+        return ""
 
-    Closer to Devin / Cursor. Same model as Maverick uses for workers
-    but flat (no orchestrator, no spawn, no verifier, no skills).
+
+def run_sonnet_tools(instance_id: str, brief: str, **kwargs) -> Row:
+    """Baseline #2: Sonnet with a bash tool, no swarm.
+
+    Closer to Devin / Cursor: one flat agent loop -- the model explores and
+    edits the checked-out repo via bash, and its edits to the working tree
+    (captured as ``git diff``) are the predicted patch. Same worker model as
+    Maverick but flat: no orchestrator, no spawn, no verifier, no skills.
+
+    Turn ceiling is MAVERICK_BENCH_TOOLS_MAX_TURNS (default 20); the run also
+    stops if the per-instance dollar cap is hit.
     """
     if os.environ.get("MAVERICK_BENCH_DRY_RUN") == "1":
         return _dry_run_row(instance_id, "sonnet_tools")
-    # Full implementation: thin client that loops on tool_use blocks
-    # against a LocalBackend sandbox. Punted to follow-up commit; the
-    # surface area is large enough to warrant its own module under
-    # benchmarks/baselines/. Today returns dry-run-equivalent.
-    row = _dry_run_row(instance_id, "sonnet_tools")
-    row.outcome = "not-implemented"
-    return row
+
+    import anthropic
+    from maverick.budget import Budget
+    from maverick.llm import MODEL_SONNET
+    from maverick.sandbox import build_sandbox
+
+    start = time.monotonic()
+    sandbox = build_sandbox()
+    # Reset to the instance's base commit so we never edit a dirty tree or
+    # one left over from a prior instance (mirrors run_maverick).
+    _reset_workdir(sandbox.workdir, base_commit=str(kwargs.get("base_commit") or ""))
+
+    client = anthropic.Anthropic()
+    budget = Budget(max_dollars=3.0)
+    tools = [{
+        "name": "bash",
+        "description": (
+            "Run a shell command in the repository working directory and get "
+            "its combined stdout/stderr back. Use it to read files, search, "
+            "edit in place (sed/python/patch/tee), and run tests."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The shell command to run."},
+            },
+            "required": ["command"],
+        },
+    }]
+    system = (
+        "You are a software engineer fixing a bug in a git repository already "
+        "checked out in your working directory. Use the bash tool to explore, "
+        "edit files in place, and verify. Your edits to the working tree are the "
+        "deliverable -- they're captured as a git diff, so you do NOT need to "
+        "print a patch. Reply with DONE when the fix is complete."
+    )
+    messages: list[dict] = [
+        {"role": "user", "content": f"SWE-bench instance {instance_id}.\n\n{brief}"},
+    ]
+    try:
+        max_turns = max(1, int(os.environ.get("MAVERICK_BENCH_TOOLS_MAX_TURNS", "20") or "20"))
+    except ValueError:
+        max_turns = 20
+
+    for _turn in range(max_turns):
+        if budget.dollars >= budget.max_dollars:
+            break
+        resp = client.messages.create(
+            model=MODEL_SONNET, max_tokens=4096, system=system,
+            tools=tools, messages=messages,
+        )
+        budget.record_tokens(
+            resp.usage.input_tokens, resp.usage.output_tokens, model=MODEL_SONNET,
+        )
+        messages.append({"role": "assistant", "content": resp.content})
+        tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
+        if not tool_uses:
+            break  # model gave a final answer -- stop
+        results = []
+        for tu in tool_uses:
+            cmd = tu.input.get("command", "") if isinstance(getattr(tu, "input", None), dict) else ""
+            if cmd:
+                res = sandbox.exec(cmd)
+                content = (res.stdout or "")
+                if res.stderr:
+                    content += f"\n[stderr]\n{res.stderr}"
+            else:
+                content = "error: bash tool called without a command"
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": tu.id,
+                "content": content[:8000] or "(no output)",
+            })
+        messages.append({"role": "user", "content": results})
+
+    diff = _git_diff(sandbox.workdir)
+    return Row(
+        instance_id=instance_id,
+        pipeline="sonnet_tools",
+        model_id=MODEL_SONNET,
+        wall_seconds=time.monotonic() - start,
+        cost_dollars=budget.dollars,
+        tokens_in=budget.input_tokens,
+        tokens_out=budget.output_tokens,
+        predicted_patch=_sanitize_patch_for_csv(diff[:50_000]),
+        outcome="success" if diff.strip() else "empty",
+    )
 
 
 def _majority_patch(patches: list[str]) -> str:
