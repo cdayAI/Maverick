@@ -1017,6 +1017,7 @@ def collect_api_keys(providers: list[str], channel_envs: set[str]) -> dict[str, 
         env_name = info.get("env")
         if env_name:
             needed.append(env_name)
+        needed.extend(info.get("env_vars", []))
 
     needed.extend(sorted(channel_envs))
 
