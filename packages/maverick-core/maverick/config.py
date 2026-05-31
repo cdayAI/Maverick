@@ -113,6 +113,19 @@ def get_budget_overrides() -> dict:
     return load_config().get("budget", {})
 
 
+def get_capabilities() -> dict:
+    """Return the [capabilities] section (computer_use / browser / web_search /
+    mobile_tools). These gate the optional high-impact tools in
+    ``tools.base_registry``; all default off."""
+    cfg = load_config().get("capabilities", {}) or {}
+    return {
+        "computer_use": bool(cfg.get("computer_use", False)),
+        "browser": bool(cfg.get("browser", False)),
+        "web_search": bool(cfg.get("web_search", False)),
+        "mobile_tools": bool(cfg.get("mobile_tools", False)),
+    }
+
+
 def get_safety() -> dict:
     """Return safety section with sensible defaults filled in."""
     cfg = load_config().get("safety", {})
